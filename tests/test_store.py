@@ -1,5 +1,6 @@
 from pep_oracle.models import Chunk
 from pep_oracle.store import (
+    _apply_recency_boost,
     add_chunks,
     delete_episode,
     get_client,
@@ -259,3 +260,69 @@ def test_get_ingestion_stats_empty():
     assert stats["latest_date"] is None
     assert stats["earliest_episode"] is None
     assert stats["latest_episode"] is None
+
+
+def test_recency_boost_promotes_newer_episodes():
+    """Recency boost should move newer episodes up even if similarity is slightly lower."""
+    items = [
+        {"episode_date": "2024-06-15", "distance": 0.1, "text": "old close match"},
+        {"episode_date": "2026-03-27", "distance": 0.2, "text": "newer less similar"},
+        {"episode_date": "2026-04-01", "distance": 0.25, "text": "newest least similar"},
+    ]
+    result = _apply_recency_boost(items, weight=0.3)
+    # Newest episode should now be first despite higher distance
+    assert result[0]["episode_date"] == "2026-04-01"
+    assert result[1]["episode_date"] == "2026-03-27"
+
+
+def test_recency_boost_zero_weight_preserves_order():
+    """With weight=0, order should be purely by similarity (lowest distance first)."""
+    items = [
+        {"episode_date": "2024-06-15", "distance": 0.1, "text": "closest"},
+        {"episode_date": "2026-04-01", "distance": 0.3, "text": "furthest"},
+        {"episode_date": "2026-03-01", "distance": 0.2, "text": "middle"},
+    ]
+    result = _apply_recency_boost(items, weight=0.0)
+    assert result[0]["distance"] == 0.1
+    assert result[1]["distance"] == 0.2
+    assert result[2]["distance"] == 0.3
+
+
+def test_recency_boost_same_date():
+    """All items same date: recency score is 1.0 for all, so similarity decides."""
+    items = [
+        {"episode_date": "2026-03-01", "distance": 0.3, "text": "far"},
+        {"episode_date": "2026-03-01", "distance": 0.1, "text": "close"},
+        {"episode_date": "2026-03-01", "distance": 0.2, "text": "mid"},
+    ]
+    result = _apply_recency_boost(items, weight=0.5)
+    assert result[0]["distance"] == 0.1
+    assert result[1]["distance"] == 0.2
+    assert result[2]["distance"] == 0.3
+
+
+def test_recency_boost_no_leftover_keys():
+    """The _blended key should be cleaned up after sorting."""
+    items = [
+        {"episode_date": "2024-01-01", "distance": 0.1, "text": "a"},
+        {"episode_date": "2026-01-01", "distance": 0.2, "text": "b"},
+    ]
+    result = _apply_recency_boost(items, weight=0.3)
+    for it in result:
+        assert "_blended" not in it
+
+
+def test_query_with_recency_weight():
+    """Integration: query() with recency_weight should boost newer episodes."""
+    col = _fresh_collection()
+    data = [
+        ("ep-old", 220, "2024-06-15", 0),
+        ("ep-new", 253, "2026-04-01", 1),
+    ]
+    for guid, ep_num, date, idx in data:
+        chunk, emb = _make_dated_chunk(guid, ep_num, date, idx)
+        add_chunks(col, [chunk], [emb])
+
+    # Query with uniform embedding — both chunks match similarly
+    results = query(col, [0.5] * 10, top_k=2, recency_weight=0.3)
+    assert results[0]["episode_number"] == 253

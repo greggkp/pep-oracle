@@ -41,6 +41,7 @@ def query(
     episode_numbers: list[int] | None = None,
     after_date: str | None = None,
     before_date: str | None = None,
+    recency_weight: float = 0.0,
 ) -> list[dict]:
     # ChromaDB where clause handles episode number filtering;
     # date filtering is done in Python since episode_date is a string.
@@ -48,8 +49,9 @@ def query(
         episode_number=episode_number,
         episode_numbers=episode_numbers,
     )
-    # Fetch extra results if we'll post-filter by date
-    fetch_k = top_k * 3 if (after_date or before_date) else top_k
+    # Fetch extra results when we'll post-filter or re-rank
+    needs_extra = after_date or before_date or recency_weight > 0
+    fetch_k = top_k * 3 if needs_extra else top_k
     results = collection.query(
         query_embeddings=[embedding],
         n_results=fetch_k,
@@ -76,7 +78,45 @@ def query(
             "start_time": meta["start_time"] if meta["start_time"] != SENTINEL_NO_TIME else None,
             "end_time": meta["end_time"] if meta["end_time"] != SENTINEL_NO_TIME else None,
         })
+
+    if recency_weight > 0 and items:
+        items = _apply_recency_boost(items, recency_weight)
+
     return items[:top_k]
+
+
+def _apply_recency_boost(items: list[dict], weight: float) -> list[dict]:
+    """Re-rank items by blending similarity distance with recency score.
+
+    Lower distance = more similar. We convert to a similarity score (1 - dist),
+    blend with a 0-1 recency score, then sort descending by blended score.
+    """
+    dates = [it["episode_date"] for it in items]
+    min_date, max_date = min(dates), max(dates)
+
+    for it in items:
+        # Similarity score: 1 - distance (higher = better)
+        sim_score = 1.0 - it["distance"]
+
+        # Recency score: 0 (oldest) to 1 (newest) in result set
+        if min_date == max_date:
+            recency_score = 1.0
+        else:
+            recency_score = (it["episode_date"] >= max_date) * 0.4
+            # Finer: linear interpolation based on string sort position
+            all_unique = sorted(set(dates))
+            idx = all_unique.index(it["episode_date"])
+            recency_score = idx / (len(all_unique) - 1) if len(all_unique) > 1 else 1.0
+
+        it["_blended"] = sim_score * (1 - weight) + recency_score * weight
+
+    items.sort(key=lambda it: it["_blended"], reverse=True)
+
+    # Clean up temp key
+    for it in items:
+        del it["_blended"]
+
+    return items
 
 
 def get_ingested_guids(collection: chromadb.Collection) -> set[str]:

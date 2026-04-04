@@ -35,6 +35,7 @@ Return a JSON object with these fields:
 - "after_date": earliest date to include as "YYYY-MM-DD" (null if no time constraint)
 - "before_date": latest date to include as "YYYY-MM-DD" (null if no time constraint)
 - "search_query": the core topic to search for (rewrite the question as a concise search phrase)
+- "prefer_recent": true if the user wants the LATEST/most recent information, false otherwise
 
 IMPORTANT: Set after_date for questions about current/recent/ongoing events. Words like \
 "soon", "will", "currently", "right now", "these days", "latest", "recent", present tense \
@@ -43,12 +44,13 @@ Use after_date = 60 days before today for these. Only leave after_date as null f
 timeless/historical questions like "who is X?" or "when did they first discuss Y?".
 
 Examples:
-- "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran"}}
-- "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran war ending"}}
-- "what are they saying about tariffs?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "tariffs trade policy"}}
-- "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed"}}
-- "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is"}}
-- "when did they first discuss the Iran situation?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran first discussion"}}
+- "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran", "prefer_recent": false}}
+- "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran war ending", "prefer_recent": true}}
+- "what are they saying about tariffs?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "tariffs trade policy", "prefer_recent": true}}
+- "latest on Iran?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran latest developments", "prefer_recent": true}}
+- "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed", "prefer_recent": false}}
+- "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is", "prefer_recent": false}}
+- "when did they first discuss the Iran situation?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran first discussion", "prefer_recent": false}}
 
 Respond with ONLY the JSON object, no other text.
 
@@ -139,6 +141,7 @@ def preprocess_query(
             "after_date": None,
             "before_date": None,
             "search_query": question,
+            "prefer_recent": False,
         }
 
     return {
@@ -146,6 +149,7 @@ def preprocess_query(
         "after_date": parsed.get("after_date"),
         "before_date": parsed.get("before_date"),
         "search_query": parsed.get("search_query", question),
+        "prefer_recent": parsed.get("prefer_recent", False),
     }
 
 
@@ -168,6 +172,7 @@ def ask(
     # Retrieve relevant chunks with filters
     client = get_client()
     collection = get_collection(client)
+    recency_weight = 0.3 if filters.get("prefer_recent") else 0.0
     results = store_query(
         collection,
         query_embedding,
@@ -175,6 +180,7 @@ def ask(
         episode_numbers=filters["episode_numbers"] or None,
         after_date=filters["after_date"],
         before_date=filters["before_date"],
+        recency_weight=recency_weight,
     )
 
     if not results:

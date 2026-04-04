@@ -188,3 +188,39 @@ def test_preprocess_query_handles_markdown_code_fences():
 
     assert result["after_date"] == "2026-02-03"
     assert result["search_query"] == "Iran war ending"
+
+
+def test_preprocess_query_prefer_recent():
+    """Pre-processor should return prefer_recent=True for recency-oriented questions."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [], "after_date": "2026-02-03", "before_date": null, "search_query": "Iran latest", "prefer_recent": true}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query("latest on Iran?", anthropic_client=mock_client)
+
+    assert result["prefer_recent"] is True
+
+
+def test_preprocess_query_prefer_recent_default_false():
+    """Pre-processor should default prefer_recent to False when not in response."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran"}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query("what about Iran in ep 248?", anthropic_client=mock_client)
+
+    assert result["prefer_recent"] is False
