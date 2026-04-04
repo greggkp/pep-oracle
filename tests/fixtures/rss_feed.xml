@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:itunes="http://www.itunes.apple.com/dtds/podcast-1.0.dtd"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>PEP with Chas and Dr Dave</title>
+    <itunes:author>Chas Licciardello</itunes:author>
+    <item>
+      <title>MINING NEMO? PEP with Chas &amp; Dr Dave (Ep 251, 20 March)</title>
+      <pubDate>Sat, 21 Mar 2026 00:27:00 +0000</pubDate>
+      <guid isPermaLink="false">63857ef5-723d-4d90-86d3-af128612b2d1</guid>
+      <description>Episode 251 description here.</description>
+      <enclosure url="https://traffic.libsyn.com/secure/planetamericapodcast/PEP251_AUD.mp3?dest-id=1876859" length="195623157" type="audio/mpeg" />
+      <itunes:duration>03:22:55</itunes:duration>
+      <itunes:episodeType>full</itunes:episodeType>
+    </item>
+    <item>
+      <title>DIRE STRAIT! PEP with Chas &amp; Dr Dave (Ep 250, 13 March)</title>
+      <pubDate>Sat, 14 Mar 2026 02:38:00 +0000</pubDate>
+      <guid isPermaLink="false">ae4fe541-774c-4469-8545-40e4d49a6629</guid>
+      <description>Episode 250 description here.</description>
+      <enclosure url="https://traffic.libsyn.com/secure/planetamericapodcast/PEP250_AUD.mp3?dest-id=1876859" length="195939836" type="audio/mpeg" />
+      <itunes:duration>03:23:16</itunes:duration>
+      <itunes:episodeType>full</itunes:episodeType>
+    </item>
+    <item>
+      <title>NOEM HARD FEELINGS! PEP with Chas &amp; Elle Hardy (Ep 249, 11 March)</title>
+      <pubDate>Wed, 11 Mar 2026 04:30:00 +0000</pubDate>
+      <guid isPermaLink="false">58f6b12e-407e-4013-a97e-e88ff2d57d0d</guid>
+      <description>Episode 249 description here.</description>
+      <enclosure url="https://traffic.libsyn.com/secure/planetamericapodcast/PEP249_AUD.mp3?dest-id=1876859" length="170650995" type="audio/mpeg" />
+      <itunes:duration>02:56:59</itunes:duration>
+      <itunes:episodeType>full</itunes:episodeType>
+    </item>
+    <item>
+      <title>Bonus: A Special Chat</title>
+      <pubDate>Mon, 10 Mar 2026 12:00:00 +0000</pubDate>
+      <guid isPermaLink="false">bonus-no-ep-number</guid>
+      <description>A bonus episode with no episode number.</description>
+      <enclosure url="https://traffic.libsyn.com/secure/planetamericapodcast/bonus.mp3" length="50000000" type="audio/mpeg" />
+      <itunes:duration>45:30</itunes:duration>
+      <itunes:episodeType>full</itunes:episodeType>
+    </item>
+  </channel>
+</rss>

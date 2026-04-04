@@ -1,0 +1,80 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+pep-oracle is a CLI tool that transcribes and queries the "PEP with Chas and Dr Dave" podcast using RAG. It ingests episodes (via OpenAI Whisper), chunks and embeds them, stores in ChromaDB, and answers natural language questions via Claude.
+
+## Commands
+
+```bash
+# Setup
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+
+# Setup with web server
+pip install -e ".[server]"
+
+# Run tests (all)
+pytest
+
+# Run a single test file or test
+pytest tests/test_feed.py
+pytest tests/test_feed.py::test_parse_duration_hhmmss
+
+# CLI usage
+pep-oracle episodes                          # list episodes from RSS
+pep-oracle ingest --episode 251              # ingest one episode
+pep-oracle ingest                            # ingest all new episodes
+pep-oracle ask "question" --episode 252      # query scoped to episode
+pep-oracle status                            # show ingestion stats
+pep-oracle export episodes.json              # export all episodes to JSON
+pep-oracle export ep.json --episode 251      # export specific episode(s)
+pep-oracle import episodes.json              # import episodes from JSON
+
+# Web server
+pep-oracle-server                            # starts FastAPI on 0.0.0.0:8000
+```
+
+## Architecture
+
+Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastAPI) serving `src/pep_oracle/web/index.html`.
+
+**Ingestion** (`ingest.py` orchestrates):
+`feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert)
+
+**Query** (`query.py` orchestrates):
+Embed question (OpenAI) → retrieve top-k chunks from ChromaDB (with optional episode filter) → build prompt with transcript excerpts and citations → send to Claude → render with rich Markdown
+
+## Key design decisions
+
+- **Data transfer between machines**: Use `pep-oracle export` / `import` to move ingested episodes. Never copy ChromaDB files directly — ChromaDB must handle its own writes via upsert to avoid corruption. Export produces a JSON file with chunks, embeddings, and metadata.
+- **Audio splitting uses ffmpeg directly** (not pydub) for speed — seeks without decoding the full file. Requires ffmpeg on PATH.
+- **Data stored at `~/.pep-oracle/`** (cache/audio, cache/transcripts, chroma), not in the project directory. Override with `PEP_ORACLE_DATA_DIR`.
+- **Incremental ingestion**: episodes tracked by GUID in ChromaDB metadata; already-ingested episodes are skipped unless `--force`.
+- **Embedding batches of 20** to stay within OpenAI's 40k TPM rate limit on lower-tier plans.
+- **Episode number regex** handles both English `(Ep NNN)` and Spanish `(Episodio NNN)` title formats.
+- **`pydub` is a vestigial dependency** — listed in `pyproject.toml` but never imported. Audio splitting uses ffmpeg subprocess calls directly.
+- **`rich` is an unlisted dependency** — used in `cli.py` for Markdown rendering but not declared in `pyproject.toml` (pulled in transitively).
+
+## Environment
+
+Required in `.env` (loaded via python-dotenv):
+- `OPENAI_API_KEY` — for embeddings (`text-embedding-3-small`) and Whisper transcription
+- `ANTHROPIC_API_KEY` — for Claude query responses
+
+Optional:
+- `PEP_ORACLE_DATA_DIR` — override default `~/.pep-oracle/` data directory
+- `PEP_ORACLE_HOST` / `PEP_ORACLE_PORT` — server bind address (default `0.0.0.0:8000`)
+
+Requires **ffmpeg** on PATH for audio splitting.
+
+## Deployment
+
+`deploy/` contains systemd units for running on a server:
+- `pep-oracle-api.service` — runs the FastAPI web server
+- `pep-oracle-ingest.service` + `pep-oracle-ingest.timer` — periodic ingestion of new episodes
+
+## Testing
+
+Tests use fixtures in `tests/fixtures/` (RSS XML). External APIs are mocked. ChromaDB tests use ephemeral in-memory clients. Whisper splitting tests generate audio via ffmpeg's sine generator. Web UI tests (`test_web_*.py`) use Playwright.

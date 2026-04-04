@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PEP Oracle</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 24px 16px;
+    color: #1a1a1a;
+    background: #fafafa;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 0.9rem; margin-bottom: 24px; }
+  form { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: #4a90d9; }
+  button {
+    padding: 10px 20px;
+    font-size: 1rem;
+    background: #4a90d9;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { background: #3a7bc8; }
+  button:disabled { background: #999; cursor: not-allowed; }
+  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 24px; font-size: 0.85rem; flex-wrap: wrap; overflow: hidden; }
+  .controls label { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+  select {
+    padding: 4px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    min-width: 0;
+  }
+  #episode-filter {
+    width: 200px;
+    max-width: calc(100vw - 60px);
+  }
+  @media (max-width: 480px) {
+    body { padding: 16px 12px; overflow-x: hidden; }
+    form { flex-direction: column; }
+    input[type="text"] { width: 100%; }
+    button { width: 100%; }
+    .controls { flex-direction: column; align-items: stretch; gap: 8px; }
+    #episode-filter { width: 100%; max-width: 100%; }
+  }
+  #answer {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px;
+    min-height: 100px;
+    line-height: 1.6;
+    display: none;
+  }
+  #answer h1, #answer h2, #answer h3 { margin: 16px 0 8px; }
+  #answer p { margin-bottom: 12px; }
+  #answer ul, #answer ol { margin-bottom: 12px; padding-left: 24px; }
+  #answer blockquote { border-left: 3px solid #ddd; padding-left: 12px; color: #555; margin-bottom: 12px; }
+  #answer code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+  .loading { color: #888; font-style: italic; }
+  .error { color: #c0392b; }
+  footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e0e0e0; font-size: 0.8rem; color: #888; }
+</style>
+</head>
+<body>
+  <h1>PEP Oracle</h1>
+  <p class="subtitle">Ask questions about the PEP with Chas and Dr Dave podcast</p>
+
+  <form id="ask-form">
+    <input type="text" id="question" placeholder="What have Chas and Dave said about...?" autofocus>
+    <button type="submit" id="submit-btn">Ask</button>
+  </form>
+  <div class="controls">
+    <label>Episode: <select id="episode-filter"><option value="">All episodes</option></select></label>
+    <label>Chunks: <select id="top-k">
+      <option value="5">5</option>
+      <option value="10" selected>10</option>
+      <option value="20">20</option>
+    </select></label>
+  </div>
+
+  <div id="answer"></div>
+  <footer id="status-bar">Loading status...</footer>
+
+<script>
+  const answerEl = document.getElementById("answer");
+  const form = document.getElementById("ask-form");
+  const questionEl = document.getElementById("question");
+  const submitBtn = document.getElementById("submit-btn");
+  const episodeFilter = document.getElementById("episode-filter");
+  const topK = document.getElementById("top-k");
+  const statusBar = document.getElementById("status-bar");
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const question = questionEl.value.trim();
+    if (!question) return;
+
+    answerEl.style.display = "block";
+    answerEl.innerHTML = '<p class="loading">Thinking...</p>';
+    submitBtn.disabled = true;
+
+    try {
+      const body = {
+        question,
+        top_k: parseInt(topK.value),
+      };
+      const epNum = episodeFilter.value;
+      if (epNum) body.episode_number = parseInt(epNum);
+
+      const resp = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      answerEl.innerHTML = marked.parse(data.answer);
+    } catch (err) {
+      answerEl.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  async function loadEpisodes() {
+    try {
+      const resp = await fetch("/episodes");
+      const episodes = await resp.json();
+      for (const ep of episodes) {
+        if (ep.episode_number == null) continue;
+        const opt = document.createElement("option");
+        opt.value = ep.episode_number;
+        const marker = ep.ingested ? "" : " *";
+        const maxLen = 30;
+        const title = ep.title.substring(0, maxLen) + (ep.title.length > maxLen ? "…" : "");
+        opt.textContent = `${ep.episode_number}: ${title}${marker}`;
+        episodeFilter.appendChild(opt);
+      }
+    } catch (err) {
+      console.error("Failed to load episodes:", err);
+    }
+  }
+
+  async function loadStatus() {
+    try {
+      const resp = await fetch("/status");
+      const s = await resp.json();
+      const sizeMB = (s.db_size_bytes / 1_000_000).toFixed(1);
+      statusBar.textContent = `${s.ingested_count}/${s.feed_count} episodes ingested | ${s.chunk_count} excerpts | ${sizeMB} MB`;
+    } catch (err) {
+      statusBar.textContent = "Could not load status";
+    }
+  }
+
+  loadEpisodes();
+  loadStatus();
+</script>
+</body>
+</html>
