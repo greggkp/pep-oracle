@@ -89,6 +89,68 @@ def test_upsert_is_idempotent():
     assert col.count() == 3
 
 
+def test_export_all_episodes():
+    col = _fresh_collection()
+    chunks1, emb1 = _make_chunks("ep-1", 2)
+    chunks2, emb2 = _make_chunks("ep-2", 3)
+    add_chunks(col, chunks1, emb1)
+    add_chunks(col, chunks2, emb2)
+
+    from pep_oracle.store import export_episodes
+
+    items = export_episodes(col)
+    assert len(items) == 5
+    # Each item should have id, document, embedding, metadata
+    for item in items:
+        assert "id" in item
+        assert "document" in item
+        assert "embedding" in item
+        assert "metadata" in item
+
+
+def test_export_filtered_by_episode_number():
+    col = _fresh_collection()
+    chunks1, emb1 = _make_chunks("ep-1", 2)
+    chunks2, emb2 = _make_chunks("ep-2", 3)
+    add_chunks(col, chunks1, emb1)
+    add_chunks(col, chunks2, emb2)
+
+    from pep_oracle.store import export_episodes
+
+    # All chunks use episode_number=1 from _make_chunks, so filter for that
+    items = export_episodes(col, episode_numbers=[1])
+    assert len(items) == 5  # all have episode_number=1
+
+
+def test_import_round_trip():
+    """Export from one collection and import into another — data should match."""
+    col1 = _fresh_collection()
+    chunks, emb = _make_chunks("ep-1", 3)
+    add_chunks(col1, chunks, emb)
+
+    from pep_oracle.store import export_episodes, import_chunks
+
+    exported = export_episodes(col1)
+
+    col2 = _fresh_collection()
+    count = import_chunks(col2, exported)
+    assert count == 3
+    assert col2.count() == 3
+    assert get_ingested_guids(col2) == {"ep-1"}
+
+
+def test_import_upsert_is_idempotent():
+    col = _fresh_collection()
+    chunks, emb = _make_chunks("ep-1", 2)
+    add_chunks(col, chunks, emb)
+
+    from pep_oracle.store import export_episodes, import_chunks
+
+    exported = export_episodes(col)
+    import_chunks(col, exported)  # import same data again
+    assert col.count() == 2
+
+
 def test_query_returns_none_for_missing_times():
     col = _fresh_collection()
     chunk = Chunk(

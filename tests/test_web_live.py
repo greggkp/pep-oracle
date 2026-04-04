@@ -3,7 +3,7 @@
 Starts the FastAPI server with the actual ChromaDB data and RSS feed,
 then verifies the UI correctly reflects which episodes have been ingested.
 
-Run after every change:  pytest tests/test_web_live.py -v
+Run explicitly:  pytest tests/test_web_live.py -v -m live
 """
 
 import threading
@@ -11,8 +11,9 @@ import threading
 import pytest
 import uvicorn
 
-playwright = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
-from playwright.sync_api import sync_playwright  # noqa: E402
+pytestmark = pytest.mark.live
+
+pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.store import get_client, get_collection, get_ingested_guids
@@ -76,14 +77,6 @@ def live_server():
 
     server.should_exit = True
     thread.join(timeout=5)
-
-
-@pytest.fixture(scope="module")
-def browser():
-    with sync_playwright() as p:
-        b = p.chromium.launch()
-        yield b
-        b.close()
 
 
 def _get_ui_episode_states(page):

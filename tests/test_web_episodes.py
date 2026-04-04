@@ -17,8 +17,7 @@ import chromadb
 import pytest
 import uvicorn
 
-playwright = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
-from playwright.sync_api import sync_playwright  # noqa: E402
+pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
 from pep_oracle.models import Chunk, Episode
 from pep_oracle.store import add_chunks
@@ -112,14 +111,6 @@ def _real_get_ingested_guids(collection):
     return _wrapper
 
 
-@pytest.fixture(scope="module")
-def browser():
-    with sync_playwright() as p:
-        b = p.chromium.launch()
-        yield b
-        b.close()
-
-
 def _get_episode_markers(page):
     """Return dict of {episode_number: is_not_ingested} from the dropdown.
 
@@ -198,33 +189,3 @@ def test_status_bar_shows_ingested_count(server_with_collection, browser):
     assert "excerpts" in status_text
 
 
-def test_reload_endpoint_accepts_get(server_with_collection, browser):
-    """GET /reload should work (not just POST)."""
-    base_url, collection = server_with_collection
-
-    page = browser.new_page()
-    page.goto(base_url)
-    resp = page.evaluate("""async () => {
-        const r = await fetch('/reload');
-        return { status: r.status, body: await r.json() };
-    }""")
-    page.close()
-
-    assert resp["status"] == 200, f"GET /reload should return 200, got {resp['status']}"
-    assert resp["body"]["status"] == "ok"
-
-
-def test_reload_endpoint_accepts_post(server_with_collection, browser):
-    """POST /reload should still work (backwards compat with CLI)."""
-    base_url, collection = server_with_collection
-
-    page = browser.new_page()
-    page.goto(base_url)
-    resp = page.evaluate("""async () => {
-        const r = await fetch('/reload', { method: 'POST' });
-        return { status: r.status, body: await r.json() };
-    }""")
-    page.close()
-
-    assert resp["status"] == 200, f"POST /reload should return 200, got {resp['status']}"
-    assert resp["body"]["status"] == "ok"

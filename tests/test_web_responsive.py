@@ -11,8 +11,7 @@ from pathlib import Path
 
 import pytest
 
-playwright = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
-from playwright.sync_api import sync_playwright  # noqa: E402
+pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "src" / "pep_oracle" / "web"
 
@@ -77,14 +76,6 @@ def server():
     thread.start()
     yield f"http://127.0.0.1:{port}"
     httpd.shutdown()
-
-
-@pytest.fixture(scope="module")
-def browser():
-    with sync_playwright() as p:
-        b = p.chromium.launch()
-        yield b
-        b.close()
 
 
 VIEWPORTS = [
