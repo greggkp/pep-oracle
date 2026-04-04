@@ -83,7 +83,8 @@ Tests marked `@pytest.mark.live` (in `test_web_live.py`) hit real APIs and are e
 
 ## Hooks
 
-A Claude Code `PreToolUse` hook runs before `git push` and does three things:
-1. Runs `pytest -x -q` — blocks push if any test fails
-2. Checks that `/claude-md-improver` was run — touch `.claude/.md-reviewed` after reviewing
-3. Auto-squashes any CLAUDE.md-only commit into the previous commit
+A Claude Code `PreToolUse` hook runs before `git commit` and blocks unless:
+1. `pytest -x -q` passes
+2. `/claude-md-improver` has been run and `.claude/.md-reviewed` touched
+
+Stage CLAUDE.md changes before committing so they're included in the same commit.
