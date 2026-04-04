@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pep_oracle.models import Chunk, Episode
-from pep_oracle.store import add_chunks, get_ingested_guids
+from pep_oracle.store import add_chunks, get_ingested_guids, get_ingestion_stats
 
 
 _counter = 0
@@ -46,6 +46,10 @@ def client_and_collection():
         patch(
             "pep_oracle.server.get_ingested_guids",
             wraps=lambda col: get_ingested_guids(collection),
+        ),
+        patch(
+            "pep_oracle.server.get_ingestion_stats",
+            wraps=lambda col: get_ingestion_stats(collection),
         ),
         patch("pep_oracle.server.CHROMA_DIR", Path("/tmp/fake-chroma")),
     ]
@@ -114,6 +118,24 @@ def test_status_counts(client_and_collection):
     assert data["feed_count"] == 3
     assert data["ingested_count"] == 1
     assert data["chunk_count"] == 1
+    assert data["earliest_date"] == "2026-01-01"
+    assert data["latest_date"] == "2026-01-01"
+    assert data["earliest_episode"] == 1
+    assert data["latest_episode"] == 1
+
+
+def test_status_empty_collection(client_and_collection):
+    """Status with no ingested episodes should return null for range fields."""
+    client, _ = client_and_collection
+
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ingested_count"] == 0
+    assert data["earliest_date"] is None
+    assert data["latest_date"] is None
+    assert data["earliest_episode"] is None
+    assert data["latest_episode"] is None
 
 
 def test_reload_get(client_and_collection):

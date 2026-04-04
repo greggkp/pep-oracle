@@ -38,29 +38,45 @@ def query(
     embedding: list[float],
     top_k: int = 10,
     episode_number: int | None = None,
+    episode_numbers: list[int] | None = None,
+    after_date: str | None = None,
+    before_date: str | None = None,
 ) -> list[dict]:
-    where = {"episode_number": episode_number} if episode_number else None
+    # ChromaDB where clause handles episode number filtering;
+    # date filtering is done in Python since episode_date is a string.
+    where = _build_where(
+        episode_number=episode_number,
+        episode_numbers=episode_numbers,
+    )
+    # Fetch extra results if we'll post-filter by date
+    fetch_k = top_k * 3 if (after_date or before_date) else top_k
     results = collection.query(
         query_embeddings=[embedding],
-        n_results=top_k,
-        where=where,
+        n_results=fetch_k,
+        where=where or None,
         include=["documents", "metadatas", "distances"],
     )
     items = []
     for i in range(len(results["ids"][0])):
         meta = results["metadatas"][0][i]
+        ep_date = meta["episode_date"]
+        # Date filtering (string comparison works for YYYY-MM-DD format)
+        if after_date and ep_date < after_date:
+            continue
+        if before_date and ep_date > before_date:
+            continue
         items.append({
             "chunk_id": results["ids"][0][i],
             "text": results["documents"][0][i],
             "distance": results["distances"][0][i],
             "episode_guid": meta["episode_guid"],
             "episode_title": meta["episode_title"],
-            "episode_date": meta["episode_date"],
+            "episode_date": ep_date,
             "episode_number": meta.get("episode_number"),
             "start_time": meta["start_time"] if meta["start_time"] != SENTINEL_NO_TIME else None,
             "end_time": meta["end_time"] if meta["end_time"] != SENTINEL_NO_TIME else None,
         })
-    return items
+    return items[:top_k]
 
 
 def get_ingested_guids(collection: chromadb.Collection) -> set[str]:
@@ -112,6 +128,45 @@ def import_chunks(
             metadatas=[it["metadata"] for it in batch],
         )
     return len(items)
+
+
+def get_ingestion_stats(collection: chromadb.Collection) -> dict:
+    """Return summary stats about ingested episodes."""
+    all_meta = collection.get(include=["metadatas"])
+    if not all_meta["metadatas"]:
+        return {
+            "earliest_date": None,
+            "latest_date": None,
+            "earliest_episode": None,
+            "latest_episode": None,
+        }
+    dates = set()
+    episode_numbers = set()
+    for meta in all_meta["metadatas"]:
+        dates.add(meta["episode_date"])
+        ep_num = meta.get("episode_number", 0)
+        if ep_num:
+            episode_numbers.add(ep_num)
+    return {
+        "earliest_date": min(dates) if dates else None,
+        "latest_date": max(dates) if dates else None,
+        "earliest_episode": min(episode_numbers) if episode_numbers else None,
+        "latest_episode": max(episode_numbers) if episode_numbers else None,
+    }
+
+
+def _build_where(
+    episode_number: int | None = None,
+    episode_numbers: list[int] | None = None,
+) -> dict | None:
+    """Build a ChromaDB where clause for episode number filtering."""
+    if episode_number:
+        return {"episode_number": episode_number}
+    if episode_numbers:
+        if len(episode_numbers) == 1:
+            return {"episode_number": episode_numbers[0]}
+        return {"episode_number": {"$in": episode_numbers}}
+    return None
 
 
 def _chunk_metadata(chunk: Chunk) -> dict:

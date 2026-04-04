@@ -55,12 +55,11 @@ def ingest(force: bool, episode_id: str | None) -> None:
 @cli.command()
 @click.argument("question")
 @click.option("--top-k", default=10, help="Number of chunks to retrieve.")
-@click.option("--episode", "episode_num", type=int, default=None, help="Limit search to a specific episode number.")
-def ask(question: str, top_k: int, episode_num: int | None) -> None:
+def ask(question: str, top_k: int) -> None:
     """Ask a question about the podcast."""
     from pep_oracle.query import ask as do_ask
 
-    answer = do_ask(question, top_k=top_k, episode_number=episode_num)
+    answer = do_ask(question, top_k=top_k)
 
     from rich.console import Console
     from rich.markdown import Markdown

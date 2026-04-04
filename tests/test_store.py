@@ -5,6 +5,7 @@ from pep_oracle.store import (
     get_client,
     get_collection,
     get_ingested_guids,
+    get_ingestion_stats,
     query,
 )
 
@@ -165,3 +166,96 @@ def test_query_returns_none_for_missing_times():
     results = query(col, [1.0] * 10, top_k=1)
     assert results[0]["start_time"] is None
     assert results[0]["end_time"] is None
+
+
+def _make_dated_chunk(guid, ep_num, date, emb_index=0):
+    """Create a single chunk with specific episode number and date."""
+    chunk = Chunk(
+        chunk_id=f"{guid}_0000",
+        episode_guid=guid,
+        text=f"Content from episode {ep_num}",
+        episode_title=f"Episode {ep_num}",
+        episode_date=date,
+        episode_number=ep_num,
+        start_time=0.0,
+        end_time=60.0,
+    )
+    emb = [0.0] * 10
+    emb[emb_index % 10] = 1.0
+    return chunk, emb
+
+
+def _collection_with_dated_episodes():
+    """Collection with episodes at different dates for filter testing."""
+    col = _fresh_collection()
+    data = [
+        ("ep-220", 220, "2024-06-15", 0),
+        ("ep-240", 240, "2025-11-15", 1),
+        ("ep-248", 248, "2026-03-06", 2),
+        ("ep-251", 251, "2026-03-21", 3),
+    ]
+    for guid, ep_num, date, idx in data:
+        chunk, emb = _make_dated_chunk(guid, ep_num, date, idx)
+        add_chunks(col, [chunk], [emb])
+    return col
+
+
+def test_query_filter_after_date():
+    col = _collection_with_dated_episodes()
+    results = query(col, [1.0] * 10, top_k=10, after_date="2026-03-01")
+    ep_nums = {r["episode_number"] for r in results}
+    assert ep_nums == {248, 251}
+
+
+def test_query_filter_before_date():
+    col = _collection_with_dated_episodes()
+    results = query(col, [1.0] * 10, top_k=10, before_date="2025-12-31")
+    ep_nums = {r["episode_number"] for r in results}
+    assert ep_nums == {220, 240}
+
+
+def test_query_filter_date_range():
+    col = _collection_with_dated_episodes()
+    results = query(col, [1.0] * 10, top_k=10, after_date="2025-01-01", before_date="2026-01-01")
+    ep_nums = {r["episode_number"] for r in results}
+    assert ep_nums == {240}
+
+
+def test_query_filter_episode_numbers():
+    col = _collection_with_dated_episodes()
+    results = query(col, [1.0] * 10, top_k=10, episode_numbers=[248, 251])
+    ep_nums = {r["episode_number"] for r in results}
+    assert ep_nums == {248, 251}
+
+
+def test_query_filter_single_episode_number():
+    col = _collection_with_dated_episodes()
+    results = query(col, [1.0] * 10, top_k=10, episode_numbers=[220])
+    assert len(results) == 1
+    assert results[0]["episode_number"] == 220
+
+
+def test_query_filter_combined_episode_and_date():
+    col = _collection_with_dated_episodes()
+    # Ask for episodes 220 and 248 but only after 2026-01-01 → only 248
+    results = query(col, [1.0] * 10, top_k=10, episode_numbers=[220, 248], after_date="2026-01-01")
+    ep_nums = {r["episode_number"] for r in results}
+    assert ep_nums == {248}
+
+
+def test_get_ingestion_stats():
+    col = _collection_with_dated_episodes()
+    stats = get_ingestion_stats(col)
+    assert stats["earliest_date"] == "2024-06-15"
+    assert stats["latest_date"] == "2026-03-21"
+    assert stats["earliest_episode"] == 220
+    assert stats["latest_episode"] == 251
+
+
+def test_get_ingestion_stats_empty():
+    col = _fresh_collection()
+    stats = get_ingestion_stats(col)
+    assert stats["earliest_date"] is None
+    assert stats["latest_date"] is None
+    assert stats["earliest_episode"] is None
+    assert stats["latest_episode"] is None

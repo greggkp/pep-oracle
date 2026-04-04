@@ -16,7 +16,8 @@
     background: #fafafa;
   }
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
-  .subtitle { color: #666; font-size: 0.9rem; margin-bottom: 24px; }
+  .subtitle { color: #666; font-size: 0.9rem; margin-bottom: 4px; }
+  .coverage { color: #888; font-size: 0.8rem; margin-bottom: 24px; }
   form { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   input[type="text"] {
     flex: 1;
@@ -40,26 +41,19 @@
   }
   button:hover { background: #3a7bc8; }
   button:disabled { background: #999; cursor: not-allowed; }
-  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 24px; font-size: 0.85rem; flex-wrap: wrap; overflow: hidden; }
-  .controls label { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 24px; font-size: 0.85rem; }
+  .controls label { display: flex; align-items: center; gap: 4px; }
   select {
     padding: 4px 8px;
     border: 1px solid #ccc;
     border-radius: 4px;
     font-size: 0.85rem;
-    min-width: 0;
-  }
-  #episode-filter {
-    width: 200px;
-    max-width: calc(100vw - 60px);
   }
   @media (max-width: 480px) {
     body { padding: 16px 12px; overflow-x: hidden; }
     form { flex-direction: column; }
     input[type="text"] { width: 100%; }
     button { width: 100%; }
-    .controls { flex-direction: column; align-items: stretch; gap: 8px; }
-    #episode-filter { width: 100%; max-width: 100%; }
   }
   #answer {
     background: white;
@@ -83,13 +77,13 @@
 <body>
   <h1>PEP Oracle</h1>
   <p class="subtitle">Ask questions about the PEP with Chas and Dr Dave podcast</p>
+  <p class="coverage" id="coverage">Loading...</p>
 
   <form id="ask-form">
     <input type="text" id="question" placeholder="What have Chas and Dave said about...?" autofocus>
     <button type="submit" id="submit-btn">Ask</button>
   </form>
   <div class="controls">
-    <label>Episode: <select id="episode-filter"><option value="">All episodes</option></select></label>
     <label>Chunks: <select id="top-k">
       <option value="5">5</option>
       <option value="10" selected>10</option>
@@ -105,9 +99,9 @@
   const form = document.getElementById("ask-form");
   const questionEl = document.getElementById("question");
   const submitBtn = document.getElementById("submit-btn");
-  const episodeFilter = document.getElementById("episode-filter");
   const topK = document.getElementById("top-k");
   const statusBar = document.getElementById("status-bar");
+  const coverageEl = document.getElementById("coverage");
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -115,63 +109,59 @@
     if (!question) return;
 
     answerEl.style.display = "block";
-    answerEl.innerHTML = '<p class="loading">Thinking...</p>';
+    /* Use textContent for the loading message (no HTML needed) */
+    answerEl.textContent = "Thinking...";
+    answerEl.classList.add("loading");
     submitBtn.disabled = true;
 
     try {
-      const body = {
-        question,
-        top_k: parseInt(topK.value),
-      };
-      const epNum = episodeFilter.value;
-      if (epNum) body.episode_number = parseInt(epNum);
-
+      const body = { question, top_k: parseInt(topK.value) };
       const resp = await fetch("/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
+      answerEl.classList.remove("loading");
+      /* marked.parse renders trusted server markdown — server controls the content */
       answerEl.innerHTML = marked.parse(data.answer);
     } catch (err) {
-      answerEl.innerHTML = `<p class="error">Error: ${err.message}</p>`;
+      answerEl.classList.remove("loading");
+      answerEl.textContent = "Error: " + err.message;
+      answerEl.classList.add("error");
     } finally {
       submitBtn.disabled = false;
     }
   });
-
-  async function loadEpisodes() {
-    try {
-      const resp = await fetch("/episodes");
-      const episodes = await resp.json();
-      for (const ep of episodes) {
-        if (ep.episode_number == null) continue;
-        const opt = document.createElement("option");
-        opt.value = ep.episode_number;
-        const marker = ep.ingested ? "" : " *";
-        const maxLen = 30;
-        const title = ep.title.substring(0, maxLen) + (ep.title.length > maxLen ? "…" : "");
-        opt.textContent = `${ep.episode_number}: ${title}${marker}`;
-        episodeFilter.appendChild(opt);
-      }
-    } catch (err) {
-      console.error("Failed to load episodes:", err);
-    }
-  }
 
   async function loadStatus() {
     try {
       const resp = await fetch("/status");
       const s = await resp.json();
       const sizeMB = (s.db_size_bytes / 1_000_000).toFixed(1);
-      statusBar.textContent = `${s.ingested_count}/${s.feed_count} episodes ingested | ${s.chunk_count} excerpts | ${sizeMB} MB`;
+      statusBar.textContent = s.ingested_count + "/" + s.feed_count +
+        " episodes ingested | " + s.chunk_count + " excerpts | " + sizeMB + " MB";
+
+      if (s.ingested_count === 0) {
+        coverageEl.textContent = "No episodes ingested yet";
+      } else if (s.earliest_episode && s.latest_episode && s.earliest_date && s.latest_date) {
+        const fmtDate = (d) => {
+          const dt = new Date(d + "T00:00:00");
+          return dt.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+        };
+        coverageEl.textContent = s.ingested_count + " episodes ingested (Ep " +
+          s.earliest_episode + "\u2013" + s.latest_episode + ", " +
+          fmtDate(s.earliest_date) + " \u2013 " + fmtDate(s.latest_date) + ")";
+      } else {
+        coverageEl.textContent = s.ingested_count + " episodes ingested";
+      }
     } catch (err) {
       statusBar.textContent = "Could not load status";
+      coverageEl.textContent = "";
     }
   }
 
-  loadEpisodes();
   loadStatus();
 </script>
 </body>

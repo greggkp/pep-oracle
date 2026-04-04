@@ -1,7 +1,7 @@
 """Test that the web UI stays within viewport on mobile-sized screens.
 
-Uses Playwright to load index.html with mocked API responses containing
-many long episode titles, then checks no element overflows the viewport.
+Uses Playwright to load index.html with mocked API responses,
+then checks no element overflows the viewport.
 """
 
 import json
@@ -15,21 +15,15 @@ pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "src" / "pep_oracle" / "web"
 
-# Fake episodes with deliberately long titles
-FAKE_EPISODES = [
-    {
-        "episode_number": i,
-        "title": f"Episode {i}: A Very Long Podcast Title That Should Be Truncated Properly ({i})",
-        "ingested": i % 2 == 0,
-    }
-    for i in range(1, 101)
-]
-
 FAKE_STATUS = {
     "ingested_count": 50,
     "feed_count": 100,
     "chunk_count": 5000,
     "db_size_bytes": 123_000_000,
+    "earliest_date": "2024-01-15",
+    "latest_date": "2026-04-01",
+    "earliest_episode": 200,
+    "latest_episode": 253,
 }
 
 
@@ -42,8 +36,6 @@ class _MockHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write((WEB_DIR / "index.html").read_bytes())
-        elif self.path == "/episodes":
-            self._json_response(FAKE_EPISODES)
         elif self.path == "/status":
             self._json_response(FAKE_STATUS)
         else:
@@ -64,12 +56,11 @@ class _MockHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args):
-        pass  # silence request logs during tests
+        pass
 
 
 @pytest.fixture(scope="module")
 def server():
-    """Start a local HTTP server serving the web UI with mock data."""
     httpd = HTTPServer(("127.0.0.1", 0), _MockHandler)
     port = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -92,17 +83,16 @@ VIEWPORTS = [
     ids=[v["name"] for v in VIEWPORTS],
 )
 def test_no_horizontal_overflow(server, browser, viewport):
-    """No element should extend beyond the viewport width after episodes load."""
+    """No element should extend beyond the viewport width after status loads."""
     page = browser.new_page(viewport={"width": viewport["width"], "height": viewport["height"]})
     page.goto(server)
 
-    # Wait for episodes to be loaded into the dropdown
+    # Wait for status to load
     page.wait_for_function(
-        "document.querySelectorAll('#episode-filter option').length > 10",
+        "!document.getElementById('status-bar').textContent.includes('Loading')",
         timeout=5000,
     )
 
-    # Check that no element overflows the viewport
     overflow_info = page.evaluate("""() => {
         const vw = document.documentElement.clientWidth;
         const problems = [];
@@ -133,56 +123,18 @@ def test_no_horizontal_overflow(server, browser, viewport):
     )
 
 
-def test_episode_dropdown_fits_within_controls(server, browser):
-    """The episode select should not be wider than its parent container at 375px."""
+def test_coverage_line_visible(server, browser):
+    """The coverage info line should be visible and contain episode range."""
     page = browser.new_page(viewport={"width": 375, "height": 667})
     page.goto(server)
 
     page.wait_for_function(
-        "document.querySelectorAll('#episode-filter option').length > 10",
+        "!document.getElementById('coverage').textContent.includes('Loading')",
         timeout=5000,
     )
 
-    result = page.evaluate("""() => {
-        const select = document.getElementById('episode-filter');
-        const controls = document.querySelector('.controls');
-        const selectRect = select.getBoundingClientRect();
-        const controlsRect = controls.getBoundingClientRect();
-        return {
-            selectWidth: Math.round(selectRect.width),
-            controlsWidth: Math.round(controlsRect.width),
-            selectRight: Math.round(selectRect.right),
-            controlsRight: Math.round(controlsRect.right),
-        };
-    }""")
-
+    coverage = page.text_content("#coverage")
     page.close()
 
-    assert result["selectRight"] <= result["controlsRight"] + 1, (
-        f"Episode dropdown ({result['selectWidth']}px) extends past controls ({result['controlsWidth']}px)"
-    )
-
-
-def test_option_text_is_truncated(server, browser):
-    """Episode option text should be truncated to keep the dropdown manageable."""
-    page = browser.new_page(viewport={"width": 375, "height": 667})
-    page.goto(server)
-
-    page.wait_for_function(
-        "document.querySelectorAll('#episode-filter option').length > 10",
-        timeout=5000,
-    )
-
-    longest = page.evaluate("""() => {
-        const options = document.querySelectorAll('#episode-filter option');
-        let max = 0;
-        for (const opt of options) {
-            if (opt.textContent.length > max) max = opt.textContent.length;
-        }
-        return max;
-    }""")
-
-    page.close()
-
-    # 30 char title + episode number prefix + marker = should be well under 50
-    assert longest < 50, f"Longest option text is {longest} chars, expected < 50"
+    assert "50 episodes ingested" in coverage
+    assert "200\u2013253" in coverage

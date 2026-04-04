@@ -1,8 +1,4 @@
-"""Test that the web UI correctly reflects ChromaDB ingestion state.
-
-Reproduces the bug where episodes ingested via the CLI don't show as
-ingested in the web UI because the server's ChromaDB client returns
-stale data.
+"""Test that the web UI correctly reflects ingestion status.
 
 Uses Playwright against the real FastAPI app with an in-memory ChromaDB
 collection and a mocked RSS feed.
@@ -20,7 +16,7 @@ import uvicorn
 pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
 from pep_oracle.models import Chunk, Episode
-from pep_oracle.store import add_chunks
+from pep_oracle.store import add_chunks, get_ingested_guids, get_ingestion_stats
 
 
 def _make_episode(num, guid=None):
@@ -39,13 +35,12 @@ EPISODES = [_make_episode(i) for i in range(1, 6)]
 
 
 def _ingest_into_collection(collection, guid: str, episode_number: int):
-    """Write chunks directly to a ChromaDB collection — simulates CLI ingestion."""
     chunk = Chunk(
         chunk_id=f"{guid}_0000",
         episode_guid=guid,
         text="Some transcript text",
         episode_title=f"Episode {episode_number}",
-        episode_date="2026-01-01",
+        episode_date=f"2026-01-{episode_number:02d}",
         episode_number=episode_number,
         start_time=0.0,
         end_time=60.0,
@@ -64,7 +59,8 @@ def server_with_collection():
     patches = [
         patch("pep_oracle.server.fetch_episodes", return_value=EPISODES),
         patch("pep_oracle.server._get_fresh_collection", return_value=collection),
-        patch("pep_oracle.server.get_ingested_guids", wraps=_real_get_ingested_guids(collection)),
+        patch("pep_oracle.server.get_ingested_guids", wraps=lambda col: get_ingested_guids(collection)),
+        patch("pep_oracle.server.get_ingestion_stats", wraps=lambda col: get_ingestion_stats(collection)),
         patch("pep_oracle.server.CHROMA_DIR", Path("/tmp/fake-chroma")),
     ]
     for p in patches:
@@ -100,77 +96,6 @@ def server_with_collection():
         p.stop()
 
 
-def _real_get_ingested_guids(collection):
-    """Return a callable that reads ingested GUIDs from the given collection."""
-    from pep_oracle.store import get_ingested_guids as _orig
-
-    def _wrapper(col):
-        # Always read from our test collection
-        return _orig(collection)
-
-    return _wrapper
-
-
-def _get_episode_markers(page):
-    """Return dict of {episode_number: is_not_ingested} from the dropdown.
-
-    Keys are ints; values are True if the episode is NOT ingested (has star).
-    """
-    raw = page.evaluate("""() => {
-        const opts = document.querySelectorAll('#episode-filter option');
-        const result = {};
-        for (const opt of opts) {
-            if (!opt.value) continue;
-            result[opt.value] = opt.textContent.endsWith(' *');
-        }
-        return result;
-    }""")
-    # JS object keys are strings; convert to int
-    return {int(k): v for k, v in raw.items()}
-
-
-def _wait_for_episodes(page):
-    page.wait_for_function(
-        "document.querySelectorAll('#episode-filter option').length > 3",
-        timeout=5000,
-    )
-
-
-def test_initially_all_episodes_not_ingested(server_with_collection, browser):
-    """Before any ingestion, all episodes should show a star marker."""
-    base_url, collection = server_with_collection
-
-    page = browser.new_page()
-    page.goto(base_url)
-    _wait_for_episodes(page)
-    markers = _get_episode_markers(page)
-    page.close()
-
-    assert len(markers) == 5, f"Expected 5 episodes in dropdown, got {len(markers)}"
-    for ep_num in range(1, 6):
-        assert markers[ep_num] is True, f"Episode {ep_num} should show as not ingested"
-
-
-def test_ingested_episodes_shown_correctly(server_with_collection, browser):
-    """After ingestion, episodes must show without the star marker."""
-    base_url, collection = server_with_collection
-
-    # Ingest episodes 1 and 3
-    _ingest_into_collection(collection, "guid-1", 1)
-    _ingest_into_collection(collection, "guid-3", 3)
-
-    page = browser.new_page()
-    page.goto(base_url)
-    _wait_for_episodes(page)
-    markers = _get_episode_markers(page)
-    page.close()
-
-    assert markers[1] is False, "Episode 1 should show as ingested"
-    assert markers[3] is False, "Episode 3 should show as ingested"
-    assert markers[2] is True, "Episode 2 should still show as not ingested"
-    assert markers[4] is True, "Episode 4 should still show as not ingested"
-
-
 def test_status_bar_shows_ingested_count(server_with_collection, browser):
     """The status bar should reflect how many episodes are ingested."""
     base_url, collection = server_with_collection
@@ -184,8 +109,42 @@ def test_status_bar_shows_ingested_count(server_with_collection, browser):
     status_text = page.text_content("#status-bar")
     page.close()
 
-    # Should contain "N/5 episodes ingested" where N reflects what's been ingested
     assert "/5 episodes ingested" in status_text
     assert "excerpts" in status_text
 
 
+def test_coverage_line_shows_no_episodes(server_with_collection, browser):
+    """Before ingestion, coverage should say no episodes ingested."""
+    base_url, collection = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_function(
+        "!document.getElementById('coverage').textContent.includes('Loading')",
+        timeout=5000,
+    )
+    coverage = page.text_content("#coverage")
+    page.close()
+
+    assert "No episodes ingested" in coverage
+
+
+def test_coverage_line_shows_range_after_ingestion(server_with_collection, browser):
+    """After ingestion, coverage should show episode range and dates."""
+    base_url, collection = server_with_collection
+
+    _ingest_into_collection(collection, "guid-1", 1)
+    _ingest_into_collection(collection, "guid-3", 3)
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_function(
+        "!document.getElementById('coverage').textContent.includes('Loading')",
+        timeout=5000,
+    )
+    coverage = page.text_content("#coverage")
+    page.close()
+
+    assert "2 episodes ingested" in coverage
+    # Format is "Ep 1–3" with en-dash
+    assert "1\u20133" in coverage

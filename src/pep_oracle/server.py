@@ -11,7 +11,7 @@ from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.ingest import ingest_all
 from pep_oracle.query import ask as do_ask
-from pep_oracle.store import get_client, get_collection, get_ingested_guids
+from pep_oracle.store import get_client, get_collection, get_ingested_guids, get_ingestion_stats
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ _ingest_last_result: dict | None = None
 class AskRequest(BaseModel):
     question: str
     top_k: int = 10
-    episode_number: int | None = None
 
 
 class IngestRequest(BaseModel):
@@ -63,9 +62,7 @@ async def health():
 
 @app.post("/ask")
 async def api_ask(req: AskRequest):
-    answer = await asyncio.to_thread(
-        do_ask, req.question, top_k=req.top_k, episode_number=req.episode_number
-    )
+    answer = await asyncio.to_thread(do_ask, req.question, top_k=req.top_k)
     return {"answer": answer}
 
 
@@ -77,11 +74,13 @@ async def api_status():
         chunk_count = collection.count()
         all_episodes = fetch_episodes()
         db_size = sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
+        stats = get_ingestion_stats(collection)
         return {
             "feed_count": len(all_episodes),
             "ingested_count": len(ingested),
             "chunk_count": chunk_count,
             "db_size_bytes": db_size,
+            **stats,
         }
 
     return await asyncio.to_thread(_status)
