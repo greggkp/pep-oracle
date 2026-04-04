@@ -26,7 +26,7 @@ pytest tests/test_feed.py::test_parse_duration_hhmmss
 pep-oracle episodes                          # list episodes from RSS
 pep-oracle ingest --episode 251              # ingest one episode
 pep-oracle ingest                            # ingest all new episodes
-pep-oracle ask "question" --episode 252      # query scoped to episode
+pep-oracle ask "question"                     # query (auto-detects time/episode context)
 pep-oracle status                            # show ingestion stats
 pep-oracle export episodes.json              # export all episodes to JSON
 pep-oracle export ep.json --episode 251      # export specific episode(s)
@@ -44,7 +44,7 @@ Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastA
 `feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert)
 
 **Query** (`query.py` orchestrates):
-Embed question (OpenAI) → retrieve top-k chunks from ChromaDB (with optional episode filter) → build prompt with transcript excerpts and citations → send to Claude → render with rich Markdown
+Pre-process question via Claude Haiku (extract date/episode filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown
 
 ## Key design decisions
 
@@ -78,3 +78,12 @@ Requires **ffmpeg** on PATH for audio splitting.
 ## Testing
 
 Tests use fixtures in `tests/fixtures/` (RSS XML). External APIs are mocked. ChromaDB tests use ephemeral in-memory clients. Whisper splitting tests generate audio via ffmpeg's sine generator. Web UI tests (`test_web_*.py`) use Playwright.
+
+Tests marked `@pytest.mark.live` (in `test_web_live.py`) hit real APIs and are excluded by default. Run with `pytest -m live` to include them.
+
+## Hooks
+
+A Claude Code `PreToolUse` hook runs before `git push` and does three things:
+1. Runs `pytest -x -q` — blocks push if any test fails
+2. Checks that `/claude-md-improver` was run — touch `.claude/.md-reviewed` after reviewing
+3. Auto-squashes any CLAUDE.md-only commit into the previous commit
