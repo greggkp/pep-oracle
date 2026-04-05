@@ -70,6 +70,18 @@
   #answer blockquote { border-left: 3px solid #ddd; padding-left: 12px; color: #555; margin-bottom: 12px; }
   #answer code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
   .loading { color: #888; font-style: italic; }
+  #topics { display: none; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+  .topic-chip {
+    padding: 6px 14px;
+    font-size: 0.85rem;
+    background: #e8f0fe;
+    color: #1a56db;
+    border: 1px solid #c3d9f7;
+    border-radius: 20px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .topic-chip:hover { background: #d0e2fc; }
   .error { color: #c0392b; }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e0e0e0; font-size: 0.8rem; color: #888; }
 </style>
@@ -78,6 +90,7 @@
   <h1>PEP Oracle</h1>
   <p class="subtitle">Ask questions about the PEP with Chas and Dr Dave podcast</p>
   <p class="coverage" id="coverage">Loading...</p>
+  <div id="topics"></div>
 
   <form id="ask-form">
     <input type="text" id="question" placeholder="What have Chas and Dave said about...?" autofocus>
@@ -162,7 +175,33 @@
     }
   }
 
+  async function loadTopics() {
+    try {
+      const resp = await fetch("/topics");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.topics || data.topics.length === 0) return;
+
+      const container = document.getElementById("topics");
+      data.topics.forEach(t => {
+        const chip = document.createElement("button");
+        chip.className = "topic-chip";
+        chip.textContent = t.topic;
+        chip.title = "Ep " + t.episode_number;
+        chip.addEventListener("click", () => {
+          questionEl.value = t.question;
+          questionEl.focus();
+        });
+        container.appendChild(chip);
+      });
+      container.style.display = "flex";
+    } catch (e) {
+      // Silent failure — topics are optional
+    }
+  }
+
   loadStatus();
+  loadTopics();
 </script>
 </body>
 </html>
