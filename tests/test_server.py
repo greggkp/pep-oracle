@@ -194,3 +194,29 @@ def test_topics_returns_empty_on_failure(client_and_collection):
         resp = client.get("/topics")
     assert resp.status_code == 200
     assert resp.json()["topics"] == []
+
+
+def test_ask_passes_history_to_do_ask(client_and_collection):
+    client, _ = client_and_collection
+    history = [
+        {"role": "user", "content": "What about tariffs?"},
+        {"role": "assistant", "content": "They discussed tariffs in Ep 255..."},
+    ]
+    with patch("pep_oracle.server.do_ask", return_value="Follow-up answer") as mock_ask:
+        resp = client.post("/ask", json={
+            "question": "What about the EU?",
+            "history": history,
+        })
+    assert resp.status_code == 200
+    assert resp.json()["answer"] == "Follow-up answer"
+    mock_ask.assert_called_once_with(
+        "What about the EU?", top_k=10, history=history,
+    )
+
+
+def test_ask_without_history_passes_empty_list(client_and_collection):
+    client, _ = client_and_collection
+    with patch("pep_oracle.server.do_ask", return_value="Answer") as mock_ask:
+        resp = client.post("/ask", json={"question": "What is PEP?"})
+    assert resp.status_code == 200
+    mock_ask.assert_called_once_with("What is PEP?", top_k=10, history=[])

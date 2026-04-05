@@ -26,6 +26,7 @@ _ingest_last_result: dict | None = None
 class AskRequest(BaseModel):
     question: str
     top_k: int = 10
+    history: list[dict] = []
 
 
 class IngestRequest(BaseModel):
@@ -63,7 +64,7 @@ async def health():
 
 @app.post("/ask")
 async def api_ask(req: AskRequest):
-    answer = await asyncio.to_thread(do_ask, req.question, top_k=req.top_k)
+    answer = await asyncio.to_thread(do_ask, req.question, top_k=req.top_k, history=req.history)
     return {"answer": answer}
 
 
