@@ -10,7 +10,8 @@ TOPIC_PROMPT = """\
 Extract 5-8 distinct discussion topics from these podcast episode descriptions. \
 Return a JSON array of objects, each with:
 - "topic": a short label (3-6 words)
-- "question": a natural question a podcast listener might ask about this topic
+- "question": a natural question a podcast listener might ask about this topic \
+(include a recency word like "latest", "recent", or "currently" since these are recent episodes)
 - "episode_number": the episode number where this topic appears
 
 Deduplicate: if multiple episodes discuss the same topic, pick the most recent one. \
