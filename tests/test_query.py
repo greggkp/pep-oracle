@@ -267,6 +267,32 @@ def test_ask_passes_history_to_claude():
     assert "What did Dr Dave think about the EU response?" in messages[2]["content"]
 
 
+def test_preprocess_query_receives_conversation_context():
+    """When last_assistant_reply is provided, it should be included in the prompt."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "EU tariff response", "prefer_recent": false}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query(
+            "What about the EU response?",
+            anthropic_client=mock_client,
+            last_assistant_reply="In Episode 255, they discussed new tariff announcements...",
+        )
+
+    # Check that the prompt sent to Haiku includes the conversation context
+    call_kwargs = mock_client.messages.create.call_args
+    prompt_text = call_kwargs.kwargs["messages"][0]["content"]
+    assert "In Episode 255, they discussed new tariff announcements" in prompt_text
+    assert result["search_query"] == "EU tariff response"
+
+
 def test_ask_without_history_sends_single_message():
     """ask() without history should send a single user message (backward compat)."""
     mock_anthropic = MagicMock()

@@ -85,6 +85,7 @@ def build_context(results: list[dict]) -> str:
 def preprocess_query(
     question: str,
     anthropic_client: anthropic.Anthropic | None = None,
+    last_assistant_reply: str | None = None,
 ) -> dict:
     """Use a fast Claude model to extract time/episode filters from the question."""
     from datetime import date, timedelta
@@ -120,6 +121,12 @@ def preprocess_query(
         last_month_end=last_month_end,
         question=question,
     )
+
+    if last_assistant_reply:
+        prompt = prompt.replace(
+            f"Question: {question}",
+            f"Previous assistant reply (for context): {last_assistant_reply}\n\nQuestion: {question}",
+        )
 
     response = anthropic_client.messages.create(
         model=PREPROCESS_MODEL,
@@ -164,8 +171,20 @@ def ask(
     if anthropic_client is None:
         anthropic_client = anthropic.Anthropic()
 
+    # Extract the last assistant reply from history for context
+    last_assistant_reply = None
+    if history:
+        for msg in reversed(history):
+            if msg["role"] == "assistant":
+                last_assistant_reply = msg["content"]
+                break
+
     # Pre-process to extract filters
-    filters = preprocess_query(question, anthropic_client=anthropic_client)
+    filters = preprocess_query(
+        question,
+        anthropic_client=anthropic_client,
+        last_assistant_reply=last_assistant_reply,
+    )
 
     # Embed the search query (may be rewritten by pre-processor)
     query_embedding = embed_texts([filters["search_query"]], client=openai_client)[0]
