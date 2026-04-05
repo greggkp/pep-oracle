@@ -173,3 +173,24 @@ def test_root_returns_html(client_and_collection):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
+
+
+def test_topics_returns_extracted_topics(client_and_collection):
+    client, _ = client_and_collection
+    mock_topics = [
+        {"topic": "Tariffs", "question": "What about tariffs?", "episode_number": 3},
+        {"topic": "Immigration", "question": "What about immigration?", "episode_number": 1},
+    ]
+    with patch("pep_oracle.server.extract_topics", return_value=mock_topics):
+        resp = client.get("/topics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["topics"] == mock_topics
+
+
+def test_topics_returns_empty_on_failure(client_and_collection):
+    client, _ = client_and_collection
+    with patch("pep_oracle.server.extract_topics", return_value=[]):
+        resp = client.get("/topics")
+    assert resp.status_code == 200
+    assert resp.json()["topics"] == []

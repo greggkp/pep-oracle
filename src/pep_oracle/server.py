@@ -12,6 +12,7 @@ from pep_oracle.feed import fetch_episodes
 from pep_oracle.ingest import ingest_all
 from pep_oracle.query import ask as do_ask
 from pep_oracle.store import get_client, get_collection, get_ingested_guids, get_ingestion_stats
+from pep_oracle.topics import extract_topics
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,16 @@ async def api_episodes():
         ]
 
     return await asyncio.to_thread(_episodes)
+
+
+@app.get("/topics")
+async def api_topics():
+    def _topics():
+        episodes = fetch_episodes()
+        return extract_topics(episodes)
+
+    topics = await asyncio.to_thread(_topics)
+    return {"topics": topics}
 
 
 @app.post("/ingest")
