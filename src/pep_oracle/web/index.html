@@ -198,6 +198,7 @@
     if (!question) return;
 
     questionEl.value = "";
+    conversationHistory.push({ role: "user", content: question });
     addBubble("user", question);
     const pendingBubble = addBubble("assistant", "");
     pendingBubble.textContent = "Thinking...";
@@ -210,9 +211,8 @@
       const body = {
         question,
         top_k: parseInt(topK.value),
-        history: conversationHistory,
+        history: conversationHistory.slice(0, -1),
       };
-      conversationHistory.push({ role: "user", content: question });
 
       const resp = await fetch("/ask", {
         method: "POST",
