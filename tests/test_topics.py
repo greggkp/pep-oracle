@@ -1,7 +1,7 @@
 """Tests for topic extraction from episode show notes."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from pep_oracle.models import Episode
 from pep_oracle.topics import extract_topics
