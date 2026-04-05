@@ -9,31 +9,31 @@ pep-oracle is a CLI tool that transcribes and queries the "PEP with Chas and Dr 
 ## Commands
 
 ```bash
-# Setup
-python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+# Setup (uv manages the venv — no activate needed)
+uv pip install -e .
 
 # Setup with web server
-pip install -e ".[server]"
+uv pip install -e ".[server]"
 
-# Run tests (all)
-pytest
+# Run tests (all) — uv run picks up the project venv automatically
+uv run pytest
 
 # Run a single test file or test
-pytest tests/test_feed.py
-pytest tests/test_feed.py::test_parse_duration_hhmmss
+uv run pytest tests/test_feed.py
+uv run pytest tests/test_feed.py::test_parse_duration_hhmmss
 
 # CLI usage
-pep-oracle episodes                          # list episodes from RSS
-pep-oracle ingest --episode 251              # ingest one episode
-pep-oracle ingest                            # ingest all new episodes
-pep-oracle ask "question"                     # query (auto-detects time/episode context)
-pep-oracle status                            # show ingestion stats
-pep-oracle export episodes.json              # export all episodes to JSON
-pep-oracle export ep.json --episode 251      # export specific episode(s)
-pep-oracle import episodes.json              # import episodes from JSON
+uv run pep-oracle episodes                   # list episodes from RSS
+uv run pep-oracle ingest --episode 251       # ingest one episode
+uv run pep-oracle ingest                     # ingest all new episodes
+uv run pep-oracle ask "question"             # query (auto-detects time/episode context)
+uv run pep-oracle status                     # show ingestion stats
+uv run pep-oracle export episodes.json       # export all episodes to JSON
+uv run pep-oracle export ep.json --episode 251  # export specific episode(s)
+uv run pep-oracle import episodes.json       # import episodes from JSON
 
 # Web server
-pep-oracle-server                            # starts FastAPI on 0.0.0.0:8000
+uv run pep-oracle-server                     # starts FastAPI on 0.0.0.0:8000
 ```
 
 ## Architecture

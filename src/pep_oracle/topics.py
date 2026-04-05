@@ -43,21 +43,24 @@ def extract_topics(
         for ep in recent
     )
 
-    response = anthropic_client.messages.create(
-        model=TOPIC_MODEL,
-        max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": TOPIC_PROMPT.format(episodes_text=episodes_text),
-            }
-        ],
-    )
+    try:
+        response = anthropic_client.messages.create(
+            model=TOPIC_MODEL,
+            max_tokens=1024,
+            messages=[
+                {
+                    "role": "user",
+                    "content": TOPIC_PROMPT.format(episodes_text=episodes_text),
+                }
+            ],
+        )
 
-    raw = response.content[0].text.strip()
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1]
-        raw = raw.rsplit("```", 1)[0]
+        raw = response.content[0].text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+            raw = raw.rsplit("```", 1)[0]
 
-    return json.loads(raw)
+        return json.loads(raw)
+    except Exception:
+        return []
