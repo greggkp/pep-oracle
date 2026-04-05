@@ -55,21 +55,64 @@
     input[type="text"] { width: 100%; }
     button { width: 100%; }
   }
-  #answer {
+  #thread {
+    display: none;
     background: white;
     border: 1px solid #e0e0e0;
     border-radius: 8px;
     padding: 20px;
-    min-height: 100px;
-    line-height: 1.6;
-    display: none;
+    margin-bottom: 8px;
+    max-height: 60vh;
+    overflow-y: auto;
   }
-  #answer h1, #answer h2, #answer h3 { margin: 16px 0 8px; }
-  #answer p { margin-bottom: 12px; }
-  #answer ul, #answer ol { margin-bottom: 12px; padding-left: 24px; }
-  #answer blockquote { border-left: 3px solid #ddd; padding-left: 12px; color: #555; margin-bottom: 12px; }
-  #answer code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
-  .loading { color: #888; font-style: italic; }
+  .bubble-row { display: flex; margin-bottom: 10px; }
+  .bubble-row.user { justify-content: flex-end; }
+  .bubble-row.assistant { justify-content: flex-start; }
+  .bubble {
+    padding: 10px 14px;
+    border-radius: 14px;
+    max-width: 80%;
+    line-height: 1.6;
+    word-wrap: break-word;
+  }
+  .bubble.user {
+    background: #4a90d9;
+    color: white;
+    border-bottom-right-radius: 4px;
+  }
+  .bubble.assistant {
+    background: #f0f0f0;
+    color: #1a1a1a;
+    border-bottom-left-radius: 4px;
+  }
+  .bubble.assistant h1, .bubble.assistant h2, .bubble.assistant h3 { margin: 12px 0 6px; }
+  .bubble.assistant p { margin-bottom: 8px; }
+  .bubble.assistant ul, .bubble.assistant ol { margin-bottom: 8px; padding-left: 20px; }
+  .bubble.assistant blockquote { border-left: 3px solid #ddd; padding-left: 10px; color: #555; margin-bottom: 8px; }
+  .bubble.assistant code { background: #e0e0e0; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
+  #new-convo { display: none; text-align: center; margin-bottom: 24px; }
+  #new-convo a {
+    color: #4a90d9;
+    font-size: 0.85rem;
+    cursor: pointer;
+    text-decoration: none;
+    border-bottom: 1px dashed #4a90d9;
+  }
+  #new-convo a:hover { color: #3a7bc8; }
+  .collapsed-thread {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    background: #f5f5f5;
+    border: 1px solid #e8e8e8;
+    border-radius: 6px;
+    opacity: 0.6;
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: #888;
+  }
+  .collapsed-thread:hover { opacity: 0.8; }
+  .collapsed-thread .collapsed-body { display: none; margin-top: 8px; opacity: 0.7; }
+  .collapsed-thread.expanded .collapsed-body { display: block; }
   #topics { display: none; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
   .topic-chip {
     padding: 6px 14px;
@@ -82,7 +125,6 @@
     white-space: nowrap;
   }
   .topic-chip:hover { background: #d0e2fc; }
-  .error { color: #c0392b; }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e0e0e0; font-size: 0.8rem; color: #888; }
 </style>
 </head>
@@ -104,31 +146,74 @@
     </select></label>
   </div>
 
-  <div id="answer"></div>
+  <div id="collapsed-area"></div>
+  <div id="thread"></div>
+  <div id="new-convo"><a id="new-convo-btn">+ New conversation</a></div>
   <footer id="status-bar">Loading status...</footer>
 
 <script>
-  const answerEl = document.getElementById("answer");
   const form = document.getElementById("ask-form");
   const questionEl = document.getElementById("question");
   const submitBtn = document.getElementById("submit-btn");
   const topK = document.getElementById("top-k");
   const statusBar = document.getElementById("status-bar");
   const coverageEl = document.getElementById("coverage");
+  const threadEl = document.getElementById("thread");
+  const newConvoEl = document.getElementById("new-convo");
+  const newConvoBtn = document.getElementById("new-convo-btn");
+  const collapsedArea = document.getElementById("collapsed-area");
+  const topicsEl = document.getElementById("topics");
+
+  let conversationHistory = [];
+  let collapsedThreads = [];
+
+  function addBubble(role, content) {
+    const row = document.createElement("div");
+    row.className = "bubble-row " + role;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble " + role;
+    if (role === "assistant") {
+      /* marked.parse renders trusted server markdown — server controls the content */
+      bubble.innerHTML = marked.parse(content);
+    } else {
+      bubble.textContent = content;
+    }
+    row.appendChild(bubble);
+    threadEl.appendChild(row);
+    threadEl.scrollTop = threadEl.scrollHeight;
+    return bubble;
+  }
+
+  function updateUIState() {
+    const active = conversationHistory.length > 0;
+    threadEl.style.display = active ? "block" : "none";
+    newConvoEl.style.display = active ? "block" : "none";
+    topicsEl.style.display = active ? "none" : topicsEl.dataset.loaded ? "flex" : "none";
+    questionEl.placeholder = active ? "Ask a follow-up..." : "What have Chas and Dave said about...?";
+  }
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const question = questionEl.value.trim();
     if (!question) return;
 
-    answerEl.style.display = "block";
-    /* Use textContent for the loading message (no HTML needed) */
-    answerEl.textContent = "Thinking...";
-    answerEl.classList.add("loading");
+    questionEl.value = "";
+    addBubble("user", question);
+    const pendingBubble = addBubble("assistant", "");
+    pendingBubble.textContent = "Thinking...";
+    pendingBubble.style.fontStyle = "italic";
+    pendingBubble.style.color = "#888";
     submitBtn.disabled = true;
+    updateUIState();
 
     try {
-      const body = { question, top_k: parseInt(topK.value) };
+      const body = {
+        question,
+        top_k: parseInt(topK.value),
+        history: conversationHistory,
+      };
+      conversationHistory.push({ role: "user", content: question });
+
       const resp = await fetch("/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,17 +221,89 @@
       });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
-      answerEl.classList.remove("loading");
+
+      conversationHistory.push({ role: "assistant", content: data.answer });
+      pendingBubble.style.fontStyle = "";
+      pendingBubble.style.color = "";
       /* marked.parse renders trusted server markdown — server controls the content */
-      answerEl.innerHTML = marked.parse(data.answer);
+      pendingBubble.innerHTML = marked.parse(data.answer);
+      threadEl.scrollTop = threadEl.scrollHeight;
     } catch (err) {
-      answerEl.classList.remove("loading");
-      answerEl.textContent = "Error: " + err.message;
-      answerEl.classList.add("error");
+      pendingBubble.textContent = "Error: " + err.message;
+      pendingBubble.style.color = "#c0392b";
+      pendingBubble.style.fontStyle = "";
+      // Remove the user message from history since the request failed
+      conversationHistory.pop();
     } finally {
       submitBtn.disabled = false;
+      questionEl.focus();
     }
   });
+
+  newConvoBtn.addEventListener("click", () => {
+    if (conversationHistory.length === 0) return;
+
+    const firstUserMsg = conversationHistory.find(m => m.role === "user");
+    const msgCount = conversationHistory.filter(m => m.role === "user").length;
+    collapsedThreads.push({
+      label: firstUserMsg ? firstUserMsg.content : "Conversation",
+      count: msgCount,
+      messages: [...conversationHistory],
+    });
+
+    renderCollapsed();
+    conversationHistory = [];
+    threadEl.innerHTML = "";
+    updateUIState();
+    questionEl.focus();
+  });
+
+  function renderCollapsed() {
+    collapsedArea.innerHTML = "";
+    collapsedThreads.forEach((thread, idx) => {
+      const div = document.createElement("div");
+      div.className = "collapsed-thread";
+      const label = thread.label.length > 60 ? thread.label.slice(0, 60) + "..." : thread.label;
+
+      const header = document.createElement("span");
+      const arrow = document.createElement("span");
+      arrow.className = "collapsed-arrow";
+      arrow.textContent = "\u25b6";
+      header.appendChild(arrow);
+      header.appendChild(document.createTextNode(" Previous: " + label + " "));
+
+      const count = document.createElement("span");
+      count.style.color = "#aaa";
+      count.textContent = "(" + thread.count + " question" + (thread.count !== 1 ? "s" : "") + ")";
+      header.appendChild(count);
+      div.appendChild(header);
+
+      const body = document.createElement("div");
+      body.className = "collapsed-body";
+      thread.messages.forEach(msg => {
+        const row = document.createElement("div");
+        row.className = "bubble-row " + msg.role;
+        const bubble = document.createElement("div");
+        bubble.className = "bubble " + msg.role;
+        if (msg.role === "assistant") {
+          /* marked.parse renders trusted server markdown — server controls the content */
+          bubble.innerHTML = marked.parse(msg.content);
+        } else {
+          bubble.textContent = msg.content;
+        }
+        row.appendChild(bubble);
+        body.appendChild(row);
+      });
+      div.appendChild(body);
+
+      div.addEventListener("click", () => {
+        div.classList.toggle("expanded");
+        arrow.textContent = div.classList.contains("expanded") ? "\u25bc" : "\u25b6";
+      });
+
+      collapsedArea.appendChild(div);
+    });
+  }
 
   async function loadStatus() {
     try {
@@ -182,7 +339,6 @@
       const data = await resp.json();
       if (!data.topics || data.topics.length === 0) return;
 
-      const container = document.getElementById("topics");
       data.topics.forEach(t => {
         const chip = document.createElement("button");
         chip.className = "topic-chip";
@@ -192,9 +348,10 @@
           questionEl.value = t.question;
           questionEl.focus();
         });
-        container.appendChild(chip);
+        topicsEl.appendChild(chip);
       });
-      container.style.display = "flex";
+      topicsEl.dataset.loaded = "true";
+      topicsEl.style.display = "flex";
     } catch (e) {
       // Silent failure — topics are optional
     }
