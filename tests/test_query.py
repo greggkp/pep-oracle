@@ -224,3 +224,72 @@ def test_preprocess_query_prefer_recent_default_false():
         result = preprocess_query("what about Iran in ep 248?", anthropic_client=mock_client)
 
     assert result["prefer_recent"] is False
+
+
+def test_ask_passes_history_to_claude():
+    """ask() should build multi-turn messages from history + RAG-augmented current question."""
+    mock_anthropic = MagicMock()
+    mock_anthropic.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="Follow-up answer")]
+    )
+
+    history = [
+        {"role": "user", "content": "What about tariffs?"},
+        {"role": "assistant", "content": "In Episode 255, they discussed tariffs..."},
+    ]
+
+    with patch("pep_oracle.query.preprocess_query", return_value={
+        "episode_numbers": [], "after_date": None, "before_date": None,
+        "search_query": "EU response tariffs", "prefer_recent": False,
+    }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
+         patch("pep_oracle.query.get_client"), \
+         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.store_query", return_value=[{
+            "episode_title": "Ep 255", "episode_number": 255,
+            "episode_date": "2026-03-20", "start_time": 100.0,
+            "end_time": 200.0, "text": "The EU responded to tariffs...",
+         }]):
+        from pep_oracle.query import ask
+        result = ask(
+            "What did Dr Dave think about the EU response?",
+            anthropic_client=mock_anthropic,
+            history=history,
+        )
+
+    assert result == "Follow-up answer"
+    call_kwargs = mock_anthropic.messages.create.call_args
+    messages = call_kwargs.kwargs["messages"]
+    assert len(messages) == 3
+    assert messages[0] == {"role": "user", "content": "What about tariffs?"}
+    assert messages[1] == {"role": "assistant", "content": "In Episode 255, they discussed tariffs..."}
+    assert messages[2]["role"] == "user"
+    assert "TRANSCRIPT EXCERPTS" in messages[2]["content"]
+    assert "What did Dr Dave think about the EU response?" in messages[2]["content"]
+
+
+def test_ask_without_history_sends_single_message():
+    """ask() without history should send a single user message (backward compat)."""
+    mock_anthropic = MagicMock()
+    mock_anthropic.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="Single answer")]
+    )
+
+    with patch("pep_oracle.query.preprocess_query", return_value={
+        "episode_numbers": [], "after_date": None, "before_date": None,
+        "search_query": "tariffs", "prefer_recent": False,
+    }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
+         patch("pep_oracle.query.get_client"), \
+         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.store_query", return_value=[{
+            "episode_title": "Ep 255", "episode_number": 255,
+            "episode_date": "2026-03-20", "start_time": 100.0,
+            "end_time": 200.0, "text": "Tariff discussion...",
+         }]):
+        from pep_oracle.query import ask
+        result = ask("What about tariffs?", anthropic_client=mock_anthropic)
+
+    assert result == "Single answer"
+    call_kwargs = mock_anthropic.messages.create.call_args
+    messages = call_kwargs.kwargs["messages"]
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"

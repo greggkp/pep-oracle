@@ -159,6 +159,7 @@ def ask(
     model: str = QUERY_MODEL,
     anthropic_client: anthropic.Anthropic | None = None,
     openai_client=None,
+    history: list[dict] | None = None,
 ) -> str:
     if anthropic_client is None:
         anthropic_client = anthropic.Anthropic()
@@ -189,11 +190,11 @@ def ask(
     # Build prompt and call Claude
     context = build_context(results)
     user_message = f"TRANSCRIPT EXCERPTS:\n\n{context}\n\nQUESTION: {question}"
-
+    messages = list(history or []) + [{"role": "user", "content": user_message}]
     response = anthropic_client.messages.create(
         model=model,
         max_tokens=2048,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
+        messages=messages,
     )
     return response.content[0].text
