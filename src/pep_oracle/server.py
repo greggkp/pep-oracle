@@ -129,6 +129,10 @@ async def api_topics():
         except Exception:
             ingested_eps = set()
         not_ingested = sorted(feed_eps - ingested_eps)
+        # Only flag episodes newer than the most recently ingested
+        if ingested_eps:
+            latest_ingested = max(ingested_eps)
+            not_ingested = [ep for ep in not_ingested if ep > latest_ingested]
         return topics, not_ingested
 
     topics, not_ingested = await asyncio.to_thread(_topics)
