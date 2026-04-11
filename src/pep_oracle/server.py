@@ -115,10 +115,24 @@ async def api_episodes():
 async def api_topics():
     def _topics():
         episodes = fetch_episodes()
-        return extract_topics(episodes)
+        topics = extract_topics(episodes)
+        # Feed-based detection: compare ALL feed episodes against ChromaDB
+        feed_eps = {ep.episode_number for ep in episodes if ep.episode_number is not None}
+        try:
+            collection = _get_fresh_collection()
+            ingested_eps = set()
+            all_meta = collection.get(include=["metadatas"])
+            for meta in all_meta["metadatas"]:
+                ep_num = meta.get("episode_number", 0)
+                if ep_num:
+                    ingested_eps.add(ep_num)
+        except Exception:
+            ingested_eps = set()
+        not_ingested = sorted(feed_eps - ingested_eps)
+        return topics, not_ingested
 
-    topics = await asyncio.to_thread(_topics)
-    return {"topics": topics}
+    topics, not_ingested = await asyncio.to_thread(_topics)
+    return {"topics": topics, "not_ingested_episodes": not_ingested}
 
 
 @app.post("/ingest")

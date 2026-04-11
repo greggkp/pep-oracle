@@ -125,6 +125,37 @@
     white-space: nowrap;
   }
   .topic-chip:hover { background: #d0e2fc; }
+  .topic-chip.not-ingested {
+    background: #fff3e0;
+    color: #b45309;
+    border-color: #fbbf24;
+    opacity: 0.75;
+  }
+  .topic-chip.not-ingested:hover { background: #fee2b3; }
+  #ingest-banner {
+    display: none;
+    background: #fffbeb;
+    border: 1px solid #fbbf24;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    color: #92400e;
+    align-items: center;
+    gap: 10px;
+  }
+  #ingest-banner .ingest-text { flex: 1; }
+  #ingest-banner button {
+    padding: 6px 14px;
+    font-size: 0.82rem;
+    background: #f59e0b;
+    border-radius: 6px;
+  }
+  #ingest-banner button:hover { background: #d97706; }
+  #ingest-banner .ingest-progress {
+    font-style: italic;
+    color: #b45309;
+  }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e0e0e0; font-size: 0.8rem; color: #888; }
 </style>
 </head>
@@ -133,6 +164,10 @@
   <p class="subtitle">Ask questions about the PEP with Chas and Dr Dave podcast</p>
   <p class="coverage" id="coverage">Loading...</p>
   <div id="topics"></div>
+  <div id="ingest-banner">
+    <span class="ingest-text"></span>
+    <button id="ingest-btn" type="button">Ingest now</button>
+  </div>
 
   <form id="ask-form">
     <input type="text" id="question" placeholder="What have Chas and Dave said about...?" autofocus>
@@ -163,8 +198,12 @@
   const newConvoBtn = document.getElementById("new-convo-btn");
   const collapsedArea = document.getElementById("collapsed-area");
   const topicsEl = document.getElementById("topics");
+  const ingestBanner = document.getElementById("ingest-banner");
+  const ingestBannerText = ingestBanner.querySelector(".ingest-text");
+  const ingestBtn = document.getElementById("ingest-btn");
 
   let conversationHistory = [];
+  let notIngestedEpisodes = [];
   let collapsedThreads = [];
 
   function addBubble(role, content) {
@@ -339,11 +378,17 @@
       const data = await resp.json();
       if (!data.topics || data.topics.length === 0) return;
 
+      notIngestedEpisodes = data.not_ingested_episodes || [];
+
       data.topics.forEach(t => {
         const chip = document.createElement("button");
-        chip.className = "topic-chip";
+        const isNew = notIngestedEpisodes.includes(t.episode_number);
+        chip.className = "topic-chip" + (isNew ? " not-ingested" : "");
         chip.textContent = t.topic;
-        chip.title = "Ep " + t.episode_number;
+        chip.title = isNew
+          ? "Ep " + t.episode_number + " (not yet ingested)"
+          : "Ep " + t.episode_number;
+        chip.dataset.episode = t.episode_number;
         chip.addEventListener("click", () => {
           questionEl.value = t.question;
           questionEl.focus();
@@ -352,9 +397,72 @@
       });
       topicsEl.dataset.loaded = "true";
       topicsEl.style.display = "flex";
+
+      if (notIngestedEpisodes.length > 0) {
+        const epList = notIngestedEpisodes.join(", ");
+        const label = notIngestedEpisodes.length === 1 ? "Episode" : "Episodes";
+        ingestBannerText.textContent = label + " " + epList +
+          " available but not yet ingested.";
+        ingestBanner.style.display = "flex";
+      }
     } catch (e) {
       // Silent failure — topics are optional
     }
+  }
+
+  ingestBtn.addEventListener("click", async () => {
+    ingestBtn.disabled = true;
+    ingestBtn.textContent = "Starting...";
+    try {
+      const resp = await fetch("/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: false }),
+      });
+      const data = await resp.json();
+      if (data.status === "already_running" || data.status === "started") {
+        ingestBtn.style.display = "none";
+        const progress = document.createElement("span");
+        progress.className = "ingest-progress";
+        progress.textContent = "Ingesting\u2026";
+        ingestBannerText.appendChild(document.createTextNode(" "));
+        ingestBannerText.appendChild(progress);
+        pollIngestion();
+      }
+    } catch (e) {
+      ingestBtn.disabled = false;
+      ingestBtn.textContent = "Ingest now";
+    }
+  });
+
+  function pollIngestion() {
+    const timer = setInterval(async () => {
+      try {
+        const resp = await fetch("/ingest/status");
+        const data = await resp.json();
+        if (!data.running) {
+          clearInterval(timer);
+          if (data.last_result && data.last_result.error) {
+            ingestBannerText.textContent = "Ingestion failed: " + data.last_result.error;
+            ingestBtn.style.display = "";
+            ingestBtn.disabled = false;
+            ingestBtn.textContent = "Retry";
+          } else {
+            ingestBanner.style.display = "none";
+            // Remove not-ingested styling from chips
+            topicsEl.querySelectorAll(".topic-chip.not-ingested").forEach(chip => {
+              chip.classList.remove("not-ingested");
+              chip.title = chip.title.replace(" (not yet ingested)", "");
+            });
+            notIngestedEpisodes = [];
+            // Refresh status bar
+            loadStatus();
+          }
+        }
+      } catch (e) {
+        // keep polling
+      }
+    }, 5000);
   }
 
   loadStatus();

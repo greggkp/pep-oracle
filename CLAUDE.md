@@ -56,6 +56,7 @@ Pre-process question via Claude Haiku (extract date/episode filters + recency in
 - **Episode number regex** handles both English `(Ep NNN)` and Spanish `(Episodio NNN)` title formats.
 - **`pydub` is a vestigial dependency** — listed in `pyproject.toml` but never imported. Audio splitting uses ffmpeg subprocess calls directly.
 - **`rich` is an unlisted dependency** — used in `cli.py` for Markdown rendering but not declared in `pyproject.toml` (pulled in transitively).
+- **Web UI hot reload**: `index.html` is served via `FileResponse` (changes visible on page refresh), but `server.py` changes require a server restart since Python modules are cached at import time.
 
 ## Environment
 
@@ -80,6 +81,10 @@ Requires **ffmpeg** on PATH for audio splitting.
 Tests use fixtures in `tests/fixtures/` (RSS XML). External APIs are mocked. ChromaDB tests use ephemeral in-memory clients. Whisper splitting tests generate audio via ffmpeg's sine generator. Web UI tests (`test_web_*.py`) use Playwright.
 
 Tests marked `@pytest.mark.live` (in `test_web_live.py`) hit real APIs and are excluded by default. Run with `pytest -m live` to include them.
+
+**ChromaDB test isolation**: `chromadb.Client()` (ephemeral) shares state via `SharedSystemClient` cache within a process. Tests that ingest data into a collection must delete it in teardown (`client.delete_collection("pep_oracle")`) or subsequent test files will see stale data.
+
+**Server restart after commits**: A Claude Code `PostToolUse` hook restarts the pep-oracle server after `git commit` commands. The server runs as `uv run pep-oracle-server` (not systemd). Logs go to `/tmp/pep-oracle-server.log`.
 
 ## Hooks
 
