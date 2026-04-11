@@ -8,6 +8,10 @@ TOPIC_MODEL = "claude-haiku-4-5-20251001"
 
 TOPIC_PROMPT = """\
 Extract 5-8 distinct discussion topics from these podcast episode descriptions. \
+The first episode listed is the LATEST. Extract as many topics as possible from \
+the LATEST episode first. Only use older episodes to fill remaining slots if the \
+latest episode yields fewer than 5 topics.
+
 Return a JSON array of objects, each with:
 - "topic": a short label (3-6 words)
 - "question": a natural question a podcast listener might ask about this topic \

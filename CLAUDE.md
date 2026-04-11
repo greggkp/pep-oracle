@@ -46,6 +46,9 @@ Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastA
 **Query** (`query.py` orchestrates):
 Pre-process question via Claude Haiku (extract date/episode filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown
 
+**Topic chips** (`topics.py`):
+`server.py` calls `extract_topics()` at `/topics` endpoint → Claude Haiku summarizes recent episode descriptions → returns 5-8 topic objects (label, question, episode_number) for the web UI chip display. Latest episode is prioritized.
+
 ## Key design decisions
 
 - **Data transfer between machines**: Use `pep-oracle export` / `import` to move ingested episodes. Never copy ChromaDB files directly — ChromaDB must handle its own writes via upsert to avoid corruption. Export produces a JSON file with chunks, embeddings, and metadata.

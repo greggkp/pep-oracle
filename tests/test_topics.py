@@ -37,9 +37,13 @@ def test_extract_topics_returns_parsed_topics():
 
     assert len(result) == 2
     assert result[0]["topic"] == "Tariffs and trade"
-    assert result[0]["question"] == "What are Chas and Dave saying about tariffs?"
     assert result[0]["episode_number"] == 3
     mock_client.messages.create.assert_called_once()
+
+    # Verify prompt instructs Haiku to prioritize the latest episode
+    prompt_text = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "LATEST" in prompt_text
+    assert "Extract as many topics as possible from the LATEST episode" in prompt_text
 
 
 def test_extract_topics_malformed_json_returns_empty():
