@@ -69,7 +69,7 @@ def transcribe_chunk(chunk_path: Path, offset_seconds: float, client: OpenAI) ->
     return segments
 
 
-def transcribe_episode(audio_path: Path, episode_guid: str, client: OpenAI | None = None) -> list[TranscriptSegment]:
+def transcribe_episode(audio_path: Path, episode_guid: str, client: OpenAI | None = None, progress_callback=None) -> list[TranscriptSegment]:
     """Transcribe an audio file, splitting if needed. Caches the result."""
     ensure_dirs()
 
@@ -82,6 +82,8 @@ def transcribe_episode(audio_path: Path, episode_guid: str, client: OpenAI | Non
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
+        if progress_callback:
+            progress_callback("splitting audio")
         click.echo("  Splitting audio...", nl=False)
         chunks = split_audio(audio_path, tmp_path)
         click.echo(f" {len(chunks)} parts")
@@ -92,6 +94,8 @@ def transcribe_episode(audio_path: Path, episode_guid: str, client: OpenAI | Non
         all_segments: list[TranscriptSegment] = []
         for i, (chunk_path, offset) in enumerate(chunks):
             dur_label = f"{chunk_duration / 60:.0f} min" if chunk_duration else "?"
+            if progress_callback:
+                progress_callback(f"transcribing part {i + 1}/{len(chunks)}")
             click.echo(f"  Transcribing part {i + 1}/{len(chunks)} ({dur_label})...", nl=False)
             new_segments = transcribe_chunk(chunk_path, offset, client)
             all_segments.extend(new_segments)

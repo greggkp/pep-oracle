@@ -31,6 +31,7 @@ def download_audio(episode: Episode) -> Path:
 def get_transcript(
     episode: Episode,
     delete_audio_after: bool = True,
+    progress_callback=None,
 ) -> tuple[list[TranscriptSegment], str]:
     """Get transcript for an episode via Whisper.
 
@@ -46,13 +47,15 @@ def get_transcript(
     if not episode.audio_url:
         raise RuntimeError(f"No audio URL for episode: {episode.title}")
 
+    if progress_callback:
+        progress_callback("downloading audio")
     click.echo("  Downloading audio...", nl=False)
     audio_path = download_audio(episode)
     size_mb = audio_path.stat().st_size / 1_000_000
     click.echo(f" {size_mb:.0f} MB")
 
     try:
-        segments = transcribe_episode(audio_path, episode.guid)
+        segments = transcribe_episode(audio_path, episode.guid, progress_callback=progress_callback)
     finally:
         if delete_audio_after and audio_path.exists():
             audio_path.unlink()
