@@ -204,3 +204,36 @@ def test_resume_collapsed_thread(server_with_mock_ask, browser):
     assert page.is_visible("#new-convo-btn")
 
     page.close()
+
+
+def test_resume_collapses_active_conversation(server_with_mock_ask, browser):
+    """Resuming a thread when another is active should collapse the active one first."""
+    base_url = server_with_mock_ask
+    page = browser.new_page()
+    page.goto(base_url)
+
+    # Create first conversation and collapse it
+    page.fill("#question", "What about tariffs?")
+    page.click("#submit-btn")
+    page.wait_for_selector(".bubble.assistant", timeout=10000)
+    page.click("#new-convo-btn")
+
+    # Start a second conversation (don't collapse it)
+    page.fill("#question", "What about inflation?")
+    page.click("#submit-btn")
+    page.wait_for_selector("#thread .bubble.assistant", timeout=10000)
+
+    # Now resume the first (collapsed) thread
+    page.click(".collapsed-resume")
+
+    # The first thread should now be active with its original content
+    user_bubbles = page.query_selector_all("#thread .bubble.user")
+    assert len(user_bubbles) == 1
+    assert "tariffs" in user_bubbles[0].text_content().lower()
+
+    # The second conversation should now be collapsed
+    collapsed = page.query_selector_all(".collapsed-thread")
+    assert len(collapsed) == 1
+    assert "inflation" in collapsed[0].text_content().lower()
+
+    page.close()
