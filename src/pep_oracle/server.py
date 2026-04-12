@@ -21,6 +21,7 @@ WEB_DIR = Path(__file__).parent / "web"
 _ingest_lock = asyncio.Lock()
 _ingest_running = False
 _ingest_last_result: dict | None = None
+_ingest_progress: dict = {"current_episode": "", "episodes_done": 0, "episodes_total": 0, "step": ""}
 
 
 class AskRequest(BaseModel):
@@ -31,6 +32,7 @@ class AskRequest(BaseModel):
 
 class IngestRequest(BaseModel):
     force: bool = False
+    episode_numbers: list[int] = []
 
 
 @asynccontextmanager
@@ -141,16 +143,34 @@ async def api_topics():
 
 @app.post("/ingest")
 async def api_ingest(req: IngestRequest):
-    global _ingest_running, _ingest_last_result
+    global _ingest_running, _ingest_last_result, _ingest_progress
 
     if _ingest_running:
         return {"status": "already_running"}
 
     async def _run():
-        global _ingest_running, _ingest_last_result
+        global _ingest_running, _ingest_last_result, _ingest_progress
         try:
+            def _progress(step: str):
+                global _ingest_progress
+                # Episode-level messages look like "[1/3] Ep 255: TITLE..."
+                if step.startswith("["):
+                    parts = step.split("] ", 1)
+                    counts = parts[0].lstrip("[")
+                    done, total = counts.split("/")
+                    _ingest_progress["episodes_done"] = int(done) - 1
+                    _ingest_progress["episodes_total"] = int(total)
+                    _ingest_progress["current_episode"] = parts[1] if len(parts) > 1 else ""
+                    _ingest_progress["step"] = "starting"
+                else:
+                    _ingest_progress["step"] = step
+
             result = await asyncio.to_thread(
-                ingest_all, force=req.force, confirm_cost=False
+                ingest_all,
+                force=req.force,
+                confirm_cost=False,
+                episode_numbers=req.episode_numbers or None,
+                progress_callback=_progress,
             )
             _ingest_last_result = result
         except Exception as e:
@@ -158,15 +178,17 @@ async def api_ingest(req: IngestRequest):
             logger.exception("Ingestion failed")
         finally:
             _ingest_running = False
+            _ingest_progress = {"current_episode": "", "episodes_done": 0, "episodes_total": 0, "step": ""}
 
     _ingest_running = True
+    _ingest_progress = {"current_episode": "", "episodes_done": 0, "episodes_total": 0, "step": ""}
     asyncio.create_task(_run())
     return {"status": "started"}
 
 
 @app.get("/ingest/status")
 async def api_ingest_status():
-    return {"running": _ingest_running, "last_result": _ingest_last_result}
+    return {"running": _ingest_running, "last_result": _ingest_last_result, **_ingest_progress}
 
 
 @app.api_route("/reload", methods=["GET", "POST"])
