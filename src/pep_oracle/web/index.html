@@ -417,7 +417,7 @@
       const resp = await fetch("/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: false }),
+        body: JSON.stringify({ force: false, episode_numbers: notIngestedEpisodes }),
       });
       const data = await resp.json();
       if (data.status === "already_running" || data.status === "started") {
@@ -458,15 +458,44 @@
             // Refresh status bar
             loadStatus();
           }
+        } else {
+          // Show progress detail
+          let progressText = "Ingesting\u2026";
+          if (data.current_episode) {
+            const total = data.episodes_total || "?";
+            const done = (data.episodes_done || 0) + 1;
+            progressText = "Ingesting " + data.current_episode + " (" + done + "/" + total + ")";
+            if (data.step && data.step !== "starting") {
+              progressText += ": " + data.step;
+            }
+          }
+          ingestBannerText.textContent = progressText;
         }
       } catch (e) {
         // keep polling
       }
-    }, 5000);
+    }, 3000);
   }
 
   loadStatus();
   loadTopics();
+
+  // Check if ingestion is already running (e.g., page was refreshed)
+  async function checkIngestionOnLoad() {
+    try {
+      const resp = await fetch("/ingest/status");
+      const data = await resp.json();
+      if (data.running) {
+        ingestBtn.style.display = "none";
+        ingestBanner.style.display = "flex";
+        ingestBannerText.textContent = "Ingesting\u2026";
+        pollIngestion();
+      }
+    } catch (e) {
+      // silent
+    }
+  }
+  checkIngestionOnLoad();
 </script>
 </body>
 </html>
