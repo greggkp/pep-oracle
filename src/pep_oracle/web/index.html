@@ -364,6 +364,11 @@
   }
 
   function resumeThread(idx) {
+    if (submitBtn.disabled) return; // request in flight
+
+    // Capture thread reference before mutating the array
+    const thread = collapsedThreads[idx];
+
     // If there's an active conversation, collapse it first
     if (conversationHistory.length > 0) {
       const firstUserMsg = conversationHistory.find(m => m.role === "user");
@@ -376,12 +381,11 @@
     }
 
     // Restore the selected thread
-    const thread = collapsedThreads[idx];
     conversationHistory = [...thread.messages];
-    collapsedThreads.splice(idx, 1);
+    collapsedThreads.splice(collapsedThreads.indexOf(thread), 1);
 
     // Re-render: clear thread, re-add each message via addBubble
-    threadEl.textContent = "";
+    threadEl.innerHTML = "";  /* safe: clearing children, matches newConvoBtn pattern */
     conversationHistory.forEach(msg => addBubble(msg.role, msg.content));
     renderCollapsed();
     updateUIState();
