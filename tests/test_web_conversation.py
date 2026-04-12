@@ -23,7 +23,9 @@ def server_with_mock_ask():
         call_count += 1
         if call_count == 1:
             return "First answer about tariffs from Episode 255."
-        return "Follow-up answer about the EU response."
+        elif call_count == 2:
+            return "Follow-up answer about the EU response."
+        return f"Answer number {call_count}."
 
     patches = [
         patch("pep_oracle.server.do_ask", side_effect=fake_ask),
@@ -162,5 +164,43 @@ def test_collapsed_thread_expands(server_with_mock_ask, browser):
     body = page.query_selector(".collapsed-body")
     assert body.is_visible()
     assert "First answer" in body.text_content()
+
+    page.close()
+
+
+def test_resume_collapsed_thread(server_with_mock_ask, browser):
+    """Clicking Resume on a collapsed thread should restore it as the active conversation."""
+    base_url = server_with_mock_ask
+    page = browser.new_page()
+    page.goto(base_url)
+
+    # Ask a question and collapse the thread
+    page.fill("#question", "What about tariffs?")
+    page.click("#submit-btn")
+    page.wait_for_selector(".bubble.assistant", timeout=10000)
+    page.click("#new-convo-btn")
+
+    # Verify thread is collapsed
+    assert not page.is_visible("#thread")
+    collapsed = page.query_selector_all(".collapsed-thread")
+    assert len(collapsed) == 1
+
+    # Click Resume
+    page.click(".collapsed-resume")
+
+    # Thread should be restored
+    assert page.is_visible("#thread")
+    user_bubbles = page.query_selector_all(".bubble.user")
+    assistant_bubbles = page.query_selector_all(".bubble.assistant")
+    assert len(user_bubbles) == 1
+    assert len(assistant_bubbles) == 1
+    assert "tariffs" in user_bubbles[0].text_content().lower()
+
+    # Collapsed area should be empty
+    collapsed = page.query_selector_all(".collapsed-thread")
+    assert len(collapsed) == 0
+
+    # New conversation button should be visible again
+    assert page.is_visible("#new-convo-btn")
 
     page.close()
