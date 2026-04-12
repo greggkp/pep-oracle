@@ -363,6 +363,31 @@
     });
   }
 
+  function resumeThread(idx) {
+    // If there's an active conversation, collapse it first
+    if (conversationHistory.length > 0) {
+      const firstUserMsg = conversationHistory.find(m => m.role === "user");
+      const msgCount = conversationHistory.filter(m => m.role === "user").length;
+      collapsedThreads.push({
+        label: firstUserMsg ? firstUserMsg.content : "Conversation",
+        count: msgCount,
+        messages: [...conversationHistory],
+      });
+    }
+
+    // Restore the selected thread
+    const thread = collapsedThreads[idx];
+    conversationHistory = [...thread.messages];
+    collapsedThreads.splice(idx, 1);
+
+    // Re-render: clear thread, re-add each message via addBubble
+    threadEl.textContent = "";
+    conversationHistory.forEach(msg => addBubble(msg.role, msg.content));
+    renderCollapsed();
+    updateUIState();
+    questionEl.focus();
+  }
+
   async function loadStatus() {
     try {
       const resp = await fetch("/status");
