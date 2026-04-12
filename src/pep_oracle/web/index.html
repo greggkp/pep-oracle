@@ -113,6 +113,15 @@
   .collapsed-thread:hover { opacity: 0.8; }
   .collapsed-thread .collapsed-body { display: none; margin-top: 8px; opacity: 0.7; }
   .collapsed-thread.expanded .collapsed-body { display: block; }
+  .collapsed-resume {
+    color: #4a90d9;
+    cursor: pointer;
+    font-size: 0.82rem;
+    text-decoration: none;
+    border-bottom: 1px dashed #4a90d9;
+    margin-left: 6px;
+  }
+  .collapsed-resume:hover { color: #3a7bc8; }
   #topics { display: none; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
   .topic-chip {
     padding: 6px 14px;
@@ -315,6 +324,16 @@
       count.style.color = "#aaa";
       count.textContent = "(" + thread.count + " question" + (thread.count !== 1 ? "s" : "") + ")";
       header.appendChild(count);
+
+      const resume = document.createElement("a");
+      resume.textContent = "Resume";
+      resume.className = "collapsed-resume";
+      resume.addEventListener("click", (e) => {
+        e.stopPropagation();
+        resumeThread(idx);
+      });
+      header.appendChild(document.createTextNode(" "));
+      header.appendChild(resume);
       div.appendChild(header);
 
       const body = document.createElement("div");
