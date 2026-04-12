@@ -59,6 +59,39 @@ def test_add_and_query():
     assert results[0]["start_time"] == 0.0
 
 
+def test_speaker_metadata_roundtrip():
+    col = _fresh_collection()
+    chunk = Chunk(
+        chunk_id="ep-1_0000",
+        episode_guid="ep-1",
+        text="I think so. Me too.",
+        episode_title="Episode 1",
+        episode_date="2026-01-01",
+        start_time=0.0,
+        end_time=10.0,
+        episode_number=1,
+        speaker_text="[Chas] I think so. [Dave] Me too.",
+        speaker_turns=[
+            {"speaker": "Chas", "start": 0.0, "end": 5.0},
+            {"speaker": "Dave", "start": 5.0, "end": 10.0},
+        ],
+    )
+    emb = [1.0] * 10
+    add_chunks(col, [chunk], [emb])
+    results = query(col, emb, top_k=1)
+    assert results[0]["speaker_text"] == "[Chas] I think so. [Dave] Me too."
+    assert results[0]["speaker_list"] == "Chas,Dave"
+
+
+def test_chunks_without_speaker_metadata():
+    col = _fresh_collection()
+    chunks, embeddings = _make_chunks("ep-1", 1)
+    add_chunks(col, chunks, embeddings)
+    results = query(col, embeddings[0], top_k=1)
+    assert "speaker_text" not in results[0]
+    assert "speaker_list" not in results[0]
+
+
 def test_get_ingested_guids():
     col = _fresh_collection()
     chunks1, emb1 = _make_chunks("ep-1", 2)

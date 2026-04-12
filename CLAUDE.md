@@ -41,7 +41,7 @@ uv run pep-oracle-server                     # starts FastAPI on 0.0.0.0:8000
 Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastAPI) serving `src/pep_oracle/web/index.html`.
 
 **Ingestion** (`ingest.py` orchestrates):
-`feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert)
+`feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → optional `transcripts/diarize.py` (pyannote speaker diarization) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert)
 
 **Query** (`query.py` orchestrates):
 Pre-process question via Claude Haiku (extract date/episode filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown
@@ -60,6 +60,9 @@ Pre-process question via Claude Haiku (extract date/episode filters + recency in
 - **`pydub` is a vestigial dependency** — listed in `pyproject.toml` but never imported. Audio splitting uses ffmpeg subprocess calls directly.
 - **`rich` is an unlisted dependency** — used in `cli.py` for Markdown rendering but not declared in `pyproject.toml` (pulled in transitively).
 - **Web UI hot reload**: `index.html` is served via `FileResponse` (changes visible on page refresh), but `server.py` changes require a server restart since Python modules are cached at import time.
+- **Three ingestion entry points**: CLI (`cli.py ingest`), web API (`server.py POST /ingest`), and systemd timer (`deploy/pep-oracle-ingest.service`). When adding parameters to ingestion, all three must be updated.
+- **Speaker diarization** is optional (`--diarize` flag / `diarize: bool`). Requires `uv pip install -e ".[diarize]"` and `HF_TOKEN` env var. Speaker profiles stored at `~/.pep-oracle/speaker_profiles.json`.
+- **RSS feed timeout**: `feed.py` uses `requests.get()` with a 15s timeout for HTTP URLs. The server's `/status` endpoint catches feed failures gracefully so the web UI still loads.
 
 ## Environment
 
@@ -70,6 +73,7 @@ Required in `.env` (loaded via python-dotenv):
 Optional:
 - `PEP_ORACLE_DATA_DIR` — override default `~/.pep-oracle/` data directory
 - `PEP_ORACLE_HOST` / `PEP_ORACLE_PORT` — server bind address (default `0.0.0.0:8000`)
+- `HF_TOKEN` — Hugging Face token for pyannote speaker diarization models
 
 Requires **ffmpeg** on PATH for audio splitting.
 

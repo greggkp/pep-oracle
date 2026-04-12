@@ -107,6 +107,40 @@ def test_word_based_chunking_without_timing():
     assert len(chunks) <= 5
 
 
+def test_speaker_text_generated():
+    """Chunks should have speaker_text when segments have speaker labels."""
+    segments = [
+        TranscriptSegment(text="I think so.", start_time=0.0, end_time=5.0, speaker="Chas"),
+        TranscriptSegment(text="Me too.", start_time=5.0, end_time=10.0, speaker="Chas"),
+        TranscriptSegment(text="But wait.", start_time=10.0, end_time=15.0, speaker="Dave"),
+    ]
+    chunks = chunk_transcript(segments, _make_episode())
+    assert len(chunks) == 1
+    assert chunks[0].speaker_text == "[Chas] I think so. Me too. [Dave] But wait."
+    assert chunks[0].text == "I think so. Me too. But wait."
+
+
+def test_no_speaker_text_without_labels():
+    """Chunks should have None speaker_text when segments lack speaker labels."""
+    segments = _timed_segments(5)
+    chunks = chunk_transcript(segments, _make_episode())
+    assert chunks[0].speaker_text is None
+    assert chunks[0].speaker_turns is None
+
+
+def test_speaker_turns_generated():
+    segments = [
+        TranscriptSegment(text="Hello.", start_time=0.0, end_time=5.0, speaker="Chas"),
+        TranscriptSegment(text="Hi.", start_time=5.0, end_time=10.0, speaker="Dave"),
+    ]
+    chunks = chunk_transcript(segments, _make_episode())
+    turns = chunks[0].speaker_turns
+    assert turns is not None
+    assert len(turns) == 2
+    assert turns[0]["speaker"] == "Chas"
+    assert turns[1]["speaker"] == "Dave"
+
+
 def test_pause_boundary_preferred():
     """A big gap should be preferred as a split point."""
     segments = []

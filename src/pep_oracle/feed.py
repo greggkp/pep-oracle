@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -6,6 +7,8 @@ import feedparser
 
 from pep_oracle.config import RSS_FEED_URL
 from pep_oracle.models import Episode
+
+logger = logging.getLogger(__name__)
 
 EPISODE_NUMBER_RE = re.compile(r"\((?:Ep|Episodio)\s*(\d+)", re.IGNORECASE)
 
@@ -47,10 +50,27 @@ def parse_entry(entry: feedparser.FeedParserDict) -> Episode:
     )
 
 
-def fetch_episodes(feed_url: str = RSS_FEED_URL) -> list[Episode]:
-    feed = feedparser.parse(feed_url)
+def fetch_episodes(feed_url: str = RSS_FEED_URL, timeout: int = 15) -> list[Episode]:
+    logger.info("Fetching RSS feed from %s", feed_url)
+    if feed_url.startswith(("http://", "https://")):
+        import requests
+        response = requests.get(feed_url, timeout=timeout)
+        response.raise_for_status()
+        feed = feedparser.parse(response.content)
+    else:
+        feed = feedparser.parse(feed_url)
+    if feed.bozo:
+        logger.warning("Feed bozo error: %s", feed.bozo_exception)
     if feed.bozo and not feed.entries:
         raise RuntimeError(f"Failed to parse RSS feed: {feed.bozo_exception}")
+    logger.info("Parsed %d entries from RSS feed", len(feed.entries))
     episodes = [parse_entry(e) for e in feed.entries]
     episodes.sort(key=lambda ep: ep.pub_date, reverse=True)
+    if episodes:
+        logger.info(
+            "Latest episode: Ep %s — %s (%s)",
+            episodes[0].episode_number or "?",
+            episodes[0].title[:60],
+            episodes[0].pub_date.isoformat(),
+        )
     return episodes

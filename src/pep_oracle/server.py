@@ -33,6 +33,7 @@ class AskRequest(BaseModel):
 class IngestRequest(BaseModel):
     force: bool = False
     episode_numbers: list[int] = []
+    diarize: bool = False
 
 
 @asynccontextmanager
@@ -76,11 +77,15 @@ async def api_status():
         collection = _get_fresh_collection()
         ingested = get_ingested_guids(collection)
         chunk_count = collection.count()
-        all_episodes = fetch_episodes()
         db_size = sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
         stats = get_ingestion_stats(collection)
+        try:
+            all_episodes = fetch_episodes()
+            feed_count = len(all_episodes)
+        except Exception:
+            feed_count = None
         return {
-            "feed_count": len(all_episodes),
+            "feed_count": feed_count,
             "ingested_count": len(ingested),
             "chunk_count": chunk_count,
             "db_size_bytes": db_size,
@@ -170,6 +175,7 @@ async def api_ingest(req: IngestRequest):
                 force=req.force,
                 confirm_cost=False,
                 episode_numbers=req.episode_numbers or None,
+                diarize=req.diarize,
                 progress_callback=_progress,
             )
             _ingest_last_result = result

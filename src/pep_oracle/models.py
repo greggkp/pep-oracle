@@ -19,6 +19,7 @@ class TranscriptSegment:
     text: str
     start_time: float | None = None
     end_time: float | None = None
+    speaker: str | None = None
 
 
 @dataclass
@@ -31,3 +32,5 @@ class Chunk:
     start_time: float | None = None
     end_time: float | None = None
     episode_number: int | None = None
+    speaker_text: str | None = None
+    speaker_turns: list[dict] | None = None

@@ -67,7 +67,7 @@ def query(
             continue
         if before_date and ep_date > before_date:
             continue
-        items.append({
+        item = {
             "chunk_id": results["ids"][0][i],
             "text": results["documents"][0][i],
             "distance": results["distances"][0][i],
@@ -77,7 +77,12 @@ def query(
             "episode_number": meta.get("episode_number"),
             "start_time": meta["start_time"] if meta["start_time"] != SENTINEL_NO_TIME else None,
             "end_time": meta["end_time"] if meta["end_time"] != SENTINEL_NO_TIME else None,
-        })
+        }
+        if "speaker_text" in meta:
+            item["speaker_text"] = meta["speaker_text"]
+        if "speaker_list" in meta:
+            item["speaker_list"] = meta["speaker_list"]
+        items.append(item)
 
     if recency_weight > 0 and items:
         items = _apply_recency_boost(items, recency_weight)
@@ -210,7 +215,7 @@ def _build_where(
 
 
 def _chunk_metadata(chunk: Chunk) -> dict:
-    return {
+    meta = {
         "episode_guid": chunk.episode_guid,
         "episode_title": chunk.episode_title,
         "episode_date": chunk.episode_date,
@@ -218,3 +223,11 @@ def _chunk_metadata(chunk: Chunk) -> dict:
         "start_time": chunk.start_time if chunk.start_time is not None else SENTINEL_NO_TIME,
         "end_time": chunk.end_time if chunk.end_time is not None else SENTINEL_NO_TIME,
     }
+    if chunk.speaker_text is not None:
+        meta["speaker_text"] = chunk.speaker_text
+    if chunk.speaker_turns is not None:
+        import json
+        meta["speakers"] = json.dumps(chunk.speaker_turns)
+        unique = sorted(set(t["speaker"] for t in chunk.speaker_turns))
+        meta["speaker_list"] = ",".join(unique)
+    return meta

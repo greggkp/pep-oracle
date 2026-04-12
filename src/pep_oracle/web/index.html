@@ -397,7 +397,10 @@
       const resp = await fetch("/status");
       const s = await resp.json();
       const sizeMB = (s.db_size_bytes / 1_000_000).toFixed(1);
-      statusBar.textContent = s.ingested_count + "/" + s.feed_count +
+      const countPrefix = s.feed_count != null
+        ? s.ingested_count + "/" + s.feed_count
+        : s.ingested_count;
+      statusBar.textContent = countPrefix +
         " episodes ingested | " + s.chunk_count + " excerpts | " + sizeMB + " MB";
 
       if (s.ingested_count === 0) {
@@ -465,7 +468,7 @@
       const resp = await fetch("/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: false, episode_numbers: notIngestedEpisodes }),
+        body: JSON.stringify({ force: false, episode_numbers: notIngestedEpisodes, diarize: true }),
       });
       const data = await resp.json();
       if (data.status === "already_running" || data.status === "started") {

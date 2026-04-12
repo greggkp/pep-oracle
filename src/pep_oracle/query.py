@@ -24,7 +24,12 @@ episode(s) your answer comes from, including the episode title and date.
 
 When the question is about current or recent events, prefer information \
 from the most recent episodes. If older episodes discuss the same topic \
-differently, note the progression over time."""
+differently, note the progression over time.
+
+When transcript excerpts include speaker labels like [Chas] or [Dave], \
+attribute statements to the specific speaker. Use phrases like \
+"Chas noted that..." or "According to Dave..." rather than the generic \
+"they discussed"."""
 
 PREPROCESS_PROMPT = """\
 Extract search filters from this podcast question. Today's date is {today}.
@@ -83,7 +88,8 @@ def build_context(results: list[dict]) -> str:
         start = format_timestamp(r["start_time"])
         end = format_timestamp(r["end_time"])
         header = f"[{r['episode_title']} ({ep_num}{r['episode_date']}), {start}–{end}]"
-        sections.append(f"---\n{header}\n{r['text']}\n---")
+        text = r.get("speaker_text") or r["text"]
+        sections.append(f"---\n{header}\n{text}\n---")
     return "\n\n".join(sections)
 
 

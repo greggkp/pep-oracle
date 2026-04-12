@@ -106,16 +106,23 @@ def transcribe_episode(audio_path: Path, episode_guid: str, client: OpenAI | Non
 
 
 def _save_cache(segments: list[TranscriptSegment], path: Path) -> None:
-    data = [
-        {"text": s.text, "start_time": s.start_time, "end_time": s.end_time}
-        for s in segments
-    ]
+    data = []
+    for s in segments:
+        entry = {"text": s.text, "start_time": s.start_time, "end_time": s.end_time}
+        if s.speaker is not None:
+            entry["speaker"] = s.speaker
+        data.append(entry)
     path.write_text(json.dumps(data))
 
 
 def _load_cached(path: Path) -> list[TranscriptSegment]:
     data = json.loads(path.read_text())
     return [
-        TranscriptSegment(text=d["text"], start_time=d["start_time"], end_time=d["end_time"])
+        TranscriptSegment(
+            text=d["text"],
+            start_time=d["start_time"],
+            end_time=d["end_time"],
+            speaker=d.get("speaker"),
+        )
         for d in data
     ]

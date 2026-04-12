@@ -1,3 +1,5 @@
+import logging
+
 import click
 
 from pep_oracle.chunking import chunk_transcript
@@ -6,6 +8,8 @@ from pep_oracle.feed import fetch_episodes
 from pep_oracle.models import Episode
 from pep_oracle.store import add_chunks, delete_episode, get_client, get_collection, get_ingested_guids
 from pep_oracle.transcripts.manager import get_transcript
+
+logger = logging.getLogger(__name__)
 
 WHISPER_COST_PER_MINUTE = 0.006
 
@@ -18,7 +22,7 @@ def estimate_whisper_cost(episodes: list[Episode]) -> float:
     return total_minutes * WHISPER_COST_PER_MINUTE
 
 
-def _ingest_one(episode: Episode, collection, force: bool = False, progress_callback=None) -> bool:
+def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> bool:
     """Ingest a single episode. Returns True on success."""
     label = f"Ep {episode.episode_number or '?'}: {episode.title[:50]}"
 
@@ -27,8 +31,28 @@ def _ingest_one(episode: Episode, collection, force: bool = False, progress_call
 
     if progress_callback:
         progress_callback("transcribing")
-    segments, source = get_transcript(episode, progress_callback=progress_callback)
+    # Keep audio if we need it for diarization
+    segments, source = get_transcript(
+        episode, delete_audio_after=not diarize, progress_callback=progress_callback,
+    )
     click.echo(f"  Transcript: {source} ({len(segments)} segments)")
+
+    if diarize:
+        from pep_oracle.transcripts.diarize import diarize_transcript
+        from pep_oracle.transcripts.manager import download_audio
+        from pep_oracle.config import AUDIO_CACHE_DIR
+
+        audio_path = AUDIO_CACHE_DIR / f"{episode.guid}.mp3"
+        if not audio_path.exists():
+            audio_path = download_audio(episode)
+        try:
+            segments = diarize_transcript(
+                segments, audio_path, episode.guid,
+                progress_callback=progress_callback,
+            )
+        finally:
+            if audio_path.exists():
+                audio_path.unlink()
 
     chunks = chunk_transcript(segments, episode)
     if not chunks:
@@ -47,21 +71,57 @@ def _ingest_one(episode: Episode, collection, force: bool = False, progress_call
     return True
 
 
-def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: list[int] | None = None, progress_callback=None) -> dict:
+def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: list[int] | None = None, diarize: bool = False, progress_callback=None) -> dict:
     """Ingest all episodes. Returns summary stats."""
     episodes = fetch_episodes()
+    logger.info("Fetched %d episodes from RSS feed", len(episodes))
     client = get_client()
     collection = get_collection(client)
     ingested_guids = get_ingested_guids(collection)
+    logger.info("Found %d already-ingested GUIDs in ChromaDB", len(ingested_guids))
 
     if force:
         to_process = episodes
     else:
         to_process = [ep for ep in episodes if ep.guid not in ingested_guids]
+        skipped = [ep for ep in episodes if ep.guid in ingested_guids]
+        logger.info(
+            "%d new episodes to process, %d already ingested",
+            len(to_process), len(skipped),
+        )
+        for ep in to_process:
+            logger.info(
+                "  New: Ep %s — %s (guid=%s)",
+                ep.episode_number or "?", ep.title[:60], ep.guid,
+            )
+        if not to_process:
+            latest_feed = episodes[0] if episodes else None
+            latest_ingested = max(
+                (ep for ep in episodes if ep.guid in ingested_guids),
+                key=lambda ep: ep.pub_date,
+                default=None,
+            )
+            logger.info(
+                "Latest in feed: Ep %s (%s, guid=%s)",
+                latest_feed.episode_number if latest_feed else "?",
+                latest_feed.pub_date.isoformat() if latest_feed else "?",
+                latest_feed.guid if latest_feed else "?",
+            )
+            logger.info(
+                "Latest ingested: Ep %s (%s, guid=%s)",
+                latest_ingested.episode_number if latest_ingested else "?",
+                latest_ingested.pub_date.isoformat() if latest_ingested else "?",
+                latest_ingested.guid if latest_ingested else "?",
+            )
 
     if episode_numbers:
         ep_set = set(episode_numbers)
+        before = len(to_process)
         to_process = [ep for ep in to_process if ep.episode_number in ep_set]
+        logger.info(
+            "Filtered by episode_numbers=%s: %d → %d",
+            episode_numbers, before, len(to_process),
+        )
 
     if not to_process:
         click.echo("All episodes already ingested.")
@@ -90,7 +150,7 @@ def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: 
         if progress_callback:
             progress_callback(f"[{i}/{len(to_process)}] {label}: {episode.title[:60]}")
         try:
-            if _ingest_one(episode, collection, force=force, progress_callback=progress_callback):
+            if _ingest_one(episode, collection, force=force, diarize=diarize, progress_callback=progress_callback):
                 succeeded += 1
         except Exception as e:
             click.echo(f"  FAILED: {e}")
@@ -100,7 +160,7 @@ def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: 
     return {"processed": succeeded, "skipped": already, "failed": failed}
 
 
-def ingest_episode(episode_id: str, force: bool = False) -> bool:
+def ingest_episode(episode_id: str, force: bool = False, diarize: bool = False) -> bool:
     """Ingest episode(s) by episode number or GUID."""
     episodes = fetch_episodes()
     client = get_client()
@@ -134,7 +194,7 @@ def ingest_episode(episode_id: str, force: bool = False) -> bool:
             continue
 
         click.echo(f"Ingesting: {match.title}")
-        if _ingest_one(match, collection, force=force):
+        if _ingest_one(match, collection, force=force, diarize=diarize):
             any_succeeded = True
 
     if not any_succeeded and all(m.guid in ingested for m in matches):

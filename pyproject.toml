@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 server = ["fastapi", "uvicorn[standard]"]
+diarize = ["pyannote.audio", "torch", "torchaudio"]
 
 [project.scripts]
 pep-oracle = "pep_oracle.cli:cli"

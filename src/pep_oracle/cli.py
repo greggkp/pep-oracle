@@ -1,11 +1,19 @@
+import logging
+
 import click
 
 from pep_oracle.feed import fetch_episodes
 
 
 @click.group()
-def cli() -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
+def cli(verbose: bool) -> None:
     """Query the PEP with Chas and Dr Dave podcast."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        level=level,
+    )
 
 
 @cli.command()
@@ -42,14 +50,15 @@ def episodes(limit: int) -> None:
 @cli.command()
 @click.option("--force", is_flag=True, help="Re-process already ingested episodes.")
 @click.option("--episode", "episode_id", type=str, help="Ingest a specific episode by number or GUID.")
-def ingest(force: bool, episode_id: str | None) -> None:
+@click.option("--diarize", is_flag=True, help="Run speaker diarization (requires pyannote.audio).")
+def ingest(force: bool, episode_id: str | None, diarize: bool) -> None:
     """Fetch and process episodes."""
     from pep_oracle.ingest import ingest_all, ingest_episode
 
     if episode_id:
-        ingest_episode(episode_id, force=force)
+        ingest_episode(episode_id, force=force, diarize=diarize)
     else:
-        ingest_all(force=force)
+        ingest_all(force=force, diarize=diarize)
 
 
 @cli.command()
@@ -64,6 +73,107 @@ def ask(question: str, top_k: int) -> None:
     from rich.console import Console
     from rich.markdown import Markdown
     Console().print(Markdown(answer))
+
+
+@cli.command(name="identify-speakers")
+@click.option("--episode", "episode_id", type=str, required=True, help="Episode number or GUID to use for speaker identification.")
+def identify_speakers(episode_id: str) -> None:
+    """Identify and label speakers for diarization (one-time setup)."""
+    from pep_oracle.config import AUDIO_CACHE_DIR
+    from pep_oracle.transcripts.diarize import (
+        diarize_audio,
+        save_speaker_profiles,
+        load_speaker_profiles,
+        SpeakerSegment,
+        _load_cached,
+        _save_cache,
+    )
+    from pep_oracle.config import DIARIZATION_CACHE_DIR, SPEAKER_PROFILES_PATH, ensure_dirs
+    from pep_oracle.transcripts.manager import download_audio
+
+    ensure_dirs()
+    episodes = fetch_episodes()
+
+    # Find the episode
+    match = None
+    try:
+        num = int(episode_id)
+        match = next((ep for ep in episodes if ep.episode_number == num), None)
+    except ValueError:
+        pass
+    if not match:
+        match = next((ep for ep in episodes if ep.guid == episode_id), None)
+    if not match:
+        raise click.ClickException(f"No episode found matching: {episode_id}")
+
+    click.echo(f"Using episode: {match.title}")
+
+    # Download audio if needed
+    audio_path = AUDIO_CACHE_DIR / f"{match.guid}.mp3"
+    if not audio_path.exists():
+        click.echo("Downloading audio...")
+        audio_path = download_audio(match)
+
+    # Diarize
+    cache_path = DIARIZATION_CACHE_DIR / f"{match.guid}.json"
+    if cache_path.exists():
+        click.echo("Using cached diarization...")
+        speaker_segments = _load_cached(cache_path)
+    else:
+        click.echo("Diarizing audio (this may take a while)...")
+        speaker_segments = diarize_audio(audio_path)
+        _save_cache(speaker_segments, cache_path)
+
+    # Find unique speakers and their total speaking time
+    speaker_times: dict[str, float] = {}
+    for ss in speaker_segments:
+        speaker_times[ss.speaker] = speaker_times.get(ss.speaker, 0.0) + (ss.end - ss.start)
+
+    sorted_speakers = sorted(speaker_times.items(), key=lambda x: x[1], reverse=True)
+    click.echo(f"\nDetected {len(sorted_speakers)} speakers:")
+    for spk, time in sorted_speakers:
+        minutes = time / 60
+        click.echo(f"  {spk}: {minutes:.1f} minutes")
+
+    # Interactive labeling
+    click.echo("\nLabel each speaker (Chas, Dave, Guest, or skip):")
+    existing_profiles = load_speaker_profiles()
+    profiles: dict[str, list[float]] = dict(existing_profiles)
+
+    known_names = ["Chas", "Dave", "Guest"]
+    for spk, time in sorted_speakers:
+        minutes = time / 60
+
+        # Find a representative segment for this speaker (longest one)
+        rep = max(
+            (ss for ss in speaker_segments if ss.speaker == spk),
+            key=lambda ss: ss.end - ss.start,
+        )
+        start_m, start_s = divmod(int(rep.start), 60)
+        end_m, end_s = divmod(int(rep.end), 60)
+
+        click.echo(f"\n  {spk} ({minutes:.1f} min total, sample at {start_m}:{start_s:02d}-{end_m}:{end_s:02d})")
+        label = click.prompt(
+            "  Who is this?",
+            type=click.Choice(known_names + ["skip"], case_sensitive=False),
+            default="skip",
+        )
+
+        if label == "skip":
+            continue
+
+        # Store a placeholder embedding — the actual embedding-based matching
+        # uses pyannote's internal speaker embeddings. For now we use the
+        # speaker label ordering as the matching mechanism.
+        profiles[label] = []  # placeholder
+
+    save_speaker_profiles(profiles)
+    click.echo(f"\nSaved profiles for: {', '.join(profiles.keys())}")
+    click.echo(f"Profiles stored at: {SPEAKER_PROFILES_PATH}")
+
+    # Clean up audio
+    if audio_path.exists():
+        audio_path.unlink()
 
 
 @cli.command(name="export")

@@ -43,6 +43,50 @@ def _find_pause_boundary(
     return best_idx
 
 
+def _build_speaker_text(segments: list[TranscriptSegment]) -> str | None:
+    """Build text with speaker labels, merging consecutive same-speaker segments."""
+    if not any(s.speaker for s in segments):
+        return None
+
+    parts = []
+    current_speaker = None
+    for s in segments:
+        if s.speaker and s.speaker != current_speaker:
+            parts.append(f"[{s.speaker}] {s.text}")
+            current_speaker = s.speaker
+        else:
+            parts.append(s.text)
+    return " ".join(parts)
+
+
+def _build_speaker_turns(segments: list[TranscriptSegment]) -> list[dict] | None:
+    """Build speaker turn list from segments."""
+    if not any(s.speaker for s in segments):
+        return None
+
+    turns = []
+    current_speaker = None
+    turn_start = None
+    for s in segments:
+        if s.speaker != current_speaker:
+            if current_speaker is not None and turn_start is not None:
+                turns.append({
+                    "speaker": current_speaker,
+                    "start": turn_start,
+                    "end": s.start_time or turn_start,
+                })
+            current_speaker = s.speaker
+            turn_start = s.start_time
+    # Final turn
+    if current_speaker is not None and turn_start is not None:
+        turns.append({
+            "speaker": current_speaker,
+            "start": turn_start,
+            "end": segments[-1].end_time or turn_start,
+        })
+    return turns or None
+
+
 def _make_chunk(
     segments: list[TranscriptSegment],
     episode: Episode,
@@ -58,6 +102,8 @@ def _make_chunk(
         start_time=segments[0].start_time,
         end_time=segments[-1].end_time,
         episode_number=episode.episode_number,
+        speaker_text=_build_speaker_text(segments),
+        speaker_turns=_build_speaker_turns(segments),
     )
 
 

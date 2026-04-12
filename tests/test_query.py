@@ -31,6 +31,35 @@ def test_build_context_single_result():
     assert "Let's get peppy" in ctx
 
 
+def test_build_context_uses_speaker_text():
+    results = [{
+        "episode_title": "Test Episode",
+        "episode_number": 251,
+        "episode_date": "2026-03-21",
+        "start_time": 10.0,
+        "end_time": 60.0,
+        "text": "I think tariffs are bad. I disagree.",
+        "speaker_text": "[Chas] I think tariffs are bad. [Dave] I disagree.",
+    }]
+    ctx = build_context(results)
+    assert "[Chas]" in ctx
+    assert "[Dave]" in ctx
+    assert "I think tariffs are bad" in ctx
+
+
+def test_build_context_falls_back_to_text():
+    results = [{
+        "episode_title": "Test Episode",
+        "episode_number": 251,
+        "episode_date": "2026-03-21",
+        "start_time": 10.0,
+        "end_time": 60.0,
+        "text": "Plain text without speakers.",
+    }]
+    ctx = build_context(results)
+    assert "Plain text without speakers." in ctx
+
+
 def test_build_context_no_episode_number():
     results = [{
         "episode_title": "Bonus Episode",

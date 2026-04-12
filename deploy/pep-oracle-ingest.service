@@ -6,5 +6,5 @@ After=network.target
 Type=oneshot
 User=pep-oracle
 WorkingDirectory=/opt/pep-oracle/app
-ExecStart=/opt/pep-oracle/app/.venv/bin/pep-oracle ingest
+ExecStart=/opt/pep-oracle/app/.venv/bin/pep-oracle ingest --diarize
 EnvironmentFile=/opt/pep-oracle/.env
