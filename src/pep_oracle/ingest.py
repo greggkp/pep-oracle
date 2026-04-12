@@ -18,14 +18,16 @@ def estimate_whisper_cost(episodes: list[Episode]) -> float:
     return total_minutes * WHISPER_COST_PER_MINUTE
 
 
-def _ingest_one(episode: Episode, collection, force: bool = False) -> bool:
+def _ingest_one(episode: Episode, collection, force: bool = False, progress_callback=None) -> bool:
     """Ingest a single episode. Returns True on success."""
     label = f"Ep {episode.episode_number or '?'}: {episode.title[:50]}"
 
     if force:
         delete_episode(collection, episode.guid)
 
-    segments, source = get_transcript(episode)
+    if progress_callback:
+        progress_callback("transcribing")
+    segments, source = get_transcript(episode, progress_callback=progress_callback)
     click.echo(f"  Transcript: {source} ({len(segments)} segments)")
 
     chunks = chunk_transcript(segments, episode)
@@ -33,15 +35,19 @@ def _ingest_one(episode: Episode, collection, force: bool = False) -> bool:
         click.echo(f"  Skipped (no excerpts produced)")
         return False
 
+    if progress_callback:
+        progress_callback(f"embedding {len(chunks)} excerpts")
     click.echo(f"  Embedding {len(chunks)} excerpts...", nl=False)
     embeddings = embed_texts([c.text for c in chunks])
     click.echo(" done")
+    if progress_callback:
+        progress_callback(f"storing {len(chunks)} excerpts")
     add_chunks(collection, chunks, embeddings)
     click.echo(f"  Stored {len(chunks)} excerpts")
     return True
 
 
-def ingest_all(force: bool = False, confirm_cost: bool = True) -> dict:
+def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: list[int] | None = None, progress_callback=None) -> dict:
     """Ingest all episodes. Returns summary stats."""
     episodes = fetch_episodes()
     client = get_client()
@@ -52,6 +58,10 @@ def ingest_all(force: bool = False, confirm_cost: bool = True) -> dict:
         to_process = episodes
     else:
         to_process = [ep for ep in episodes if ep.guid not in ingested_guids]
+
+    if episode_numbers:
+        ep_set = set(episode_numbers)
+        to_process = [ep for ep in to_process if ep.episode_number in ep_set]
 
     if not to_process:
         click.echo("All episodes already ingested.")
@@ -77,8 +87,10 @@ def ingest_all(force: bool = False, confirm_cost: bool = True) -> dict:
     for i, episode in enumerate(to_process, 1):
         label = f"Ep {episode.episode_number or '?'}"
         click.echo(f"[{i}/{len(to_process)}] {label}: {episode.title[:60]}")
+        if progress_callback:
+            progress_callback(f"[{i}/{len(to_process)}] {label}: {episode.title[:60]}")
         try:
-            if _ingest_one(episode, collection, force=force):
+            if _ingest_one(episode, collection, force=force, progress_callback=progress_callback):
                 succeeded += 1
         except Exception as e:
             click.echo(f"  FAILED: {e}")

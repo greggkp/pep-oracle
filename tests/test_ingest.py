@@ -174,3 +174,47 @@ def test_ingest_episode_by_number(mock_embed, mock_transcript, mock_fetch):
     assert result is True
     guids = get_ingested_guids(collection)
     assert guids == {"guid-2"}
+
+
+@patch("pep_oracle.ingest.fetch_episodes")
+@patch("pep_oracle.ingest.get_transcript", return_value=(FAKE_SEGMENTS, "whisper_cached"))
+@patch("pep_oracle.ingest.embed_texts", side_effect=_fake_embed)
+def test_ingest_all_filters_by_episode_numbers(mock_embed, mock_transcript, mock_fetch):
+    """When episode_numbers is provided, only those episodes are processed."""
+    collection = _fresh_collection()
+    mock_fetch.return_value = [_make_episode(1), _make_episode(2), _make_episode(3)]
+
+    with (
+        patch("pep_oracle.ingest.get_client"),
+        patch("pep_oracle.ingest.get_collection", return_value=collection),
+        patch("pep_oracle.ingest.get_ingested_guids", return_value=set()),
+    ):
+        result = ingest_all(confirm_cost=False, episode_numbers=[2, 3])
+
+    assert result["processed"] == 2
+    assert result["failed"] == 0
+    guids = get_ingested_guids(collection)
+    assert guids == {"guid-2", "guid-3"}
+    call_eps = [call[0][0].episode_number for call in mock_transcript.call_args_list]
+    assert 1 not in call_eps
+
+
+@patch("pep_oracle.ingest.fetch_episodes")
+@patch("pep_oracle.ingest.get_transcript", return_value=(FAKE_SEGMENTS, "whisper_cached"))
+@patch("pep_oracle.ingest.embed_texts", side_effect=_fake_embed)
+def test_ingest_all_calls_progress_callback(mock_embed, mock_transcript, mock_fetch):
+    """progress_callback should be called with episode and step info."""
+    collection = _fresh_collection()
+    mock_fetch.return_value = [_make_episode(1)]
+    calls = []
+
+    with (
+        patch("pep_oracle.ingest.get_client"),
+        patch("pep_oracle.ingest.get_collection", return_value=collection),
+        patch("pep_oracle.ingest.get_ingested_guids", return_value=set()),
+    ):
+        result = ingest_all(confirm_cost=False, progress_callback=calls.append)
+
+    assert result["processed"] == 1
+    assert any("Ep 1" in c for c in calls)
+    assert any("embedding" in c.lower() or "storing" in c.lower() for c in calls)
