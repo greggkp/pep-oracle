@@ -268,13 +268,18 @@ def test_ask_passes_history_to_claude():
 
 
 def test_preprocess_query_receives_conversation_context():
-    """When last_assistant_reply is provided, it should be included in the prompt."""
+    """When history is provided, both user questions and assistant replies appear in the prompt."""
     mock_response = MagicMock()
     mock_response.content = [MagicMock(
         text='{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "EU tariff response", "prefer_recent": false}'
     )]
     mock_client = MagicMock()
     mock_client.messages.create.return_value = mock_response
+
+    history = [
+        {"role": "user", "content": "What about tariffs?"},
+        {"role": "assistant", "content": "In Episode 255, they discussed new tariff announcements..."},
+    ]
 
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
@@ -283,14 +288,46 @@ def test_preprocess_query_receives_conversation_context():
         result = preprocess_query(
             "What about the EU response?",
             anthropic_client=mock_client,
-            last_assistant_reply="In Episode 255, they discussed new tariff announcements...",
+            history=history,
         )
 
-    # Check that the prompt sent to Haiku includes the conversation context
     call_kwargs = mock_client.messages.create.call_args
     prompt_text = call_kwargs.kwargs["messages"][0]["content"]
+    assert "What about tariffs?" in prompt_text
     assert "In Episode 255, they discussed new tariff announcements" in prompt_text
+    assert "Conversation so far:" in prompt_text
     assert result["search_query"] == "EU tariff response"
+
+
+def test_preprocess_query_resolves_pronouns_from_history():
+    """History containing entity names should appear in the prompt so Haiku can resolve pronouns."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Pete Hegseth tariffs opinion", "prefer_recent": false}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    history = [
+        {"role": "user", "content": "What did they say about Pete Hegseth?"},
+        {"role": "assistant", "content": "In Episode 253, Chas and Dr Dave discussed Pete Hegseth's appointment..."},
+    ]
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query(
+            "what does he think about tariffs?",
+            anthropic_client=mock_client,
+            history=history,
+        )
+
+    call_kwargs = mock_client.messages.create.call_args
+    prompt_text = call_kwargs.kwargs["messages"][0]["content"]
+    # The history with "Pete Hegseth" must be in the prompt for Haiku to resolve "he"
+    assert "Pete Hegseth" in prompt_text
+    assert result["search_query"] == "Pete Hegseth tariffs opinion"
 
 
 def test_ask_without_history_sends_single_message():

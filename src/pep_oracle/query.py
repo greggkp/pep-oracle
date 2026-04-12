@@ -43,6 +43,10 @@ questions about evolving situations — all imply the user wants RECENT episodes
 Use after_date = 60 days before today for these. Only leave after_date as null for \
 timeless/historical questions like "who is X?" or "when did they first discuss Y?".
 
+If conversation history is provided, use it to resolve pronouns and references \
+in the question. For example, if the user previously asked about "Pete Hegseth" \
+and now asks "what does he think?", rewrite the search query to include "Pete Hegseth".
+
 Examples:
 - "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran", "prefer_recent": false}}
 - "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran war ending", "prefer_recent": true}}
@@ -51,10 +55,11 @@ Examples:
 - "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed", "prefer_recent": false}}
 - "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is", "prefer_recent": false}}
 - "when did they first discuss the Iran situation?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran first discussion", "prefer_recent": false}}
+- Conversation: User asked about Pete Hegseth. Question: "what does he think about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Pete Hegseth tariffs opinion", "prefer_recent": false}}
 
 Respond with ONLY the JSON object, no other text.
 
-Question: {question}"""
+{history_block}Question: {question}"""
 
 
 def format_timestamp(seconds: float | None) -> str:
@@ -85,7 +90,7 @@ def build_context(results: list[dict]) -> str:
 def preprocess_query(
     question: str,
     anthropic_client: anthropic.Anthropic | None = None,
-    last_assistant_reply: str | None = None,
+    history: list[dict] | None = None,
 ) -> dict:
     """Use a fast Claude model to extract time/episode filters from the question."""
     from datetime import date, timedelta
@@ -110,6 +115,15 @@ def preprocess_query(
     last_month_start = last_month_start.replace(day=1).isoformat()
     last_month_end = (today.replace(day=1) - timedelta(days=1)).isoformat()
 
+    # Format conversation history for the prompt
+    history_block = ""
+    if history:
+        lines = []
+        for msg in history:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            lines.append(f"{role}: {msg['content']}")
+        history_block = "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+
     prompt = PREPROCESS_PROMPT.format(
         today=today.isoformat(),
         earliest_date=earliest_date,
@@ -119,14 +133,9 @@ def preprocess_query(
         recent_date=recent_date,
         last_month_start=last_month_start,
         last_month_end=last_month_end,
+        history_block=history_block,
         question=question,
     )
-
-    if last_assistant_reply:
-        prompt = prompt.replace(
-            f"Question: {question}",
-            f"Previous assistant reply (for context): {last_assistant_reply}\n\nQuestion: {question}",
-        )
 
     response = anthropic_client.messages.create(
         model=PREPROCESS_MODEL,
@@ -171,19 +180,11 @@ def ask(
     if anthropic_client is None:
         anthropic_client = anthropic.Anthropic()
 
-    # Extract the last assistant reply from history for context
-    last_assistant_reply = None
-    if history:
-        for msg in reversed(history):
-            if msg["role"] == "assistant":
-                last_assistant_reply = msg["content"]
-                break
-
     # Pre-process to extract filters
     filters = preprocess_query(
         question,
         anthropic_client=anthropic_client,
-        last_assistant_reply=last_assistant_reply,
+        history=history,
     )
 
     # Embed the search query (may be rewritten by pre-processor)
