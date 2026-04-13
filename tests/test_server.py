@@ -118,6 +118,8 @@ def test_status_counts(client_and_collection):
     client, collection = client_and_collection
     _ingest_chunk(collection, "guid-1", 1)
 
+    from pep_oracle.server import _caches, _fetch_status
+    _caches["status"].set(_fetch_status())
     resp = client.get("/status")
     assert resp.status_code == 200
     data = resp.json()
@@ -134,6 +136,8 @@ def test_status_empty_collection(client_and_collection):
     """Status with no ingested episodes should return null for range fields."""
     client, _ = client_and_collection
 
+    from pep_oracle.server import _caches, _fetch_status
+    _caches["status"].set(_fetch_status())
     resp = client.get("/status")
     assert resp.status_code == 200
     data = resp.json()
@@ -142,6 +146,14 @@ def test_status_empty_collection(client_and_collection):
     assert data["latest_date"] is None
     assert data["earliest_episode"] is None
     assert data["latest_episode"] is None
+
+
+def test_status_includes_stale_field(client_and_collection):
+    client, _ = client_and_collection
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "stale" in data
 
 
 def test_reload_get(client_and_collection):

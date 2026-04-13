@@ -83,28 +83,34 @@ async def api_ask(req: AskRequest):
     return {"answer": answer}
 
 
+def _fetch_status():
+    """Fetch fresh status data (called by cache refresh)."""
+    collection = _get_fresh_collection()
+    ingested = get_ingested_guids(collection)
+    chunk_count = collection.count()
+    db_size = sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
+    stats = get_ingestion_stats(collection)
+    try:
+        all_episodes = fetch_episodes()
+        feed_count = len(all_episodes)
+    except Exception:
+        feed_count = None
+    return {
+        "feed_count": feed_count,
+        "ingested_count": len(ingested),
+        "chunk_count": chunk_count,
+        "db_size_bytes": db_size,
+        **stats,
+    }
+
+
 @app.get("/status")
 async def api_status():
-    def _status():
-        collection = _get_fresh_collection()
-        ingested = get_ingested_guids(collection)
-        chunk_count = collection.count()
-        db_size = sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
-        stats = get_ingestion_stats(collection)
-        try:
-            all_episodes = fetch_episodes()
-            feed_count = len(all_episodes)
-        except Exception:
-            feed_count = None
-        return {
-            "feed_count": feed_count,
-            "ingested_count": len(ingested),
-            "chunk_count": chunk_count,
-            "db_size_bytes": db_size,
-            **stats,
-        }
-
-    return await asyncio.to_thread(_status)
+    cache = _caches["status"]
+    if cache.is_stale():
+        asyncio.create_task(trigger_refresh(cache, _fetch_status))
+    data = cache.data or {}
+    return {**data, "stale": cache.is_stale() or cache.refreshing}
 
 
 @app.get("/episodes")
