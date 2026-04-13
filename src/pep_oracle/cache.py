@@ -1,7 +1,11 @@
 """Per-endpoint server-side cache with TTL and background refresh."""
 
+import asyncio
+import logging
 import time
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 
 class CacheEntry:
@@ -38,3 +42,21 @@ class CacheEntry:
 
 def get_freshness(entries: dict[str, CacheEntry]) -> dict:
     return {name: entry.freshness() for name, entry in entries.items()}
+
+
+async def trigger_refresh(entry: CacheEntry, fetcher):
+    """Run fetcher in a thread and update the cache entry.
+
+    If a refresh is already in progress, returns immediately (deduplication).
+    On fetcher error, preserves existing data and logs the failure.
+    """
+    if entry.refreshing:
+        return
+    entry.refreshing = True
+    try:
+        data = await asyncio.to_thread(fetcher)
+        entry.set(data)
+    except Exception:
+        logger.exception("Cache refresh failed for %s", entry.name)
+    finally:
+        entry.refreshing = False

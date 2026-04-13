@@ -64,3 +64,59 @@ def test_get_freshness_returns_all_entries():
     result = get_freshness(entries)
     assert result["a"]["stale"] is False
     assert result["b"]["stale"] is True
+
+
+import asyncio
+import pytest
+
+from pep_oracle.cache import trigger_refresh
+
+
+@pytest.mark.asyncio
+async def test_trigger_refresh_populates_cache():
+    entry = CacheEntry(name="test", ttl_seconds=300)
+    call_count = 0
+
+    def fetcher():
+        nonlocal call_count
+        call_count += 1
+        return {"result": 42}
+
+    await trigger_refresh(entry, fetcher)
+    assert entry.data == {"result": 42}
+    assert entry.is_stale() is False
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_trigger_refresh_deduplicates():
+    """Calling trigger_refresh while one is in progress should not start another."""
+    entry = CacheEntry(name="test", ttl_seconds=300)
+    call_count = 0
+
+    def slow_fetcher():
+        nonlocal call_count
+        call_count += 1
+        import time
+        time.sleep(0.1)
+        return {"result": call_count}
+
+    # Fire two refreshes concurrently
+    await asyncio.gather(
+        trigger_refresh(entry, slow_fetcher),
+        trigger_refresh(entry, slow_fetcher),
+    )
+    assert call_count == 1  # only one fetch happened
+
+
+@pytest.mark.asyncio
+async def test_trigger_refresh_preserves_data_on_error():
+    entry = CacheEntry(name="test", ttl_seconds=300)
+    entry.set({"old": True})
+
+    def broken_fetcher():
+        raise RuntimeError("fetch failed")
+
+    await trigger_refresh(entry, broken_fetcher)
+    assert entry.data == {"old": True}  # old data preserved
+    assert entry.refreshing is False
