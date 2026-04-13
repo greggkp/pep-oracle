@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
 from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.ingest import ingest_all
@@ -17,6 +18,12 @@ from pep_oracle.topics import extract_topics
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
+
+_caches = {
+    "status": CacheEntry(name="status", ttl_seconds=300),
+    "episodes": CacheEntry(name="episodes", ttl_seconds=300),
+    "topics": CacheEntry(name="topics", ttl_seconds=900),
+}
 
 _ingest_lock = asyncio.Lock()
 _ingest_running = False
@@ -63,6 +70,11 @@ def _get_fresh_collection():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/freshness")
+async def api_freshness():
+    return get_freshness(_caches)
 
 
 @app.post("/ask")

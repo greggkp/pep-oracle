@@ -56,6 +56,12 @@ def client_and_collection():
     for p in patches:
         p.start()
 
+    # Reset all caches so each test starts fresh (prevents cross-test contamination)
+    from pep_oracle.server import _caches
+    for entry in _caches.values():
+        entry.data = None
+        entry.updated_at = None
+
     from pep_oracle.server import app
 
     with TestClient(app) as tc:
@@ -220,3 +226,16 @@ def test_ask_without_history_passes_empty_list(client_and_collection):
         resp = client.post("/ask", json={"question": "What is PEP?"})
     assert resp.status_code == 200
     mock_ask.assert_called_once_with("What is PEP?", top_k=10, history=[])
+
+
+def test_freshness_returns_all_caches(client_and_collection):
+    client, _ = client_and_collection
+    resp = client.get("/freshness")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "topics" in data
+    assert "status" in data
+    assert "episodes" in data
+    for key in ("topics", "status", "episodes"):
+        assert "stale" in data[key]
+        assert "updated_at" in data[key]
