@@ -94,24 +94,37 @@ def test_health(client_and_collection):
 
 def test_episodes_returns_all(client_and_collection):
     client, _ = client_and_collection
+    from pep_oracle.server import _caches, _fetch_episodes
+    _caches["episodes"].set(_fetch_episodes())
     resp = client.get("/episodes")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 3
-    assert data[0]["episode_number"] == 1
-    assert data[0]["ingested"] is False
+    assert len(data["episodes"]) == 3
+    assert data["episodes"][0]["episode_number"] == 1
+    assert data["episodes"][0]["ingested"] is False
 
 
 def test_episodes_reflects_ingestion(client_and_collection):
     client, collection = client_and_collection
     _ingest_chunk(collection, "guid-2", 2)
 
+    from pep_oracle.server import _caches, _fetch_episodes
+    _caches["episodes"].set(_fetch_episodes())
     resp = client.get("/episodes")
     data = resp.json()
-    by_num = {ep["episode_number"]: ep for ep in data}
+    by_num = {ep["episode_number"]: ep for ep in data["episodes"]}
     assert by_num[1]["ingested"] is False
     assert by_num[2]["ingested"] is True
     assert by_num[3]["ingested"] is False
+
+
+def test_episodes_includes_stale_field(client_and_collection):
+    client, _ = client_and_collection
+    resp = client.get("/episodes")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "stale" in data
+    assert "episodes" in data
 
 
 def test_status_counts(client_and_collection):

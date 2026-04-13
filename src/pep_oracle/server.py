@@ -113,27 +113,32 @@ async def api_status():
     return {**data, "stale": cache.is_stale() or cache.refreshing}
 
 
+def _fetch_episodes():
+    """Fetch fresh episodes data (called by cache refresh)."""
+    all_episodes = fetch_episodes()
+    try:
+        collection = _get_fresh_collection()
+        ingested = get_ingested_guids(collection)
+    except Exception:
+        ingested = set()
+    return [
+        {
+            "episode_number": ep.episode_number,
+            "title": ep.title,
+            "date": ep.pub_date.strftime("%Y-%m-%d"),
+            "ingested": ep.guid in ingested,
+        }
+        for ep in all_episodes
+    ]
+
+
 @app.get("/episodes")
 async def api_episodes():
-    def _episodes():
-        all_episodes = fetch_episodes()
-        try:
-            collection = _get_fresh_collection()
-            ingested = get_ingested_guids(collection)
-        except Exception:
-            ingested = set()
-
-        return [
-            {
-                "episode_number": ep.episode_number,
-                "title": ep.title,
-                "date": ep.pub_date.strftime("%Y-%m-%d"),
-                "ingested": ep.guid in ingested,
-            }
-            for ep in all_episodes
-        ]
-
-    return await asyncio.to_thread(_episodes)
+    cache = _caches["episodes"]
+    if cache.is_stale():
+        asyncio.create_task(trigger_refresh(cache, _fetch_episodes))
+    data = cache.data or []
+    return {"episodes": data, "stale": cache.is_stale() or cache.refreshing}
 
 
 @app.get("/topics")
