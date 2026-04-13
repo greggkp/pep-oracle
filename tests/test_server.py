@@ -212,8 +212,10 @@ def test_topics_returns_extracted_topics(client_and_collection):
         {"topic": "Tariffs", "question": "What about tariffs?", "episode_number": 3},
         {"topic": "Immigration", "question": "What about immigration?", "episode_number": 1},
     ]
+    from pep_oracle.server import _caches, _fetch_topics
     with patch("pep_oracle.server.extract_topics", return_value=mock_topics):
-        resp = client.get("/topics")
+        _caches["topics"].set(_fetch_topics())
+    resp = client.get("/topics")
     assert resp.status_code == 200
     data = resp.json()
     assert data["topics"] == mock_topics
@@ -221,10 +223,20 @@ def test_topics_returns_extracted_topics(client_and_collection):
 
 def test_topics_returns_empty_on_failure(client_and_collection):
     client, _ = client_and_collection
+    from pep_oracle.server import _caches, _fetch_topics
     with patch("pep_oracle.server.extract_topics", return_value=[]):
-        resp = client.get("/topics")
+        _caches["topics"].set(_fetch_topics())
+    resp = client.get("/topics")
     assert resp.status_code == 200
     assert resp.json()["topics"] == []
+
+
+def test_topics_includes_stale_field(client_and_collection):
+    client, _ = client_and_collection
+    resp = client.get("/topics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "stale" in data
 
 
 def test_ask_passes_history_to_do_ask(client_and_collection):

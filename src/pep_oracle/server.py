@@ -141,32 +141,37 @@ async def api_episodes():
     return {"episodes": data, "stale": cache.is_stale() or cache.refreshing}
 
 
+def _fetch_topics():
+    """Fetch fresh topics data (called by cache refresh)."""
+    episodes = fetch_episodes()
+    topics = extract_topics(episodes)
+    # Feed-based detection: compare ALL feed episodes against ChromaDB
+    feed_eps = {ep.episode_number for ep in episodes if ep.episode_number is not None}
+    try:
+        collection = _get_fresh_collection()
+        ingested_eps = set()
+        all_meta = collection.get(include=["metadatas"])
+        for meta in all_meta["metadatas"]:
+            ep_num = meta.get("episode_number", 0)
+            if ep_num:
+                ingested_eps.add(ep_num)
+    except Exception:
+        ingested_eps = set()
+    not_ingested = sorted(feed_eps - ingested_eps)
+    # Only flag episodes newer than the most recently ingested
+    if ingested_eps:
+        latest_ingested = max(ingested_eps)
+        not_ingested = [ep for ep in not_ingested if ep > latest_ingested]
+    return {"topics": topics, "not_ingested_episodes": not_ingested}
+
+
 @app.get("/topics")
 async def api_topics():
-    def _topics():
-        episodes = fetch_episodes()
-        topics = extract_topics(episodes)
-        # Feed-based detection: compare ALL feed episodes against ChromaDB
-        feed_eps = {ep.episode_number for ep in episodes if ep.episode_number is not None}
-        try:
-            collection = _get_fresh_collection()
-            ingested_eps = set()
-            all_meta = collection.get(include=["metadatas"])
-            for meta in all_meta["metadatas"]:
-                ep_num = meta.get("episode_number", 0)
-                if ep_num:
-                    ingested_eps.add(ep_num)
-        except Exception:
-            ingested_eps = set()
-        not_ingested = sorted(feed_eps - ingested_eps)
-        # Only flag episodes newer than the most recently ingested
-        if ingested_eps:
-            latest_ingested = max(ingested_eps)
-            not_ingested = [ep for ep in not_ingested if ep > latest_ingested]
-        return topics, not_ingested
-
-    topics, not_ingested = await asyncio.to_thread(_topics)
-    return {"topics": topics, "not_ingested_episodes": not_ingested}
+    cache = _caches["topics"]
+    if cache.is_stale():
+        asyncio.create_task(trigger_refresh(cache, _fetch_topics))
+    data = cache.data or {"topics": [], "not_ingested_episodes": []}
+    return {**data, "stale": cache.is_stale() or cache.refreshing}
 
 
 @app.post("/ingest")
