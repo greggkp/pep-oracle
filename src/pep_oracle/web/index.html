@@ -166,6 +166,12 @@
     color: #b45309;
   }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e0e0e0; font-size: 0.8rem; color: #888; }
+  .updating-hint {
+    font-size: 0.8rem;
+    color: #999;
+    font-style: italic;
+    margin-bottom: 8px;
+  }
 </style>
 </head>
 <body>
@@ -173,6 +179,7 @@
   <p class="subtitle">Ask questions about the PEP with Chas and Dr Dave podcast</p>
   <p class="coverage" id="coverage">Loading...</p>
   <div id="topics"></div>
+  <div id="topics-updating" class="updating-hint" style="display:none">Updating topics...</div>
   <div id="ingest-banner">
     <span class="ingest-text"></span>
     <button id="ingest-btn" type="button">Ingest now</button>
@@ -214,6 +221,8 @@
   let conversationHistory = [];
   let notIngestedEpisodes = [];
   let collapsedThreads = [];
+  let lastUpdated = { topics: null, status: null, episodes: null };
+  let freshnessTimer = null;
 
   function addBubble(role, content) {
     const row = document.createElement("div");
@@ -396,6 +405,7 @@
     try {
       const resp = await fetch("/status");
       const s = await resp.json();
+      if (s.ingested_count == null) return;  // cache not yet populated
       const sizeMB = (s.db_size_bytes / 1_000_000).toFixed(1);
       const countPrefix = s.feed_count != null
         ? s.ingested_count + "/" + s.feed_count
@@ -422,40 +432,51 @@
     }
   }
 
+  function renderTopics(data) {
+    if (!data || !data.topics || data.topics.length === 0) return;
+
+    notIngestedEpisodes = data.not_ingested_episodes || [];
+
+    // Clear existing chips and re-render
+    topicsEl.innerHTML = "";
+    data.topics.forEach(t => {
+      const chip = document.createElement("button");
+      const isNew = notIngestedEpisodes.includes(t.episode_number);
+      chip.className = "topic-chip" + (isNew ? " not-ingested" : "");
+      chip.textContent = t.topic;
+      chip.title = isNew
+        ? "Ep " + t.episode_number + " (not yet ingested)"
+        : "Ep " + t.episode_number;
+      chip.dataset.episode = t.episode_number;
+      chip.addEventListener("click", () => {
+        questionEl.value = t.question;
+        questionEl.focus();
+      });
+      topicsEl.appendChild(chip);
+    });
+    topicsEl.dataset.loaded = "true";
+    if (conversationHistory.length === 0) {
+      topicsEl.style.display = "flex";
+    }
+
+    if (notIngestedEpisodes.length > 0) {
+      const epList = notIngestedEpisodes.join(", ");
+      const label = notIngestedEpisodes.length === 1 ? "Episode" : "Episodes";
+      ingestBannerText.textContent = label + " " + epList +
+        " available but not yet ingested.";
+      ingestBanner.style.display = "flex";
+    } else {
+      ingestBanner.style.display = "none";
+    }
+  }
+
   async function loadTopics() {
     try {
       const resp = await fetch("/topics");
       if (!resp.ok) return;
       const data = await resp.json();
-      if (!data.topics || data.topics.length === 0) return;
-
-      notIngestedEpisodes = data.not_ingested_episodes || [];
-
-      data.topics.forEach(t => {
-        const chip = document.createElement("button");
-        const isNew = notIngestedEpisodes.includes(t.episode_number);
-        chip.className = "topic-chip" + (isNew ? " not-ingested" : "");
-        chip.textContent = t.topic;
-        chip.title = isNew
-          ? "Ep " + t.episode_number + " (not yet ingested)"
-          : "Ep " + t.episode_number;
-        chip.dataset.episode = t.episode_number;
-        chip.addEventListener("click", () => {
-          questionEl.value = t.question;
-          questionEl.focus();
-        });
-        topicsEl.appendChild(chip);
-      });
-      topicsEl.dataset.loaded = "true";
-      topicsEl.style.display = "flex";
-
-      if (notIngestedEpisodes.length > 0) {
-        const epList = notIngestedEpisodes.join(", ");
-        const label = notIngestedEpisodes.length === 1 ? "Episode" : "Episodes";
-        ingestBannerText.textContent = label + " " + epList +
-          " available but not yet ingested.";
-        ingestBanner.style.display = "flex";
-      }
+      renderTopics(data);
+      document.getElementById("topics-updating").style.display = "none";
     } catch (e) {
       // Silent failure — topics are optional
     }
@@ -479,6 +500,7 @@
         ingestBannerText.appendChild(document.createTextNode(" "));
         ingestBannerText.appendChild(progress);
         pollIngestion();
+        startFreshnessPolling();
       }
     } catch (e) {
       ingestBtn.disabled = false;
@@ -506,8 +528,9 @@
               chip.title = chip.title.replace(" (not yet ingested)", "");
             });
             notIngestedEpisodes = [];
-            // Refresh status bar
+            // Refresh status bar and pick up cache-refreshed data
             loadStatus();
+            startFreshnessPolling();
           }
         } else {
           // Show progress detail
@@ -528,6 +551,39 @@
     }, 3000);
   }
 
+  function startFreshnessPolling() {
+    if (freshnessTimer) return;
+    freshnessTimer = setInterval(async () => {
+      try {
+        const resp = await fetch("/freshness");
+        const data = await resp.json();
+        let anyStale = false;
+        const fetches = [];
+
+        for (const key of ["topics", "status", "episodes"]) {
+          if (data[key].stale) {
+            anyStale = true;
+          }
+          if (data[key].updated_at && data[key].updated_at !== lastUpdated[key]) {
+            lastUpdated[key] = data[key].updated_at;
+            if (key === "topics") fetches.push(loadTopics());
+            if (key === "status") fetches.push(loadStatus());
+          }
+        }
+
+        await Promise.all(fetches);
+
+        if (!anyStale) {
+          clearInterval(freshnessTimer);
+          freshnessTimer = null;
+        }
+      } catch (e) {
+        // keep polling
+      }
+    }, 5000);
+  }
+
+  document.getElementById("topics-updating").style.display = "block";
   loadStatus();
   loadTopics();
 
@@ -547,6 +603,7 @@
     }
   }
   checkIngestionOnLoad();
+  startFreshnessPolling();
 </script>
 </body>
 </html>
