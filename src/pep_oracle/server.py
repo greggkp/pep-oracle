@@ -211,6 +211,12 @@ async def api_ingest(req: IngestRequest):
                 progress_callback=_progress,
             )
             _ingest_last_result = result
+            # Invalidate all caches so frontend picks up new data
+            for cache in _caches.values():
+                cache.invalidate()
+            asyncio.create_task(trigger_refresh(_caches["status"], _fetch_status))
+            asyncio.create_task(trigger_refresh(_caches["episodes"], _fetch_episodes))
+            asyncio.create_task(trigger_refresh(_caches["topics"], _fetch_topics))
         except Exception as e:
             _ingest_last_result = {"error": str(e)}
             logger.exception("Ingestion failed")
