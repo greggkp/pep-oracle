@@ -46,6 +46,10 @@ class IngestRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("pep-oracle server starting on %s:%s", SERVER_HOST, SERVER_PORT)
+    # Eager cache refresh so data is ready when the browser loads
+    asyncio.create_task(trigger_refresh(_caches["status"], _fetch_status))
+    asyncio.create_task(trigger_refresh(_caches["episodes"], _fetch_episodes))
+    asyncio.create_task(trigger_refresh(_caches["topics"], _fetch_topics))
     yield
 
 
