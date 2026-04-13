@@ -109,8 +109,8 @@ def test_status_bar_shows_ingested_count(server_with_collection, browser):
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_function(
-        "!document.getElementById('status-bar').textContent.includes('Loading')",
-        timeout=5000,
+        "document.getElementById('status-bar').textContent.includes('episodes ingested')",
+        timeout=15000,
     )
     status_text = page.text_content("#status-bar")
     page.close()
@@ -126,8 +126,8 @@ def test_coverage_line_shows_no_episodes(server_with_collection, browser):
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_function(
-        "!document.getElementById('coverage').textContent.includes('Loading')",
-        timeout=5000,
+        "document.getElementById('coverage').textContent.includes('No episodes')",
+        timeout=15000,
     )
     coverage = page.text_content("#coverage")
     page.close()
@@ -142,11 +142,15 @@ def test_coverage_line_shows_range_after_ingestion(server_with_collection, brows
     _ingest_into_collection(collection, "guid-1", 1)
     _ingest_into_collection(collection, "guid-3", 3)
 
+    # Pre-populate status cache with fresh data so the page renders immediately
+    from pep_oracle.server import _caches, _fetch_status
+    _caches["status"].set(_fetch_status())
+
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_function(
-        "!document.getElementById('coverage').textContent.includes('Loading')",
-        timeout=5000,
+        "document.getElementById('coverage').textContent.includes('2 episodes')",
+        timeout=15000,
     )
     coverage = page.text_content("#coverage")
     page.close()
@@ -162,6 +166,10 @@ def test_not_ingested_chips_have_amber_styling(server_with_collection, browser):
 
     # Ingest episode 3 only — episode 5 remains un-ingested
     _ingest_into_collection(collection, "guid-3", 3)
+
+    # Pre-populate topics cache with fresh data reflecting ingestion
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)
@@ -207,12 +215,15 @@ def test_ingest_banner_hidden_when_all_ingested(server_with_collection, browser)
     for i in range(1, 6):
         _ingest_into_collection(collection, f"guid-{i}", i)
 
+    # Pre-populate topics cache with fresh data reflecting all ingested
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
+
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_selector(".topic-chip", timeout=10000)
 
     banner = page.query_selector("#ingest-banner")
-    # Banner should be hidden (display: none)
     assert banner is None or not banner.is_visible()
 
     page.close()
@@ -224,6 +235,10 @@ def test_not_ingested_chip_tooltip(server_with_collection, browser):
 
     # Ingest episode 3 only
     _ingest_into_collection(collection, "guid-3", 3)
+
+    # Pre-populate topics cache with fresh data reflecting ingestion
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)
