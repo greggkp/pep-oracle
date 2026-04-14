@@ -47,7 +47,7 @@ Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastA
 Pre-process question via Claude Haiku (extract date/episode filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown
 
 **Topic chips** (`topics.py`):
-`server.py` calls `extract_topics()` at `/topics` endpoint → Claude Haiku summarizes recent episode descriptions → returns 5-8 topic objects (label, question, episode_number) for the web UI chip display. Latest episode is prioritized.
+`server.py` calls `extract_topics()` at `/topics` endpoint → `parse_description_topics()` extracts topic labels from episode timestamp sections (filtering out meta-segments like Introducing, Gratefuls) → Claude Haiku curates 5-8 topic objects (label, question, episode_number) from the parsed labels, with show-specific segment context (Unleashed, Correspondence, Not Normal, etc.). Latest episode is prioritized.
 
 ## Key design decisions
 
