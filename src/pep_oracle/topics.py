@@ -1,8 +1,12 @@
 import json
+import re
 
 import anthropic
 
 from pep_oracle.models import Episode
+
+_TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s*-\s*(.+)")
+_SKIP_LABELS = ("Introducing", "Grateful")
 
 TOPIC_MODEL = "claude-haiku-4-5-20251001"
 
@@ -25,6 +29,49 @@ Episodes:
 {episodes_text}
 
 Respond with ONLY the JSON array, no other text."""
+
+
+def parse_description_topics(description: str) -> list[str]:
+    """Extract topic labels from timestamp lines in an episode description.
+
+    Parses HTML descriptions for lines like "1:23:04 - Iran Latest" between
+    a "Timestamps:" marker and the next non-timestamp content. Filters out
+    meta-segments (Introducing, Gratefuls).
+    """
+    if not description or not description.strip():
+        return []
+
+    # Replace HTML tags with newlines
+    text = re.sub(r"<[^>]+>", "\n", description)
+    lines = text.split("\n")
+
+    in_timestamps = False
+    labels: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if re.match(r"(?i)timestamps?\s*:", line):
+            in_timestamps = True
+            continue
+        if not in_timestamps:
+            continue
+        match = _TIMESTAMP_RE.match(line)
+        if match:
+            label = match.group(1).strip()
+            # Clean trailing noise (e.g., "Iran Latest Homework:" or "PBS/NPR Victory SHOW LINKS:")
+            label = re.split(r"\s+(?:Homework|SHOW LINKS)\s*:", label)[0].strip()
+            if label:
+                labels.append(label)
+        else:
+            # Non-timestamp line after timestamps section — stop
+            break
+
+    # Filter meta-segments
+    return [
+        label for label in labels
+        if not any(label.startswith(skip) for skip in _SKIP_LABELS)
+    ]
 
 
 def extract_topics(
