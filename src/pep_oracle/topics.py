@@ -11,19 +11,34 @@ _SKIP_LABELS = ("Introducing", "Grateful")
 TOPIC_MODEL = "claude-haiku-4-5-20251001"
 
 TOPIC_PROMPT = """\
-Extract 5-8 distinct discussion topics from these podcast episode descriptions. \
-The first episode listed is the LATEST. Extract as many topics as possible from \
-the LATEST episode first. Only use older episodes to fill remaining slots if the \
-latest episode yields fewer than 5 topics.
+You are selecting discussion topics from a political podcast. Below are topic \
+labels extracted from episode timestamps. Select 5-8 of the most interesting \
+and substantive topics for a listener to explore.
+
+SHOW-SPECIFIC SEGMENTS — these are recurring segment names with special meaning:
+- "Unleashed": A deep-dive or continuation segment. The topic after the colon \
+is the actual subject (e.g., "Unleashed: Birthright Citizenship Cont." is about \
+birthright citizenship). Merge with the main topic if one exists.
+- "Correspondence": Listener mail and corrections. Subtopics in parentheses \
+may be worth surfacing as standalone topics if they are substantive.
+- "Not Normal": A roundup of abnormal political events. Subtopics in \
+parentheses are the individual items.
+- "Stats Nug": A statistics-focused mini-segment.
+- "Policy Time": A segment focused on specific policy discussion. The \
+parenthetical describes the policy area.
+
+RULES:
+- Use the human-written labels as the chip text. Do NOT paraphrase or reinterpret.
+- Deduplicate: if multiple episodes discuss the same topic (e.g., "Hegseth Issues" \
+and "Hegseth Issues Cont."), pick the most recent episode and use one label.
+- Prioritize topics from the LATEST (first-listed) episode.
+- Only use older episodes to fill remaining slots.
 
 Return a JSON array of objects, each with:
-- "topic": a short label (3-6 words)
-- "question": a natural question a podcast listener might ask about this topic \
-(include a recency word like "latest", "recent", or "currently" since these are recent episodes)
+- "topic": the label text (from the timestamps, verbatim or minimally trimmed)
+- "question": a natural question a listener might ask (include a recency word \
+like "latest", "recent", or "currently")
 - "episode_number": the episode number where this topic appears
-
-Deduplicate: if multiple episodes discuss the same topic, pick the most recent one. \
-No overlapping or redundant topics.
 
 Episodes:
 {episodes_text}
@@ -79,7 +94,7 @@ def extract_topics(
     count: int = 5,
     anthropic_client: anthropic.Anthropic | None = None,
 ) -> list[dict]:
-    """Extract discussion topics from recent episode descriptions via Haiku."""
+    """Extract discussion topics from recent episodes via timestamp parsing + Haiku curation."""
     if anthropic_client is None:
         anthropic_client = anthropic.Anthropic()
 
@@ -90,10 +105,19 @@ def extract_topics(
     if not recent:
         return []
 
-    episodes_text = "\n".join(
-        f"- Ep {ep.episode_number} ({ep.pub_date.strftime('%Y-%m-%d')}): {ep.description}"
-        for ep in recent
-    )
+    # Parse timestamp labels from each episode
+    episode_lines = []
+    for ep in recent:
+        labels = parse_description_topics(ep.description)
+        if labels:
+            header = f"Ep {ep.episode_number} ({ep.pub_date.strftime('%Y-%m-%d')}):"
+            bullet_list = "\n".join(f"  - {label}" for label in labels)
+            episode_lines.append(f"{header}\n{bullet_list}")
+
+    if not episode_lines:
+        return []
+
+    episodes_text = "\n\n".join(episode_lines)
 
     try:
         response = anthropic_client.messages.create(

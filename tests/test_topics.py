@@ -19,14 +19,27 @@ def _make_episode(num, description=""):
     )
 
 
-def test_extract_topics_returns_parsed_topics():
-    """Haiku returns valid JSON — extract_topics parses and returns it."""
+def test_extract_topics_sends_parsed_labels_to_haiku():
+    """extract_topics sends parsed timestamp labels (not raw descriptions) to Haiku."""
     episodes = [
-        _make_episode(3, "Discussion about tariffs and trade war"),
-        _make_episode(2, "Analysis of the latest Supreme Court rulings"),
-        _make_episode(1, "Deep dive into immigration policy"),
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "3:57 - Gratefuls (Sliwa)<br />"
+            "25:19 - Not Normal (Ballroom, Money)<br />"
+            "1:06:30 - Cuba<br />"
+            "1:23:04 - Iran Latest</p>",
+        ),
+        _make_episode(
+            2,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Elle Hardy<br />"
+            "8:57 - Kristi Noem Sacked<br />"
+            "1:10:19 - Ukraine Corner</p>",
+        ),
     ]
-    haiku_response = '[{"topic": "Tariffs and trade", "question": "What are Chas and Dave saying about tariffs?", "episode_number": 3}, {"topic": "Supreme Court rulings", "question": "What did they say about the Supreme Court?", "episode_number": 2}]'
+    haiku_response = '[{"topic": "Cuba", "question": "What did they discuss about Cuba recently?", "episode_number": 3}]'
 
     mock_client = MagicMock()
     mock_client.messages.create.return_value.content = [
@@ -35,49 +48,89 @@ def test_extract_topics_returns_parsed_topics():
 
     result = extract_topics(episodes, anthropic_client=mock_client)
 
-    assert len(result) == 2
-    assert result[0]["topic"] == "Tariffs and trade"
-    assert result[0]["episode_number"] == 3
+    assert len(result) == 1
+    assert result[0]["topic"] == "Cuba"
     mock_client.messages.create.assert_called_once()
 
-    # Verify prompt instructs Haiku to prioritize the latest episode
     prompt_text = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
-    assert "LATEST" in prompt_text
-    assert "Extract as many topics as possible from the LATEST episode" in prompt_text
+    # Parsed labels should appear in the prompt
+    assert "Cuba" in prompt_text
+    assert "Iran Latest" in prompt_text
+    assert "Kristi Noem Sacked" in prompt_text
+    # Meta-segments should NOT appear
+    assert "Introducing" not in prompt_text
+    assert "Gratefuls" not in prompt_text
+    # Raw HTML/description noise should NOT appear
+    assert "<p>" not in prompt_text
+    assert "<br />" not in prompt_text
 
 
-def test_extract_topics_malformed_json_returns_empty():
-    """Haiku returns invalid JSON — extract_topics returns empty list."""
-    episodes = [_make_episode(1, "Some description")]
+def test_extract_topics_prompt_includes_segment_explanations():
+    """The Haiku prompt explains Unleashed, Correspondence, Not Normal, Stats Nug, and Policy Time."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "1:06:30 - Cuba</p>",
+        ),
+    ]
+    haiku_response = '[{"topic": "Cuba", "question": "Q?", "episode_number": 3}]'
 
     mock_client = MagicMock()
     mock_client.messages.create.return_value.content = [
-        MagicMock(text="not valid json at all")
+        MagicMock(text=haiku_response)
     ]
 
-    result = extract_topics(episodes, anthropic_client=mock_client)
-    assert result == []
+    extract_topics(episodes, anthropic_client=mock_client)
+
+    prompt_text = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "Unleashed" in prompt_text
+    assert "Correspondence" in prompt_text
+    assert "Not Normal" in prompt_text
+    assert "Stats Nug" in prompt_text
+    assert "Policy Time" in prompt_text
+    assert "Do NOT paraphrase" in prompt_text
 
 
-def test_extract_topics_api_error_returns_empty():
-    """Anthropic API raises an exception — extract_topics returns empty list."""
-    episodes = [_make_episode(1, "Some description")]
+def test_extract_topics_skips_episodes_without_timestamps():
+    """Episodes whose descriptions have no timestamp section are excluded from the Haiku prompt."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "1:06:30 - Cuba</p>",
+        ),
+        _make_episode(2, "Plain description with no timestamps at all"),
+    ]
+    haiku_response = '[{"topic": "Cuba", "question": "Q?", "episode_number": 3}]'
 
     mock_client = MagicMock()
-    mock_client.messages.create.side_effect = Exception("API down")
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
 
-    result = extract_topics(episodes, anthropic_client=mock_client)
-    assert result == []
+    extract_topics(episodes, anthropic_client=mock_client)
+
+    prompt_text = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "Ep 3" in prompt_text
+    assert "Ep 2" not in prompt_text
 
 
 def test_extract_topics_filters_empty_descriptions():
     """Episodes with empty or whitespace-only descriptions are skipped."""
     episodes = [
-        _make_episode(3, "Real description here"),
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "25:19 - Tariffs Discussion</p>",
+        ),
         _make_episode(2, ""),
         _make_episode(1, "   "),
     ]
-    haiku_response = '[{"topic": "Test topic", "question": "Test question?", "episode_number": 3}]'
+    haiku_response = '[{"topic": "Tariffs Discussion", "question": "What about tariffs?", "episode_number": 3}]'
 
     mock_client = MagicMock()
     mock_client.messages.create.return_value.content = [
@@ -95,6 +148,44 @@ def test_extract_topics_filters_empty_descriptions():
     assert "Ep 1" not in prompt_text
 
 
+def test_extract_topics_malformed_json_returns_empty():
+    """Haiku returns invalid JSON — extract_topics returns empty list."""
+    episodes = [
+        _make_episode(
+            1,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Host<br />"
+            "10:00 - Some Topic</p>",
+        ),
+    ]
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text="not valid json at all")
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+    assert result == []
+
+
+def test_extract_topics_api_error_returns_empty():
+    """Anthropic API raises an exception — extract_topics returns empty list."""
+    episodes = [
+        _make_episode(
+            1,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Host<br />"
+            "10:00 - Some Topic</p>",
+        ),
+    ]
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = Exception("API down")
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+    assert result == []
+
+
 def test_extract_topics_no_episodes_returns_empty():
     """No episodes at all — returns empty list without calling Haiku."""
     mock_client = MagicMock()
@@ -107,6 +198,19 @@ def test_extract_topics_no_episodes_returns_empty():
 def test_extract_topics_all_empty_descriptions_returns_empty():
     """All episodes have empty descriptions — returns empty list without calling Haiku."""
     episodes = [_make_episode(1, ""), _make_episode(2, "")]
+    mock_client = MagicMock()
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+    assert result == []
+    mock_client.messages.create.assert_not_called()
+
+
+def test_extract_topics_all_descriptions_lack_timestamps():
+    """If all episodes have descriptions but none have timestamps, return [] without calling Haiku."""
+    episodes = [
+        _make_episode(2, "Just a plain description"),
+        _make_episode(1, "Another plain description"),
+    ]
     mock_client = MagicMock()
 
     result = extract_topics(episodes, anthropic_client=mock_client)
