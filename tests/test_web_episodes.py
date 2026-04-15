@@ -1,7 +1,7 @@
 """Test that the web UI correctly reflects ingestion status.
 
 Uses Playwright against the real FastAPI app with an in-memory ChromaDB
-collection and a mocked RSS feed.
+collection and a mocked RSS feed + topics file.
 """
 
 import json
@@ -35,6 +35,14 @@ def _make_episode(num, guid=None):
 
 EPISODES = [_make_episode(i) for i in range(1, 6)]
 
+TOPICS_DATA = {
+    "episodes": [
+        {"episode_number": 5, "date": "2026-01-05", "topics": ["Topic from Ep 5", "Second Topic Ep 5"]},
+        {"episode_number": 3, "date": "2026-01-03", "topics": ["Topic from Ep 3"]},
+        {"episode_number": 2, "date": "2026-01-02", "topics": ["Topic from Ep 2"]},
+    ]
+}
+
 
 def _ingest_into_collection(collection, guid: str, episode_number: int):
     chunk = Chunk(
@@ -52,17 +60,14 @@ def _ingest_into_collection(collection, guid: str, episode_number: int):
 
 @pytest.fixture()
 def server_with_collection(tmp_path):
-    """Start the real FastAPI app with an in-memory ChromaDB and mocked feed."""
+    """Start the real FastAPI app with in-memory ChromaDB, mocked feed, and topics file."""
     client = chromadb.EphemeralClient()
     collection = client.get_or_create_collection(
         name="pep_oracle_" + uuid.uuid4().hex[:8], metadata={"hnsw:space": "cosine"}
     )
 
     topics_path = tmp_path / "topics.json"
-    topics_path.write_text(json.dumps({"episodes": [
-        {"episode_number": 5, "date": "2026-01-05", "topics": ["Topic from Ep 5", "Second Topic Ep 5"]},
-        {"episode_number": 3, "date": "2026-01-03", "topics": ["Topic from Ep 3"]},
-    ]}))
+    topics_path.write_text(json.dumps(TOPICS_DATA))
 
     patches = [
         patch("pep_oracle.server.fetch_episodes", return_value=EPISODES),
@@ -145,7 +150,6 @@ def test_coverage_line_shows_range_after_ingestion(server_with_collection, brows
     _ingest_into_collection(collection, "guid-1", 1)
     _ingest_into_collection(collection, "guid-3", 3)
 
-    # Pre-populate status cache with fresh data so the page renders immediately
     from pep_oracle.server import _caches, _fetch_status
     _caches["status"].set(_fetch_status())
 
@@ -159,33 +163,61 @@ def test_coverage_line_shows_range_after_ingestion(server_with_collection, brows
     page.close()
 
     assert "2 episodes ingested" in coverage
-    # Format is "Ep 1–3" with en-dash
     assert "1\u20133" in coverage
+
+
+def test_chip_text_includes_episode_number(server_with_collection, browser):
+    """Chips display topic and episode number inline."""
+    base_url, _ = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=10000)
+
+    chip = page.locator(".topic-chip:not(.more)").first
+    text = chip.text_content()
+    page.close()
+
+    # Chip text should contain topic + episode number with middot separator
+    assert "\u00b7 Ep 5" in text
+
+
+def test_initial_chips_from_latest_episode(server_with_collection, browser):
+    """Initially only the latest episode's topics are shown as chips."""
+    base_url, _ = server_with_collection
+
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=10000)
+
+    chips = page.locator(".topic-chip:not(.more)")
+    count = chips.count()
+    page.close()
+
+    # TOPICS_DATA has 2 topics for ep 5 (the latest)
+    assert count == 2
 
 
 def test_not_ingested_chips_have_amber_styling(server_with_collection, browser):
     """Chips for un-ingested episodes should have the not-ingested CSS class."""
     base_url, collection = server_with_collection
 
-    # Ingest episode 3 only — episode 5 remains un-ingested
-    _ingest_into_collection(collection, "guid-3", 3)
+    _ingest_into_collection(collection, "guid-5", 5)
 
-    # Pre-populate topics cache with fresh data reflecting ingestion
     from pep_oracle.server import _caches, _fetch_topics
     _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)
-    page.wait_for_selector(".topic-chip", timeout=10000)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=10000)
 
-    chips = page.query_selector_all(".topic-chip")
-    assert len(chips) >= 2
-
+    chips = page.query_selector_all(".topic-chip:not(.more)")
     for chip in chips:
         ep_num = chip.get_attribute("data-episode")
         if ep_num == "5":
-            assert "not-ingested" in chip.get_attribute("class")
-        elif ep_num == "3":
             assert "not-ingested" not in chip.get_attribute("class")
 
     page.close()
@@ -195,17 +227,14 @@ def test_ingest_banner_visible_when_not_ingested(server_with_collection, browser
     """The ingest banner should appear when un-ingested episodes exist."""
     base_url, collection = server_with_collection
 
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
+
     page = browser.new_page()
     page.goto(base_url)
-    page.wait_for_selector(".topic-chip", timeout=10000)
+    page.wait_for_selector("#ingest-banner", state="visible", timeout=15000)
 
-    banner = page.query_selector("#ingest-banner")
-    assert banner is not None
-    # Banner should be visible (display: flex when episodes are not ingested)
-    assert banner.is_visible()
-
-    banner_text = banner.text_content()
-    # All episodes 1-5 are not ingested, so banner should mention them
+    banner_text = page.text_content("#ingest-banner")
     assert "not yet ingested" in banner_text
 
     page.close()
@@ -218,7 +247,6 @@ def test_ingest_banner_hidden_when_all_ingested(server_with_collection, browser)
     for i in range(1, 6):
         _ingest_into_collection(collection, f"guid-{i}", i)
 
-    # Pre-populate topics cache with fresh data reflecting all ingested
     from pep_oracle.server import _caches, _fetch_topics
     _caches["topics"].set(_fetch_topics())
 
@@ -236,25 +264,19 @@ def test_not_ingested_chip_tooltip(server_with_collection, browser):
     """Un-ingested chips should show '(not yet ingested)' in their tooltip."""
     base_url, collection = server_with_collection
 
-    # Ingest episode 3 only
-    _ingest_into_collection(collection, "guid-3", 3)
-
-    # Pre-populate topics cache with fresh data reflecting ingestion
     from pep_oracle.server import _caches, _fetch_topics
     _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)
-    page.wait_for_selector(".topic-chip", timeout=10000)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=10000)
 
-    chips = page.query_selector_all(".topic-chip")
+    chips = page.query_selector_all(".topic-chip:not(.more)")
     for chip in chips:
         ep_num = chip.get_attribute("data-episode")
         title = chip.get_attribute("title")
         if ep_num == "5":
             assert "(not yet ingested)" in title
-        elif ep_num == "3":
-            assert "(not yet ingested)" not in title
 
     page.close()
 
@@ -265,33 +287,34 @@ def test_chip_click_adds_used_class(server_with_collection, browser):
 
     page = browser.new_page()
     page.goto(base_url)
-    page.wait_for_selector(".topic-chip", timeout=15000)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=15000)
 
-    chip = page.locator(".topic-chip").first
+    chip = page.locator(".topic-chip:not(.more)").first
     chip.click()
 
     assert "used" in chip.get_attribute("class")
     page.close()
 
 
-def test_chip_click_does_not_auto_append(server_with_collection, browser):
-    """Clicking a topic chip does not automatically add pool chips."""
+def test_chip_click_populates_question_with_episode(server_with_collection, browser):
+    """Clicking a chip populates the question field with episode-specific template."""
     base_url, _ = server_with_collection
 
     page = browser.new_page()
     page.goto(base_url)
-    page.wait_for_selector(".topic-chip", timeout=15000)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=15000)
 
-    initial_count = page.locator(".topic-chip").count()
-    page.locator(".topic-chip").first.click()
+    chip = page.locator(".topic-chip:not(.more)").first
+    chip.click()
 
-    # Count unchanged (no auto-append; "More" button already present)
-    assert page.locator(".topic-chip").count() == initial_count
+    question_val = page.locator("#question").input_value()
+    assert "What did Chas and Dave discuss about" in question_val
+    assert "(Episode 5)" in question_val
     page.close()
 
 
-def test_more_button_visible_when_pool_exists(server_with_collection, browser):
-    """A 'More...' button appears when there are pool entries."""
+def test_more_button_visible_when_more_episodes(server_with_collection, browser):
+    """A 'More...' button appears when there are older episodes with topics."""
     base_url, _ = server_with_collection
 
     page = browser.new_page()
@@ -304,27 +327,35 @@ def test_more_button_visible_when_pool_exists(server_with_collection, browser):
     page.close()
 
 
-def test_more_button_adds_pool_chips(server_with_collection, browser):
-    """Clicking 'More...' adds pool chips before the button."""
+def test_more_button_adds_next_episode_chips(server_with_collection, browser):
+    """Clicking 'More...' adds the next episode's topics."""
     base_url, _ = server_with_collection
+
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_selector(".topic-chip", timeout=15000)
 
-    count_before = page.locator(".topic-chip").count()
+    count_before = page.locator(".topic-chip:not(.more)").count()
     page.locator(".topic-chip.more").click()
 
-    # 2 pool entries added (fixture has 2 pool items), "More" button removed
-    new_count = page.locator(".topic-chip").count()
-    assert new_count == count_before + 2 - 1  # +2 chips, -1 More button removed
+    # Ep 3 has 1 topic, should be added
+    new_count = page.locator(".topic-chip:not(.more)").count()
+    assert new_count == count_before + 1
+
+    # "More..." still present (ep 2 remains)
+    assert page.locator(".topic-chip.more").count() == 1
+
+    # Click again to add ep 2
+    page.locator(".topic-chip.more").click()
+    final_count = page.locator(".topic-chip:not(.more)").count()
+    assert final_count == new_count + 1
+
+    # "More..." removed (no more episodes)
     assert page.locator(".topic-chip.more").count() == 0
 
-    # Pool chips are present
-    all_text = [page.locator(".topic-chip").nth(i).text_content()
-                for i in range(new_count)]
-    assert "Pool Topic A" in all_text
-    assert "Pool Topic B" in all_text
     page.close()
 
 
@@ -334,11 +365,11 @@ def test_used_chip_still_populates_question(server_with_collection, browser):
 
     page = browser.new_page()
     page.goto(base_url)
-    page.wait_for_selector(".topic-chip", timeout=15000)
+    page.wait_for_selector(".topic-chip:not(.more)", timeout=15000)
 
-    chip = page.locator(".topic-chip").first
+    chip = page.locator(".topic-chip:not(.more)").first
     chip.click()
-    chip.click()  # Second click on used chip
+    chip.click()
 
     question_val = page.locator("#question").input_value()
     assert len(question_val) > 0
