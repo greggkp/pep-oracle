@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Eager cache refresh so data is ready when the browser loads
     asyncio.create_task(trigger_refresh(_caches["status"], _fetch_status))
     asyncio.create_task(trigger_refresh(_caches["episodes"], _fetch_episodes))
-    asyncio.create_task(trigger_refresh(_caches["topics"], _fetch_topics))
+    # Topics refresh is deferred until a user hits /topics (avoids Haiku call on startup)
     yield
 
 
