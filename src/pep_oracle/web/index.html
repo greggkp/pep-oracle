@@ -446,18 +446,18 @@
     }
   }
 
-  let topicPool = [];
+  let remainingEpisodes = [];
 
-  function createChip(t, isNew) {
+  function createChip(topic, episodeNumber, isNew) {
     const chip = document.createElement("button");
     chip.className = "topic-chip" + (isNew ? " not-ingested" : "");
-    chip.textContent = t.topic;
+    chip.textContent = topic + " \u00b7 Ep " + episodeNumber;
     chip.title = isNew
-      ? "Ep " + t.episode_number + " (not yet ingested)"
-      : "Ep " + t.episode_number;
-    chip.dataset.episode = t.episode_number;
+      ? "Ep " + episodeNumber + " (not yet ingested)"
+      : "Ep " + episodeNumber;
+    chip.dataset.episode = episodeNumber;
     chip.addEventListener("click", () => {
-      questionEl.value = t.question;
+      questionEl.value = "What did Chas and Dave discuss about " + topic + "? (Episode " + episodeNumber + ")";
       questionEl.focus();
       chip.classList.add("used");
     });
@@ -465,38 +465,40 @@
   }
 
   function addMoreChips() {
-    const batch = topicPool.splice(0, 4);
-    // Insert new chips before the "More" button
+    if (remainingEpisodes.length === 0) return;
+    const ep = remainingEpisodes.shift();
     const moreBtn = topicsEl.querySelector(".topic-chip.more");
-    batch.forEach(t => {
-      const isNew = notIngestedEpisodes.includes(t.episode_number);
-      topicsEl.insertBefore(createChip(t, isNew), moreBtn);
+    const isNew = notIngestedEpisodes.includes(ep.episode_number);
+    ep.topics.forEach(topic => {
+      topicsEl.insertBefore(createChip(topic, ep.episode_number, isNew), moreBtn);
     });
-    // Hide "More" button if pool is exhausted
-    if (topicPool.length === 0 && moreBtn) {
+    if (remainingEpisodes.length === 0 && moreBtn) {
       moreBtn.remove();
+    } else if (moreBtn) {
+      moreBtn.title = remainingEpisodes.length + " more episodes available";
     }
   }
 
   function renderTopics(data) {
-    if (!data || !data.topics || data.topics.length === 0) return;
+    if (!data || !data.episodes || data.episodes.length === 0) return;
 
     notIngestedEpisodes = data.not_ingested_episodes || [];
-    topicPool = data.pool ? data.pool.slice() : [];
 
-    // Clear existing chips and re-render
+    // First episode shown immediately, rest behind "More..."
+    const firstEp = data.episodes[0];
+    remainingEpisodes = data.episodes.slice(1);
+
     topicsEl.innerHTML = "";
-    data.topics.forEach(t => {
-      const isNew = notIngestedEpisodes.includes(t.episode_number);
-      topicsEl.appendChild(createChip(t, isNew));
+    const isNew = notIngestedEpisodes.includes(firstEp.episode_number);
+    firstEp.topics.forEach(topic => {
+      topicsEl.appendChild(createChip(topic, firstEp.episode_number, isNew));
     });
 
-    // Add "More" button if pool has entries
-    if (topicPool.length > 0) {
+    if (remainingEpisodes.length > 0) {
       const moreBtn = document.createElement("button");
       moreBtn.className = "topic-chip more";
       moreBtn.textContent = "More\u2026";
-      moreBtn.title = topicPool.length + " more topics available";
+      moreBtn.title = remainingEpisodes.length + " more episodes available";
       moreBtn.addEventListener("click", addMoreChips);
       topicsEl.appendChild(moreBtn);
     }
