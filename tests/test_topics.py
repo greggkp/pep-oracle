@@ -149,7 +149,7 @@ def test_extract_topics_filters_empty_descriptions():
 
 
 def test_extract_topics_malformed_json_returns_empty():
-    """Haiku returns invalid JSON — extract_topics returns empty list."""
+    """Haiku returns invalid JSON — extract_topics returns empty dict."""
     episodes = [
         _make_episode(
             1,
@@ -169,7 +169,7 @@ def test_extract_topics_malformed_json_returns_empty():
 
 
 def test_extract_topics_api_error_returns_empty():
-    """Anthropic API raises an exception — extract_topics returns empty list."""
+    """Anthropic API raises an exception — extract_topics returns empty dict."""
     episodes = [
         _make_episode(
             1,
@@ -187,7 +187,7 @@ def test_extract_topics_api_error_returns_empty():
 
 
 def test_extract_topics_no_episodes_returns_empty():
-    """No episodes at all — returns empty list without calling Haiku."""
+    """No episodes at all — returns empty dict without calling Haiku."""
     mock_client = MagicMock()
 
     result = extract_topics([], anthropic_client=mock_client)
@@ -196,7 +196,7 @@ def test_extract_topics_no_episodes_returns_empty():
 
 
 def test_extract_topics_all_empty_descriptions_returns_empty():
-    """All episodes have empty descriptions — returns empty list without calling Haiku."""
+    """All episodes have empty descriptions — returns empty dict without calling Haiku."""
     episodes = [_make_episode(1, ""), _make_episode(2, "")]
     mock_client = MagicMock()
 
