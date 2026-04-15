@@ -161,6 +161,30 @@ def save_topics(new_episodes: list[dict], path: Path | None = None) -> None:
     path.write_text(json.dumps({"episodes": merged}, indent=2) + "\n")
 
 
+def bootstrap_topics(episodes: list[Episode], path: Path | None = None) -> None:
+    """Generate topics.json from all episodes' descriptions.
+
+    Used on first /topics request when topics.json doesn't exist yet.
+    Parses timestamp labels and cleans them for each episode.
+    """
+    if path is None:
+        from pep_oracle.config import TOPICS_PATH
+        path = TOPICS_PATH
+    entries: list[dict] = []
+    for ep in episodes:
+        if ep.episode_number is None:
+            continue
+        labels = parse_description_topics(ep.description or "")
+        cleaned = clean_episode_topics(labels)
+        if cleaned:
+            entries.append({
+                "episode_number": ep.episode_number,
+                "date": ep.pub_date.strftime("%Y-%m-%d"),
+                "topics": cleaned,
+            })
+    save_topics(entries, path)
+
+
 def extract_topics(
     episodes: list[Episode],
     count: int = 5,
