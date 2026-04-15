@@ -47,7 +47,7 @@ Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastA
 Pre-process question via Claude Haiku (extract date/episode filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown
 
 **Topic chips** (`topics.py`):
-`server.py` calls `extract_topics()` at `/topics` endpoint → `parse_description_topics()` extracts topic labels from episode timestamp sections (filtering out meta-segments like Introducing, Gratefuls) → Claude Haiku curates 5-8 topic objects (label, question, episode_number) from the parsed labels, with show-specific segment context (Unleashed, Correspondence, Not Normal, etc.). Latest episode is prioritized.
+Topics are extracted deterministically from episode show notes at ingestion time: `parse_description_topics()` extracts timestamp labels → `clean_episode_topics()` strips segment prefixes (Correspondence, Not Normal, Stats Nug, Policy Time), extracts parenthetical subtopics, cleans Unleashed entries, and strips Cont. suffixes → persisted to `~/.pep-oracle/topics.json` per episode. `/topics` endpoint reads from file — no API call. Frontend renders chips grouped by episode with inline episode numbers ("Cuba · Ep 253"), "More..." button loads older episodes.
 
 ## Key design decisions
 
