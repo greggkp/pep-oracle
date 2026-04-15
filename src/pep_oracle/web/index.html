@@ -141,6 +141,13 @@
     opacity: 0.75;
   }
   .topic-chip.not-ingested:hover { background: #fee2b3; }
+  .topic-chip.used {
+    opacity: 0.6;
+    background: #f0f0f0;
+    color: #6b7280;
+    border-color: #d1d5db;
+  }
+  .topic-chip.used:hover { background: #e5e5e5; }
   #ingest-banner {
     display: none;
     background: #fffbeb;
@@ -432,27 +439,43 @@
     }
   }
 
+  let topicPool = [];
+
+  function createChip(t, isNew) {
+    const chip = document.createElement("button");
+    chip.className = "topic-chip" + (isNew ? " not-ingested" : "");
+    chip.textContent = t.topic;
+    chip.title = isNew
+      ? "Ep " + t.episode_number + " (not yet ingested)"
+      : "Ep " + t.episode_number;
+    chip.dataset.episode = t.episode_number;
+    chip.addEventListener("click", () => {
+      questionEl.value = t.question;
+      questionEl.focus();
+      if (!chip.classList.contains("used")) {
+        chip.classList.add("used");
+        // Append a fresh chip from the pool if available
+        if (topicPool.length > 0) {
+          const next = topicPool.shift();
+          const nextIsNew = notIngestedEpisodes.includes(next.episode_number);
+          topicsEl.appendChild(createChip(next, nextIsNew));
+        }
+      }
+    });
+    return chip;
+  }
+
   function renderTopics(data) {
     if (!data || !data.topics || data.topics.length === 0) return;
 
     notIngestedEpisodes = data.not_ingested_episodes || [];
+    topicPool = data.pool ? data.pool.slice() : [];
 
     // Clear existing chips and re-render
     topicsEl.innerHTML = "";
     data.topics.forEach(t => {
-      const chip = document.createElement("button");
       const isNew = notIngestedEpisodes.includes(t.episode_number);
-      chip.className = "topic-chip" + (isNew ? " not-ingested" : "");
-      chip.textContent = t.topic;
-      chip.title = isNew
-        ? "Ep " + t.episode_number + " (not yet ingested)"
-        : "Ep " + t.episode_number;
-      chip.dataset.episode = t.episode_number;
-      chip.addEventListener("click", () => {
-        questionEl.value = t.question;
-        questionEl.focus();
-      });
-      topicsEl.appendChild(chip);
+      topicsEl.appendChild(createChip(t, isNew));
     });
     topicsEl.dataset.loaded = "true";
     if (conversationHistory.length === 0) {
