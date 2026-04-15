@@ -64,10 +64,16 @@ def server_with_collection():
         patch("pep_oracle.server.get_ingested_guids", wraps=lambda col: get_ingested_guids(collection)),
         patch("pep_oracle.server.get_ingestion_stats", wraps=lambda col: get_ingestion_stats(collection)),
         patch("pep_oracle.server.CHROMA_DIR", Path("/tmp/fake-chroma")),
-        patch("pep_oracle.server.extract_topics", return_value=[
-            {"topic": "Topic from Ep 3", "question": "What about Ep 3?", "episode_number": 3},
-            {"topic": "Topic from Ep 5", "question": "What about Ep 5?", "episode_number": 5},
-        ]),
+        patch("pep_oracle.server.extract_topics", return_value={
+            "topics": [
+                {"topic": "Topic from Ep 3", "question": "What about Ep 3?", "episode_number": 3},
+                {"topic": "Topic from Ep 5", "question": "What about Ep 5?", "episode_number": 5},
+            ],
+            "pool": [
+                {"topic": "Pool Topic A", "question": "What about Pool Topic A on the latest episode?", "episode_number": 4},
+                {"topic": "Pool Topic B", "question": "What about Pool Topic B on the latest episode?", "episode_number": 3},
+            ],
+        }),
     ]
     for p in patches:
         p.start()
@@ -253,4 +259,85 @@ def test_not_ingested_chip_tooltip(server_with_collection, browser):
         elif ep_num == "3":
             assert "(not yet ingested)" not in title
 
+    page.close()
+
+
+def test_chip_click_adds_used_class(server_with_collection, browser):
+    """Clicking a topic chip adds the 'used' CSS class."""
+    base_url, _ = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector(".topic-chip", timeout=15000)
+
+    chip = page.locator(".topic-chip").first
+    chip.click()
+
+    assert "used" in chip.get_attribute("class")
+    page.close()
+
+
+def test_chip_click_appends_pool_chip(server_with_collection, browser):
+    """Clicking a chip appends a new chip from the pool."""
+    base_url, _ = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector(".topic-chip", timeout=15000)
+
+    initial_count = page.locator(".topic-chip").count()
+    page.locator(".topic-chip").first.click()
+
+    new_count = page.locator(".topic-chip").count()
+    assert new_count == initial_count + 1
+
+    # The new chip should be the first pool topic
+    last_chip = page.locator(".topic-chip").last
+    assert last_chip.text_content() == "Pool Topic A"
+    page.close()
+
+
+def test_used_chip_still_populates_question(server_with_collection, browser):
+    """Clicking a used chip still populates the question field without adding another pool chip."""
+    base_url, _ = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector(".topic-chip", timeout=15000)
+
+    chip = page.locator(".topic-chip").first
+    chip.click()  # First click: marks as used, appends pool chip
+    count_after_first = page.locator(".topic-chip").count()
+
+    chip.click()  # Second click: should NOT append another pool chip
+    count_after_second = page.locator(".topic-chip").count()
+    assert count_after_second == count_after_first
+
+    # Question field should still be populated
+    question_val = page.locator("#question").input_value()
+    assert len(question_val) > 0
+    page.close()
+
+
+def test_pool_exhaustion_no_extra_chips(server_with_collection, browser):
+    """When pool is empty, clicking a chip adds no new chip."""
+    base_url, _ = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector(".topic-chip", timeout=15000)
+
+    # Click all original chips to exhaust the pool (2 original chips, 2 pool entries)
+    chips = page.locator(".topic-chip:not(.used)")
+    chips.nth(0).click()  # uses pool entry 1
+    chips = page.locator(".topic-chip:not(.used)")
+    chips.nth(0).click()  # uses pool entry 2
+
+    # Now click remaining unused chips — pool entries themselves
+    chips = page.locator(".topic-chip:not(.used)")
+    count_before = page.locator(".topic-chip").count()
+    if chips.count() > 0:
+        chips.nth(0).click()  # pool is exhausted, no new chip
+    count_after = page.locator(".topic-chip").count()
+    assert count_after == count_before
     page.close()
