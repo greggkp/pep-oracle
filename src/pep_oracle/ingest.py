@@ -3,10 +3,12 @@ import logging
 import click
 
 from pep_oracle.chunking import chunk_transcript
+from pep_oracle.config import TOPICS_PATH
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.models import Episode
 from pep_oracle.store import add_chunks, delete_episode, get_client, get_collection, get_ingested_guids
+from pep_oracle.topics import clean_episode_topics, parse_description_topics, save_topics
 from pep_oracle.transcripts.manager import get_transcript
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,16 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
         progress_callback(f"storing {len(chunks)} excerpts")
     add_chunks(collection, chunks, embeddings)
     click.echo(f"  Stored {len(chunks)} excerpts")
+
+    # Extract and save topics from show notes
+    raw_labels = parse_description_topics(episode.description or "")
+    cleaned = clean_episode_topics(raw_labels)
+    if cleaned:
+        save_topics([{
+            "episode_number": episode.episode_number,
+            "date": episode.pub_date.strftime("%Y-%m-%d"),
+            "topics": cleaned,
+        }], TOPICS_PATH)
     return True
 
 
