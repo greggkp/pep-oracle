@@ -148,6 +148,13 @@
     border-color: #d1d5db;
   }
   .topic-chip.used:hover { background: #e5e5e5; }
+  .topic-chip.more {
+    background: transparent;
+    color: #4a90d9;
+    border-style: dashed;
+    border-color: #4a90d9;
+  }
+  .topic-chip.more:hover { background: #e8f0fe; }
   #ingest-banner {
     display: none;
     background: #fffbeb;
@@ -452,17 +459,23 @@
     chip.addEventListener("click", () => {
       questionEl.value = t.question;
       questionEl.focus();
-      if (!chip.classList.contains("used")) {
-        chip.classList.add("used");
-        // Append a fresh chip from the pool if available
-        if (topicPool.length > 0) {
-          const next = topicPool.shift();
-          const nextIsNew = notIngestedEpisodes.includes(next.episode_number);
-          topicsEl.appendChild(createChip(next, nextIsNew));
-        }
-      }
+      chip.classList.add("used");
     });
     return chip;
+  }
+
+  function addMoreChips() {
+    const batch = topicPool.splice(0, 4);
+    // Insert new chips before the "More" button
+    const moreBtn = topicsEl.querySelector(".topic-chip.more");
+    batch.forEach(t => {
+      const isNew = notIngestedEpisodes.includes(t.episode_number);
+      topicsEl.insertBefore(createChip(t, isNew), moreBtn);
+    });
+    // Hide "More" button if pool is exhausted
+    if (topicPool.length === 0 && moreBtn) {
+      moreBtn.remove();
+    }
   }
 
   function renderTopics(data) {
@@ -477,6 +490,17 @@
       const isNew = notIngestedEpisodes.includes(t.episode_number);
       topicsEl.appendChild(createChip(t, isNew));
     });
+
+    // Add "More" button if pool has entries
+    if (topicPool.length > 0) {
+      const moreBtn = document.createElement("button");
+      moreBtn.className = "topic-chip more";
+      moreBtn.textContent = "More\u2026";
+      moreBtn.title = topicPool.length + " more topics available";
+      moreBtn.addEventListener("click", addMoreChips);
+      topicsEl.appendChild(moreBtn);
+    }
+
     topicsEl.dataset.loaded = "true";
     if (conversationHistory.length === 0) {
       topicsEl.style.display = "flex";
