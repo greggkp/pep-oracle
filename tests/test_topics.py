@@ -249,10 +249,11 @@ def test_extract_topics_returns_dict_with_topics_and_pool():
     assert result["topics"][0]["topic"] == "Cuba"
     # Remaining parsed labels (not selected by Haiku) are in pool
     pool_topics = [entry["topic"] for entry in result["pool"]]
-    assert "Not Normal (Ballroom, Money)" in pool_topics
     assert "Iran Latest" in pool_topics
     # Haiku-selected label is NOT in pool
     assert "Cuba" not in pool_topics
+    # Roundup segments are filtered from pool
+    assert "Not Normal (Ballroom, Money)" not in pool_topics
 
 
 def test_extract_topics_pool_entries_have_correct_shape():
@@ -282,6 +283,39 @@ def test_extract_topics_pool_entries_have_correct_shape():
         assert "question" in entry
         assert "episode_number" in entry
         assert "latest episode" in entry["question"]
+
+
+def test_extract_topics_pool_filters_roundup_segments():
+    """Correspondence, Not Normal, and bare Unleashed labels are excluded from pool."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "16:28 - Correspondence (Corrections, Stings)<br />"
+            "25:19 - Not Normal (Ballroom, Money)<br />"
+            "45:00 - Unleashed with Lachie<br />"
+            "1:06:30 - Unleashed: Birthright Citizenship Cont.<br />"
+            "1:23:04 - Iran Latest</p>",
+        ),
+    ]
+    haiku_response = '[{"topic": "Iran Latest", "question": "Q?", "episode_number": 3}]'
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+    pool_topics = [e["topic"] for e in result["pool"]]
+
+    # Correspondence and Not Normal filtered out
+    assert not any("Correspondence" in t for t in pool_topics)
+    assert not any("Not Normal" in t for t in pool_topics)
+    # Bare "Unleashed with X" filtered out
+    assert "Unleashed with Lachie" not in pool_topics
+    # "Unleashed: Topic" cleaned to just "Topic"
+    assert "Birthright Citizenship Cont." in pool_topics
 
 
 def test_extract_topics_pool_empty_when_all_selected():
