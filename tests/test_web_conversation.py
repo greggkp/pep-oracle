@@ -37,7 +37,7 @@ def server_with_mock_ask():
             "earliest_episode": None, "latest_episode": None,
         }),
         patch("pep_oracle.server.CHROMA_DIR", Path("/tmp/fake-chroma")),
-        patch("pep_oracle.server.extract_topics", return_value=[]),
+        patch("pep_oracle.server.TOPICS_PATH", Path("/tmp/nonexistent-topics.json")),
     ]
     for p in patches:
         p.start()

@@ -206,29 +206,32 @@ def test_root_returns_html(client_and_collection):
     assert "text/html" in resp.headers["content-type"]
 
 
-def test_topics_returns_extracted_topics(client_and_collection):
+def test_topics_returns_file_based_topics(client_and_collection, tmp_path):
     client, _ = client_and_collection
-    mock_topics = [
-        {"topic": "Tariffs", "question": "What about tariffs?", "episode_number": 3},
-        {"topic": "Immigration", "question": "What about immigration?", "episode_number": 1},
-    ]
+    topics_path = tmp_path / "topics.json"
+    import json
+    topics_path.write_text(json.dumps({"episodes": [
+        {"episode_number": 3, "date": "2026-01-03", "topics": ["Tariffs", "Immigration"]},
+    ]}))
     from pep_oracle.server import _caches, _fetch_topics
-    with patch("pep_oracle.server.extract_topics", return_value=mock_topics):
+    with patch("pep_oracle.server.TOPICS_PATH", topics_path):
         _caches["topics"].set(_fetch_topics())
     resp = client.get("/topics")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["topics"] == mock_topics
+    assert len(data["episodes"]) == 1
+    assert data["episodes"][0]["topics"] == ["Tariffs", "Immigration"]
 
 
-def test_topics_returns_empty_on_failure(client_and_collection):
+def test_topics_returns_empty_when_no_file(client_and_collection, tmp_path):
     client, _ = client_and_collection
+    topics_path = tmp_path / "nonexistent.json"
     from pep_oracle.server import _caches, _fetch_topics
-    with patch("pep_oracle.server.extract_topics", return_value=[]):
+    with patch("pep_oracle.server.TOPICS_PATH", topics_path):
         _caches["topics"].set(_fetch_topics())
     resp = client.get("/topics")
     assert resp.status_code == 200
-    assert resp.json()["topics"] == []
+    assert resp.json()["episodes"] == []
 
 
 def test_topics_includes_stale_field(client_and_collection):

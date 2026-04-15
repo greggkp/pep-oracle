@@ -8,12 +8,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
-from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT
+from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.ingest import ingest_all
 from pep_oracle.query import ask as do_ask
 from pep_oracle.store import get_client, get_collection, get_ingested_guids, get_ingestion_stats
-from pep_oracle.topics import extract_topics
+from pep_oracle.topics import bootstrap_topics, load_topics
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Eager cache refresh so data is ready when the browser loads
     asyncio.create_task(trigger_refresh(_caches["status"], _fetch_status))
     asyncio.create_task(trigger_refresh(_caches["episodes"], _fetch_episodes))
-    # Topics refresh is deferred until a user hits /topics (avoids Haiku call on startup)
+    # Topics refresh is deferred until a user hits /topics
     yield
 
 
@@ -146,11 +146,12 @@ async def api_episodes():
 
 
 def _fetch_topics():
-    """Fetch fresh topics data (called by cache refresh)."""
+    """Fetch topics data from disk (called by cache refresh)."""
     episodes = fetch_episodes()
-    result = extract_topics(episodes)
-    topics = result.get("topics", []) if isinstance(result, dict) else result
-    pool = result.get("pool", []) if isinstance(result, dict) else []
+    # Bootstrap topics.json from feed if it doesn't exist
+    if not TOPICS_PATH.exists():
+        bootstrap_topics(episodes, TOPICS_PATH)
+    topic_episodes = load_topics(TOPICS_PATH)
     # Feed-based detection: compare ALL feed episodes against ChromaDB
     feed_eps = {ep.episode_number for ep in episodes if ep.episode_number is not None}
     try:
@@ -164,11 +165,10 @@ def _fetch_topics():
     except Exception:
         ingested_eps = set()
     not_ingested = sorted(feed_eps - ingested_eps)
-    # Only flag episodes newer than the most recently ingested
     if ingested_eps:
         latest_ingested = max(ingested_eps)
         not_ingested = [ep for ep in not_ingested if ep > latest_ingested]
-    return {"topics": topics, "pool": pool, "not_ingested_episodes": not_ingested}
+    return {"episodes": topic_episodes, "not_ingested_episodes": not_ingested}
 
 
 @app.get("/topics")
@@ -176,7 +176,7 @@ async def api_topics():
     cache = _caches["topics"]
     if cache.is_stale():
         asyncio.create_task(trigger_refresh(cache, _fetch_topics))
-    data = cache.data or {"topics": [], "pool": [], "not_ingested_episodes": []}
+    data = cache.data or {"episodes": [], "not_ingested_episodes": []}
     return {**data, "stale": cache.is_stale() or cache.refreshing}
 
 

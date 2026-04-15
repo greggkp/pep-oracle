@@ -4,6 +4,7 @@ Uses Playwright against the real FastAPI app with an in-memory ChromaDB
 collection and a mocked RSS feed.
 """
 
+import json
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -18,7 +19,6 @@ pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
 from pep_oracle.models import Chunk, Episode
 from pep_oracle.store import add_chunks, get_ingested_guids, get_ingestion_stats
-from pep_oracle.topics import extract_topics as _real_extract_topics
 
 
 def _make_episode(num, guid=None):
@@ -51,12 +51,18 @@ def _ingest_into_collection(collection, guid: str, episode_number: int):
 
 
 @pytest.fixture()
-def server_with_collection():
+def server_with_collection(tmp_path):
     """Start the real FastAPI app with an in-memory ChromaDB and mocked feed."""
     client = chromadb.EphemeralClient()
     collection = client.get_or_create_collection(
         name="pep_oracle_" + uuid.uuid4().hex[:8], metadata={"hnsw:space": "cosine"}
     )
+
+    topics_path = tmp_path / "topics.json"
+    topics_path.write_text(json.dumps({"episodes": [
+        {"episode_number": 5, "date": "2026-01-05", "topics": ["Topic from Ep 5", "Second Topic Ep 5"]},
+        {"episode_number": 3, "date": "2026-01-03", "topics": ["Topic from Ep 3"]},
+    ]}))
 
     patches = [
         patch("pep_oracle.server.fetch_episodes", return_value=EPISODES),
@@ -64,16 +70,7 @@ def server_with_collection():
         patch("pep_oracle.server.get_ingested_guids", wraps=lambda col: get_ingested_guids(collection)),
         patch("pep_oracle.server.get_ingestion_stats", wraps=lambda col: get_ingestion_stats(collection)),
         patch("pep_oracle.server.CHROMA_DIR", Path("/tmp/fake-chroma")),
-        patch("pep_oracle.server.extract_topics", return_value={
-            "topics": [
-                {"topic": "Topic from Ep 3", "question": "What about Ep 3?", "episode_number": 3},
-                {"topic": "Topic from Ep 5", "question": "What about Ep 5?", "episode_number": 5},
-            ],
-            "pool": [
-                {"topic": "Pool Topic A", "question": "What about Pool Topic A on the latest episode?", "episode_number": 4},
-                {"topic": "Pool Topic B", "question": "What about Pool Topic B on the latest episode?", "episode_number": 3},
-            ],
-        }),
+        patch("pep_oracle.server.TOPICS_PATH", topics_path),
     ]
     for p in patches:
         p.start()
