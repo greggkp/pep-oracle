@@ -94,6 +94,41 @@ def parse_description_topics(description: str) -> list[str]:
     ]
 
 
+def clean_episode_topics(labels: list[str]) -> list[str]:
+    """Clean a single episode's parsed labels for display as topic chips.
+
+    Processing:
+    1. Strip segment prefixes (Correspondence, Not Normal, Stats Nug, Policy Time)
+       and extract parenthetical subtopics as individual labels
+    2. Clean Unleashed: "Unleashed: Topic" -> "Topic"; bare "Unleashed with X" discarded
+    3. Strip "Cont." suffix from continuations
+    """
+    cleaned: list[str] = []
+    for label in labels:
+        # Segment prefixes: extract subtopics, discard segment name
+        if any(label.startswith(prefix) for prefix in _SEGMENT_PREFIXES):
+            match = _PARENS_RE.search(label)
+            if match:
+                for sub in match.group(1).split(","):
+                    sub = sub.strip()
+                    if sub:
+                        cleaned.append(sub)
+            continue
+
+        # Unleashed: extract topic or discard bare form
+        unleashed = _UNLEASHED_RE.match(label)
+        if unleashed:
+            label = unleashed.group(1).strip()
+        elif label.lower().startswith("unleashed"):
+            continue
+
+        # Strip Cont. suffix
+        label = _CONT_RE.sub("", label)
+
+        cleaned.append(label)
+    return cleaned
+
+
 def extract_topics(
     episodes: list[Episode],
     count: int = 5,
