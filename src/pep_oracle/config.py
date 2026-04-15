@@ -17,6 +17,7 @@ AUDIO_CACHE_DIR = CACHE_DIR / "audio"
 TRANSCRIPT_CACHE_DIR = CACHE_DIR / "transcripts"
 DIARIZATION_CACHE_DIR = CACHE_DIR / "diarization"
 CHROMA_DIR = DATA_DIR / "chroma"
+TOPICS_PATH = DATA_DIR / "topics.json"
 SPEAKER_PROFILES_PATH = DATA_DIR / "speaker_profiles.json"
 
 EMBEDDING_MODEL = "text-embedding-3-small"
