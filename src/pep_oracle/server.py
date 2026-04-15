@@ -148,7 +148,9 @@ async def api_episodes():
 def _fetch_topics():
     """Fetch fresh topics data (called by cache refresh)."""
     episodes = fetch_episodes()
-    topics = extract_topics(episodes)
+    result = extract_topics(episodes)
+    topics = result.get("topics", []) if isinstance(result, dict) else result
+    pool = result.get("pool", []) if isinstance(result, dict) else []
     # Feed-based detection: compare ALL feed episodes against ChromaDB
     feed_eps = {ep.episode_number for ep in episodes if ep.episode_number is not None}
     try:
@@ -166,7 +168,7 @@ def _fetch_topics():
     if ingested_eps:
         latest_ingested = max(ingested_eps)
         not_ingested = [ep for ep in not_ingested if ep > latest_ingested]
-    return {"topics": topics, "not_ingested_episodes": not_ingested}
+    return {"topics": topics, "pool": pool, "not_ingested_episodes": not_ingested}
 
 
 @app.get("/topics")
@@ -174,7 +176,7 @@ async def api_topics():
     cache = _caches["topics"]
     if cache.is_stale():
         asyncio.create_task(trigger_refresh(cache, _fetch_topics))
-    data = cache.data or {"topics": [], "not_ingested_episodes": []}
+    data = cache.data or {"topics": [], "pool": [], "not_ingested_episodes": []}
     return {**data, "stale": cache.is_stale() or cache.refreshing}
 
 

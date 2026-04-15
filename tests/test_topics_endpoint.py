@@ -38,10 +38,15 @@ def _make_episode_no_number(guid, title, day):
 
 FEED_EPISODES = [_make_episode(i) for i in range(1, 6)]
 
-MOCK_TOPICS = [
-    {"topic": "Topic A", "question": "What about A?", "episode_number": 5},
-    {"topic": "Topic B", "question": "What about B?", "episode_number": 4},
-]
+MOCK_TOPICS = {
+    "topics": [
+        {"topic": "Topic A", "question": "What about A?", "episode_number": 5},
+        {"topic": "Topic B", "question": "What about B?", "episode_number": 4},
+    ],
+    "pool": [
+        {"topic": "Topic C", "question": "What did they discuss about Topic C on the latest episode?", "episode_number": 5},
+    ],
+}
 
 
 def _ingest(collection, episode_number):
@@ -200,3 +205,14 @@ def test_topics_episodes_without_number_excluded():
         data = resp.json()
         # Should have episodes 1-5 but NOT the bonus (None episode_number)
         assert sorted(data["not_ingested_episodes"]) == [1, 2, 3, 4, 5]
+
+
+def test_topics_response_contains_pool(client_and_collection):
+    """The /topics response must include the pool field from extract_topics."""
+    client, _ = client_and_collection
+    _populate_topics_cache()
+    resp = client.get("/topics")
+    data = resp.json()
+    assert "pool" in data
+    assert len(data["pool"]) == 1
+    assert data["pool"][0]["topic"] == "Topic C"
