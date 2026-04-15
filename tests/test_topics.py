@@ -309,9 +309,12 @@ def test_extract_topics_pool_filters_roundup_segments():
     result = extract_topics(episodes, anthropic_client=mock_client)
     pool_topics = [e["topic"] for e in result["pool"]]
 
-    # Correspondence and Not Normal filtered out
-    assert not any("Correspondence" in t for t in pool_topics)
-    assert not any("Not Normal" in t for t in pool_topics)
+    # Segment names filtered out, but subtopics extracted
+    assert not any(t.startswith("Correspondence") for t in pool_topics)
+    assert not any(t.startswith("Not Normal") for t in pool_topics)
+    # Subtopics from segments are preserved
+    assert "Corrections" in pool_topics
+    assert "Stings" in pool_topics
     # Bare "Unleashed with X" filtered out
     assert "Unleashed with Lachie" not in pool_topics
     # "Unleashed: Topic Cont." cleaned to just "Topic" (Cont. stripped)
@@ -319,8 +322,8 @@ def test_extract_topics_pool_filters_roundup_segments():
     assert "Birthright Citizenship Cont." not in pool_topics
 
 
-def test_extract_topics_filters_roundup_from_curated():
-    """Not Normal and Correspondence are post-filtered from Haiku's curated selections."""
+def test_extract_topics_filters_roundup_from_curated_preserves_subtopics():
+    """Segment names are stripped from curated topics but subtopics are preserved in pool."""
     episodes = [
         _make_episode(
             3,
@@ -344,9 +347,56 @@ def test_extract_topics_filters_roundup_from_curated():
 
     result = extract_topics(episodes, anthropic_client=mock_client)
     curated_topics = [t["topic"] for t in result["topics"]]
+    pool_topics = [e["topic"] for e in result["pool"]]
 
-    assert "Cuba" in curated_topics
+    # Segment name stripped from curated
     assert "Not Normal (Flynn Settlement)" not in curated_topics
+    assert "Cuba" in curated_topics
+    # Subtopic preserved in pool
+    assert "Flynn Settlement" in pool_topics
+
+
+def test_extract_topics_filters_all_segment_names():
+    """Stats Nug, Policy Time, Correspondence, and Not Normal are all filtered as segments."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "10:00 - Stats Nug (Emergency Response)<br />"
+            "20:00 - Policy Time (Healthcare Reform)<br />"
+            "30:00 - Correspondence (Corrections, Stings)<br />"
+            "40:00 - Not Normal (Airport, Sharpies)<br />"
+            "1:06:30 - Cuba</p>",
+        ),
+    ]
+    haiku_response = (
+        '['
+        '{"topic": "Stats Nug (Emergency Response)", "question": "Q?", "episode_number": 3},'
+        '{"topic": "Cuba", "question": "What about Cuba?", "episode_number": 3}'
+        ']'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+    curated_topics = [t["topic"] for t in result["topics"]]
+    pool_topics = [e["topic"] for e in result["pool"]]
+    all_labels = curated_topics + pool_topics
+
+    # No segment names in any chips
+    for label in all_labels:
+        assert not label.startswith("Stats Nug"), f"Segment name leaked: {label}"
+        assert not label.startswith("Policy Time"), f"Segment name leaked: {label}"
+        assert not label.startswith("Correspondence"), f"Segment name leaked: {label}"
+        assert not label.startswith("Not Normal"), f"Segment name leaked: {label}"
+
+    # But subtopics are preserved in pool
+    assert "Emergency Response" in pool_topics
+    assert "Healthcare Reform" in pool_topics
 
 
 def test_extract_topics_pool_empty_when_all_selected():

@@ -7,10 +7,11 @@ from pep_oracle.models import Episode
 
 _TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s*-\s*(.+)")
 _SKIP_LABELS = ("Introducing", "Grateful")
-# Roundup segments to exclude from both curated topics and pool
-_ROUNDUP_PREFIXES = ("Correspondence", "Not Normal")
+# Recurring segment names — strip prefix, preserve parenthetical subtopics
+_SEGMENT_PREFIXES = ("Correspondence", "Not Normal", "Stats Nug", "Policy Time")
 _UNLEASHED_RE = re.compile(r"^Unleashed\s*:\s*(.+)", re.IGNORECASE)
 _CONT_RE = re.compile(r"\s+Cont\.?\s*$")
+_PARENS_RE = re.compile(r"\(([^)]+)\)")
 
 TOPIC_MODEL = "claude-haiku-4-5-20251001"
 
@@ -153,21 +154,45 @@ def extract_topics(
 
         topics = json.loads(raw)
 
-        # Post-filter curated topics: remove roundup segments Haiku selected
-        topics = [
-            t for t in topics
-            if not any(t["topic"].startswith(p) for p in _ROUNDUP_PREFIXES)
-        ]
+        # Post-filter curated topics: remove segment names, extract subtopics to pool
+        filtered_topics = []
+        extracted_subtopics: list[dict] = []
+        for t in topics:
+            if any(t["topic"].startswith(p) for p in _SEGMENT_PREFIXES):
+                # Extract parenthetical subtopics as individual pool entries
+                match = _PARENS_RE.search(t["topic"])
+                if match:
+                    for sub in match.group(1).split(","):
+                        sub = sub.strip()
+                        if sub:
+                            extracted_subtopics.append({
+                                "topic": sub,
+                                "question": f"What did they discuss about {sub} on the latest episode?",
+                                "episode_number": t["episode_number"],
+                            })
+            else:
+                filtered_topics.append(t)
+        topics = filtered_topics
 
-        # Build pool from labels Haiku didn't select, filtering roundup segments
+        # Build pool from labels Haiku didn't select, filtering segment names
         selected_labels = {t["topic"] for t in topics}
-        pool = []
+        pool = list(extracted_subtopics)
         for entry in all_labels:
             if entry["topic"] in selected_labels:
                 continue
             label = entry["topic"]
-            # Skip roundup segments (Correspondence, Not Normal)
-            if any(label.startswith(prefix) for prefix in _ROUNDUP_PREFIXES):
+            # Extract subtopics from segment labels, skip the segment name itself
+            if any(label.startswith(prefix) for prefix in _SEGMENT_PREFIXES):
+                match = _PARENS_RE.search(label)
+                if match:
+                    for sub in match.group(1).split(","):
+                        sub = sub.strip()
+                        if sub:
+                            pool.append({
+                                "topic": sub,
+                                "question": f"What did they discuss about {sub} on the latest episode?",
+                                "episode_number": entry["episode_number"],
+                            })
                 continue
             # Clean "Unleashed: Topic" → "Topic", skip bare "Unleashed with X"
             unleashed = _UNLEASHED_RE.match(label)
