@@ -48,8 +48,8 @@ def test_extract_topics_sends_parsed_labels_to_haiku():
 
     result = extract_topics(episodes, anthropic_client=mock_client)
 
-    assert len(result) == 1
-    assert result[0]["topic"] == "Cuba"
+    assert len(result["topics"]) == 1
+    assert result["topics"][0]["topic"] == "Cuba"
     mock_client.messages.create.assert_called_once()
 
     prompt_text = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
@@ -138,7 +138,7 @@ def test_extract_topics_filters_empty_descriptions():
     ]
 
     result = extract_topics(episodes, anthropic_client=mock_client)
-    assert len(result) == 1
+    assert len(result["topics"]) == 1
 
     # Verify only the episode with a real description was sent to Haiku
     call_args = mock_client.messages.create.call_args
@@ -165,7 +165,7 @@ def test_extract_topics_malformed_json_returns_empty():
     ]
 
     result = extract_topics(episodes, anthropic_client=mock_client)
-    assert result == []
+    assert result == {"topics": [], "pool": []}
 
 
 def test_extract_topics_api_error_returns_empty():
@@ -183,7 +183,7 @@ def test_extract_topics_api_error_returns_empty():
     mock_client.messages.create.side_effect = Exception("API down")
 
     result = extract_topics(episodes, anthropic_client=mock_client)
-    assert result == []
+    assert result == {"topics": [], "pool": []}
 
 
 def test_extract_topics_no_episodes_returns_empty():
@@ -191,7 +191,7 @@ def test_extract_topics_no_episodes_returns_empty():
     mock_client = MagicMock()
 
     result = extract_topics([], anthropic_client=mock_client)
-    assert result == []
+    assert result == {"topics": [], "pool": []}
     mock_client.messages.create.assert_not_called()
 
 
@@ -201,12 +201,12 @@ def test_extract_topics_all_empty_descriptions_returns_empty():
     mock_client = MagicMock()
 
     result = extract_topics(episodes, anthropic_client=mock_client)
-    assert result == []
+    assert result == {"topics": [], "pool": []}
     mock_client.messages.create.assert_not_called()
 
 
 def test_extract_topics_all_descriptions_lack_timestamps():
-    """If all episodes have descriptions but none have timestamps, return [] without calling Haiku."""
+    """If all episodes have descriptions but none have timestamps, return empty dict without calling Haiku."""
     episodes = [
         _make_episode(2, "Just a plain description"),
         _make_episode(1, "Another plain description"),
@@ -214,8 +214,97 @@ def test_extract_topics_all_descriptions_lack_timestamps():
     mock_client = MagicMock()
 
     result = extract_topics(episodes, anthropic_client=mock_client)
-    assert result == []
+    assert result == {"topics": [], "pool": []}
     mock_client.messages.create.assert_not_called()
+
+
+def test_extract_topics_returns_dict_with_topics_and_pool():
+    """extract_topics returns a dict with 'topics' (Haiku-selected) and 'pool' (remaining labels)."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "3:57 - Gratefuls (Sliwa)<br />"
+            "25:19 - Not Normal (Ballroom, Money)<br />"
+            "1:06:30 - Cuba<br />"
+            "1:23:04 - Iran Latest</p>",
+        ),
+    ]
+    # Haiku only selects Cuba
+    haiku_response = '[{"topic": "Cuba", "question": "What did they discuss about Cuba recently?", "episode_number": 3}]'
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+
+    assert isinstance(result, dict)
+    assert "topics" in result
+    assert "pool" in result
+    # Haiku-selected topic is in topics
+    assert len(result["topics"]) == 1
+    assert result["topics"][0]["topic"] == "Cuba"
+    # Remaining parsed labels (not selected by Haiku) are in pool
+    pool_topics = [entry["topic"] for entry in result["pool"]]
+    assert "Not Normal (Ballroom, Money)" in pool_topics
+    assert "Iran Latest" in pool_topics
+    # Haiku-selected label is NOT in pool
+    assert "Cuba" not in pool_topics
+
+
+def test_extract_topics_pool_entries_have_correct_shape():
+    """Pool entries have topic, question, and episode_number fields; question mentions latest episode."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "25:19 - Not Normal (Ballroom, Money)<br />"
+            "1:06:30 - Cuba<br />"
+            "1:23:04 - Iran Latest</p>",
+        ),
+    ]
+    # Haiku only picks Cuba — the other two go to pool
+    haiku_response = '[{"topic": "Cuba", "question": "What about Cuba recently?", "episode_number": 3}]'
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+
+    for entry in result["pool"]:
+        assert "topic" in entry
+        assert "question" in entry
+        assert "episode_number" in entry
+        assert "latest episode" in entry["question"]
+
+
+def test_extract_topics_pool_empty_when_all_selected():
+    """When Haiku selects all parsed labels, pool is empty."""
+    episodes = [
+        _make_episode(
+            1,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Host<br />"
+            "10:00 - Only Topic</p>",
+        ),
+    ]
+    # Haiku selects the only non-meta label
+    haiku_response = '[{"topic": "Only Topic", "question": "What about Only Topic recently?", "episode_number": 1}]'
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+
+    assert result["pool"] == []
 
 
 def test_parse_description_topics_extracts_labels():

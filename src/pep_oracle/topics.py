@@ -93,8 +93,15 @@ def extract_topics(
     episodes: list[Episode],
     count: int = 5,
     anthropic_client: anthropic.Anthropic | None = None,
-) -> list[dict]:
-    """Extract discussion topics from recent episodes via timestamp parsing + Haiku curation."""
+) -> dict:
+    """Extract discussion topics from recent episodes via timestamp parsing + Haiku curation.
+
+    Returns a dict with:
+    - "topics": Haiku-curated list of topic dicts (label, question, episode_number)
+    - "pool": remaining parsed labels not selected by Haiku, with template questions
+    """
+    _empty = {"topics": [], "pool": []}
+
     if anthropic_client is None:
         anthropic_client = anthropic.Anthropic()
 
@@ -103,19 +110,22 @@ def extract_topics(
     recent = sorted(with_desc, key=lambda ep: ep.pub_date, reverse=True)[:count]
 
     if not recent:
-        return []
+        return _empty
 
-    # Parse timestamp labels from each episode
+    # Parse timestamp labels from each episode, tracking all labels with episode numbers
     episode_lines = []
+    all_labels: list[dict] = []
     for ep in recent:
         labels = parse_description_topics(ep.description)
         if labels:
             header = f"Ep {ep.episode_number} ({ep.pub_date.strftime('%Y-%m-%d')}):"
             bullet_list = "\n".join(f"  - {label}" for label in labels)
             episode_lines.append(f"{header}\n{bullet_list}")
+            for label in labels:
+                all_labels.append({"topic": label, "episode_number": ep.episode_number})
 
     if not episode_lines:
-        return []
+        return _empty
 
     episodes_text = "\n\n".join(episode_lines)
 
@@ -137,6 +147,20 @@ def extract_topics(
             raw = raw.split("\n", 1)[1]
             raw = raw.rsplit("```", 1)[0]
 
-        return json.loads(raw)
+        topics = json.loads(raw)
+
+        # Build pool from labels Haiku didn't select
+        selected_labels = {t["topic"] for t in topics}
+        pool = [
+            {
+                "topic": entry["topic"],
+                "question": f"What did they discuss about {entry['topic']} on the latest episode?",
+                "episode_number": entry["episode_number"],
+            }
+            for entry in all_labels
+            if entry["topic"] not in selected_labels
+        ]
+
+        return {"topics": topics, "pool": pool}
     except Exception:
-        return []
+        return _empty
