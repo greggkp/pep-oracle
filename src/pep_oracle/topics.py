@@ -7,9 +7,10 @@ from pep_oracle.models import Episode
 
 _TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s*-\s*(.+)")
 _SKIP_LABELS = ("Introducing", "Grateful")
-# Roundup segments to exclude from the pool (Haiku handles these with context)
-_POOL_SKIP_PREFIXES = ("Correspondence", "Not Normal")
+# Roundup segments to exclude from both curated topics and pool
+_ROUNDUP_PREFIXES = ("Correspondence", "Not Normal")
 _UNLEASHED_RE = re.compile(r"^Unleashed\s*:\s*(.+)", re.IGNORECASE)
+_CONT_RE = re.compile(r"\s+Cont\.?\s*$")
 
 TOPIC_MODEL = "claude-haiku-4-5-20251001"
 
@@ -152,6 +153,12 @@ def extract_topics(
 
         topics = json.loads(raw)
 
+        # Post-filter curated topics: remove roundup segments Haiku selected
+        topics = [
+            t for t in topics
+            if not any(t["topic"].startswith(p) for p in _ROUNDUP_PREFIXES)
+        ]
+
         # Build pool from labels Haiku didn't select, filtering roundup segments
         selected_labels = {t["topic"] for t in topics}
         pool = []
@@ -160,7 +167,7 @@ def extract_topics(
                 continue
             label = entry["topic"]
             # Skip roundup segments (Correspondence, Not Normal)
-            if any(label.startswith(prefix) for prefix in _POOL_SKIP_PREFIXES):
+            if any(label.startswith(prefix) for prefix in _ROUNDUP_PREFIXES):
                 continue
             # Clean "Unleashed: Topic" → "Topic", skip bare "Unleashed with X"
             unleashed = _UNLEASHED_RE.match(label)
@@ -168,6 +175,8 @@ def extract_topics(
                 label = unleashed.group(1).strip()
             elif label.lower().startswith("unleashed"):
                 continue
+            # Strip "Cont." suffix from continuations
+            label = _CONT_RE.sub("", label)
             pool.append({
                 "topic": label,
                 "question": f"What did they discuss about {label} on the latest episode?",

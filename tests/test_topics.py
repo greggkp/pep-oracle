@@ -314,8 +314,39 @@ def test_extract_topics_pool_filters_roundup_segments():
     assert not any("Not Normal" in t for t in pool_topics)
     # Bare "Unleashed with X" filtered out
     assert "Unleashed with Lachie" not in pool_topics
-    # "Unleashed: Topic" cleaned to just "Topic"
-    assert "Birthright Citizenship Cont." in pool_topics
+    # "Unleashed: Topic Cont." cleaned to just "Topic" (Cont. stripped)
+    assert "Birthright Citizenship" in pool_topics
+    assert "Birthright Citizenship Cont." not in pool_topics
+
+
+def test_extract_topics_filters_roundup_from_curated():
+    """Not Normal and Correspondence are post-filtered from Haiku's curated selections."""
+    episodes = [
+        _make_episode(
+            3,
+            "<p>Timestamps:<br />"
+            "0:00 - Introducing: Dr Dave<br />"
+            "25:19 - Not Normal (Flynn Settlement)<br />"
+            "1:06:30 - Cuba</p>",
+        ),
+    ]
+    haiku_response = (
+        '['
+        '{"topic": "Not Normal (Flynn Settlement)", "question": "Q?", "episode_number": 3},'
+        '{"topic": "Cuba", "question": "What about Cuba?", "episode_number": 3}'
+        ']'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value.content = [
+        MagicMock(text=haiku_response)
+    ]
+
+    result = extract_topics(episodes, anthropic_client=mock_client)
+    curated_topics = [t["topic"] for t in result["topics"]]
+
+    assert "Cuba" in curated_topics
+    assert "Not Normal (Flynn Settlement)" not in curated_topics
 
 
 def test_extract_topics_pool_empty_when_all_selected():
