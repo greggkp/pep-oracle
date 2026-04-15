@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 import anthropic
 
@@ -127,6 +128,37 @@ def clean_episode_topics(labels: list[str]) -> list[str]:
 
         cleaned.append(label)
     return cleaned
+
+
+def load_topics(path: Path | None = None) -> list[dict]:
+    """Load episode topics from disk. Returns list of episode dicts, or empty list if missing/corrupt."""
+    if path is None:
+        from pep_oracle.config import TOPICS_PATH
+        path = TOPICS_PATH
+    try:
+        data = json.loads(path.read_text())
+        return data.get("episodes", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save_topics(new_episodes: list[dict], path: Path | None = None) -> None:
+    """Save episode topics to disk, merging with existing data.
+
+    New episodes overwrite existing entries with the same episode_number.
+    Result is sorted newest-first by episode_number.
+    """
+    if path is None:
+        from pep_oracle.config import TOPICS_PATH
+        path = TOPICS_PATH
+    existing = load_topics(path)
+    # Build map: existing episodes, then overlay new ones
+    by_num = {ep["episode_number"]: ep for ep in existing}
+    for ep in new_episodes:
+        by_num[ep["episode_number"]] = ep
+    merged = sorted(by_num.values(), key=lambda e: e["episode_number"], reverse=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"episodes": merged}, indent=2) + "\n")
 
 
 def extract_topics(
