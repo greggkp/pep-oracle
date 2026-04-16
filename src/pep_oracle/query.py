@@ -83,7 +83,29 @@ def format_timestamp(seconds: float | None) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
-def build_context(results: list[dict]) -> str:
+def _trim_to_speaker(text: str, speaker: str) -> str:
+    """Extract only the target speaker's portions from speaker-labeled text.
+
+    Text format: "[Chas] I think so. [Dave] Me too. [Chas] Right."
+    For speaker="Chas", returns: "[Chas] I think so. [Chas] Right."
+    """
+    import re
+    # Split on speaker labels, keeping the labels
+    parts = re.split(r"(\[[^\]]+\])", text)
+    result = []
+    include = False
+    for part in parts:
+        if part.startswith("[") and part.endswith("]"):
+            label = part[1:-1]
+            include = label.lower() == speaker.lower()
+            if include:
+                result.append(part)
+        elif include:
+            result.append(part)
+    return " ".join("".join(result).split())
+
+
+def build_context(results: list[dict], speaker: str | None = None) -> str:
     # Sort by episode date descending so Claude sees recent info first
     sorted_results = sorted(
         results,
@@ -97,6 +119,10 @@ def build_context(results: list[dict]) -> str:
         end = format_timestamp(r["end_time"])
         header = f"[{r['episode_title']} ({ep_num}{r['episode_date']}), {start}–{end}]"
         text = r.get("speaker_text") or r["text"]
+        if speaker and r.get("speakers") and r.get("speaker_text"):
+            trimmed = _trim_to_speaker(r["speaker_text"], speaker)
+            if trimmed:
+                text = trimmed
         sections.append(f"---\n{header}\n{text}\n---")
     return "\n\n".join(sections)
 

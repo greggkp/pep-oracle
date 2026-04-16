@@ -443,3 +443,50 @@ def test_preprocess_query_no_speaker_defaults():
 
     assert result["speaker"] is None
     assert result["compare_speakers"] is False
+
+
+def test_build_context_trims_to_single_speaker():
+    """When speaker filter is active, build_context should trim to that speaker's portions."""
+    results = [{
+        "episode_title": "Test Episode",
+        "episode_number": 251,
+        "episode_date": "2026-03-21",
+        "start_time": 10.0,
+        "end_time": 250.0,
+        "text": "I think tariffs are bad. I disagree strongly.",
+        "speaker_text": "[Chas] I think tariffs are bad. [Dave] I disagree strongly.",
+        "speakers": '[{"speaker": "Chas", "start": 10.0, "end": 130.0}, {"speaker": "Dave", "start": 130.0, "end": 250.0}]',
+    }]
+    ctx = build_context(results, speaker="Chas")
+    assert "[Chas] I think tariffs are bad." in ctx
+    assert "[Dave]" not in ctx
+
+
+def test_build_context_trim_fallback_without_speakers():
+    """Chunks without speakers data should include full text when speaker filter is active."""
+    results = [{
+        "episode_title": "Test Episode",
+        "episode_number": 251,
+        "episode_date": "2026-03-21",
+        "start_time": 10.0,
+        "end_time": 60.0,
+        "text": "Full text without speaker info.",
+    }]
+    ctx = build_context(results, speaker="Chas")
+    assert "Full text without speaker info." in ctx
+
+
+def test_build_context_no_speaker_unchanged():
+    """Without speaker filter, build_context behaves as before."""
+    results = [{
+        "episode_title": "Test Episode",
+        "episode_number": 251,
+        "episode_date": "2026-03-21",
+        "start_time": 10.0,
+        "end_time": 60.0,
+        "text": "I think tariffs are bad. I disagree.",
+        "speaker_text": "[Chas] I think tariffs are bad. [Dave] I disagree.",
+    }]
+    ctx = build_context(results)
+    assert "[Chas]" in ctx
+    assert "[Dave]" in ctx
