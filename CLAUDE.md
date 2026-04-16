@@ -93,6 +93,11 @@ Tests marked `@pytest.mark.live` (in `test_web_live.py`) hit real APIs and are e
 
 **Server restart after commits**: A Claude Code `PostToolUse` hook restarts the pep-oracle server after `git commit` commands. The server runs as `uv run pep-oracle-server` (not systemd). Logs go to `/tmp/pep-oracle-server.log`.
 
+## Future enhancements
+
+- **Improve diarization accuracy**: pyannote segment alignment with Whisper segments can misattribute short segments near turn boundaries; speaker name mapping by speaking time is fragile. Investigate embedding-based speaker matching and tighter alignment heuristics.
+- **Speaker-aware chunk boundaries**: Split chunks at speaker turns instead of only at time windows + pauses, so each chunk is dominated by a single speaker. Currently mitigated by the hybrid trim (filtering speaker turns within 4-min chunks at query time).
+
 ## Hooks
 
 A Claude Code `PreToolUse` hook runs before `git commit` and blocks unless:
