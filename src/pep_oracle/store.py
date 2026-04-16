@@ -42,12 +42,14 @@ def query(
     after_date: str | None = None,
     before_date: str | None = None,
     recency_weight: float = 0.0,
+    speaker: str | None = None,
 ) -> list[dict]:
-    # ChromaDB where clause handles episode number filtering;
+    # ChromaDB where clause handles episode number and speaker filtering;
     # date filtering is done in Python since episode_date is a string.
     where = _build_where(
         episode_number=episode_number,
         episode_numbers=episode_numbers,
+        speaker=speaker,
     )
     # Fetch extra results when we'll post-filter or re-rank
     needs_extra = after_date or before_date or recency_weight > 0
@@ -203,15 +205,25 @@ def get_ingestion_stats(collection: chromadb.Collection) -> dict:
 def _build_where(
     episode_number: int | None = None,
     episode_numbers: list[int] | None = None,
+    speaker: str | None = None,
 ) -> dict | None:
-    """Build a ChromaDB where clause for episode number filtering."""
+    """Build a ChromaDB where clause for episode number and speaker filtering."""
+    conditions = []
     if episode_number:
-        return {"episode_number": episode_number}
-    if episode_numbers:
+        conditions.append({"episode_number": episode_number})
+    elif episode_numbers:
         if len(episode_numbers) == 1:
-            return {"episode_number": episode_numbers[0]}
-        return {"episode_number": {"$in": episode_numbers}}
-    return None
+            conditions.append({"episode_number": episode_numbers[0]})
+        else:
+            conditions.append({"episode_number": {"$in": episode_numbers}})
+    if speaker:
+        key = f"has_speaker_{speaker.lower().replace(' ', '_')}"
+        conditions.append({key: True})
+    if not conditions:
+        return None
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
 
 
 def _chunk_metadata(chunk: Chunk) -> dict:

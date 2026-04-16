@@ -1,6 +1,7 @@
 from pep_oracle.models import Chunk
 from pep_oracle.store import (
     _apply_recency_boost,
+    _build_where,
     add_chunks,
     delete_episode,
     get_client,
@@ -363,3 +364,66 @@ def test_query_with_recency_weight():
     # Query with uniform embedding — both chunks match similarly
     results = query(col, [0.5] * 10, top_k=2, recency_weight=0.3)
     assert results[0]["episode_number"] == 253
+
+
+def test_build_where_speaker_only():
+    result = _build_where(speaker="Chas")
+    assert result == {"has_speaker_chas": True}
+
+
+def test_build_where_speaker_and_episode():
+    result = _build_where(episode_number=248, speaker="Chas")
+    assert result == {"$and": [{"episode_number": 248}, {"has_speaker_chas": True}]}
+
+
+def test_build_where_speaker_and_episode_numbers():
+    result = _build_where(episode_numbers=[248, 251], speaker="Dave")
+    assert result == {"$and": [{"episode_number": {"$in": [248, 251]}}, {"has_speaker_dave": True}]}
+
+
+def test_query_filter_by_speaker():
+    """query() with speaker param should only return chunks containing that speaker."""
+    col = _fresh_collection()
+    # Chunk with both speakers
+    both = Chunk(
+        chunk_id="ep-1_0000",
+        episode_guid="ep-1",
+        text="Chas and Dave discuss tariffs.",
+        episode_title="Episode 1",
+        episode_date="2026-01-01",
+        start_time=0.0,
+        end_time=240.0,
+        episode_number=1,
+        speaker_text="[Chas] I think tariffs are bad. [Dave] I disagree.",
+        speaker_turns=[
+            {"speaker": "Chas", "start": 0.0, "end": 120.0},
+            {"speaker": "Dave", "start": 120.0, "end": 240.0},
+        ],
+    )
+    # Chunk with only Dave
+    dave_only = Chunk(
+        chunk_id="ep-1_0001",
+        episode_guid="ep-1",
+        text="Dave talks about trade policy.",
+        episode_title="Episode 1",
+        episode_date="2026-01-01",
+        start_time=240.0,
+        end_time=480.0,
+        episode_number=1,
+        speaker_text="[Dave] Trade policy is complex.",
+        speaker_turns=[
+            {"speaker": "Dave", "start": 240.0, "end": 480.0},
+        ],
+    )
+    emb_both = [1.0] * 10
+    emb_dave = [1.0] * 10
+    add_chunks(col, [both, dave_only], [emb_both, emb_dave])
+
+    # Filter for Chas — should only get the chunk where Chas appears
+    results = query(col, [1.0] * 10, top_k=10, speaker="Chas")
+    assert len(results) == 1
+    assert results[0]["chunk_id"] == "ep-1_0000"
+
+    # Filter for Dave — should get both
+    results = query(col, [1.0] * 10, top_k=10, speaker="Dave")
+    assert len(results) == 2
