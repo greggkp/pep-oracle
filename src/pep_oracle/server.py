@@ -43,6 +43,42 @@ class IngestRequest(BaseModel):
     diarize: bool = False
 
 
+def parse_episode_input(s: str) -> list[int]:
+    """Parse a string like '150-200, 210, 215' into a sorted list of episode numbers.
+
+    Raises ValueError on invalid tokens (non-numeric, backwards ranges).
+    """
+    s = s.strip()
+    if not s:
+        return []
+    nums: set[int] = set()
+    for token in s.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            parts = token.split("-", 1)
+            try:
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+            except ValueError:
+                raise ValueError(f"Invalid range: {token}")
+            if start < 0 or end < 0:
+                raise ValueError(f"Invalid range: {token}")
+            if start > end:
+                raise ValueError(f"Invalid range: {token}")
+            nums.update(range(start, end + 1))
+        else:
+            try:
+                n = int(token)
+            except ValueError:
+                raise ValueError(f"Invalid episode number: {token}")
+            if n < 0:
+                raise ValueError(f"Invalid episode number: {token}")
+            nums.add(n)
+    return sorted(nums)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("pep-oracle server starting on %s:%s", SERVER_HOST, SERVER_PORT)
