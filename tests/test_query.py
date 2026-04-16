@@ -520,3 +520,72 @@ def test_ask_single_speaker_passes_filter():
     mock_store.assert_called_once()
     call_kwargs = mock_store.call_args
     assert call_kwargs.kwargs.get("speaker") == "Chas"
+
+
+def test_ask_compare_speakers_dual_retrieval():
+    """ask() with compare_speakers should call store_query twice and label sections."""
+    mock_anthropic = MagicMock()
+    mock_anthropic.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="Chas thinks X, Dave thinks Y.")]
+    )
+
+    call_count = {"n": 0}
+    def mock_store(collection, embedding, **kwargs):
+        call_count["n"] += 1
+        speaker = kwargs.get("speaker")
+        if speaker == "Chas":
+            return [{
+                "episode_title": "Ep 255", "episode_number": 255,
+                "episode_date": "2026-03-20", "start_time": 100.0,
+                "end_time": 200.0, "text": "Chas on immigration.",
+                "speaker_text": "[Chas] Immigration is complex.",
+                "speakers": '[{"speaker": "Chas", "start": 100.0, "end": 200.0}]',
+            }]
+        elif speaker == "Dave":
+            return [{
+                "episode_title": "Ep 255", "episode_number": 255,
+                "episode_date": "2026-03-20", "start_time": 200.0,
+                "end_time": 300.0, "text": "Dave on immigration.",
+                "speaker_text": "[Dave] I think immigration policy needs reform.",
+                "speakers": '[{"speaker": "Dave", "start": 200.0, "end": 300.0}]',
+            }]
+        return []
+
+    with patch("pep_oracle.query.preprocess_query", return_value={
+        "episode_numbers": [], "after_date": None, "before_date": None,
+        "search_query": "immigration", "prefer_recent": False,
+        "speaker": None, "compare_speakers": True,
+    }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
+         patch("pep_oracle.query.get_client"), \
+         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.store_query", side_effect=mock_store):
+        from pep_oracle.query import ask
+        result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
+
+    # Verify dual retrieval happened
+    assert call_count["n"] == 2
+
+    # Verify context sent to Claude has labeled sections
+    call_kwargs = mock_anthropic.messages.create.call_args
+    user_msg = call_kwargs.kwargs["messages"][-1]["content"]
+    assert "CHAS'S STATEMENTS:" in user_msg
+    assert "DAVE'S STATEMENTS:" in user_msg
+
+
+def test_ask_compare_speakers_no_results():
+    """ask() with compare_speakers should return no-content message when both retrievals empty."""
+    mock_anthropic = MagicMock()
+
+    with patch("pep_oracle.query.preprocess_query", return_value={
+        "episode_numbers": [], "after_date": None, "before_date": None,
+        "search_query": "immigration", "prefer_recent": False,
+        "speaker": None, "compare_speakers": True,
+    }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
+         patch("pep_oracle.query.get_client"), \
+         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.store_query", return_value=[]):
+        from pep_oracle.query import ask
+        result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
+
+    assert "No relevant content found" in result
+    mock_anthropic.messages.create.assert_not_called()
