@@ -116,7 +116,7 @@ def test_topics_not_ingested_episodes(client_and_collection):
 
 
 def test_topics_some_ingested(client_and_collection):
-    """With highest ingested ep=5, older gaps are excluded."""
+    """Uningested episodes are returned even if older than highest ingested."""
     client, collection, _ = client_and_collection
     _ingest(collection, 1)
     _ingest(collection, 3)
@@ -124,19 +124,21 @@ def test_topics_some_ingested(client_and_collection):
     _populate_topics_cache()
     resp = client.get("/topics")
     data = resp.json()
-    assert data["not_ingested_episodes"] == []
+    assert sorted(data["not_ingested_episodes"]) == [2, 4]
 
 
-def test_topics_only_newer_flagged(client_and_collection):
-    """Only episodes newer than the highest ingested are flagged."""
+def test_topics_all_ingested(client_and_collection):
+    """All episodes ingested means no uningested episodes."""
     client, collection, _ = client_and_collection
     _ingest(collection, 1)
     _ingest(collection, 2)
     _ingest(collection, 3)
+    _ingest(collection, 4)
+    _ingest(collection, 5)
     _populate_topics_cache()
     resp = client.get("/topics")
     data = resp.json()
-    assert data["not_ingested_episodes"] == [4, 5]
+    assert data["not_ingested_episodes"] == []
 
 
 def test_topics_all_ingested(client_and_collection):

@@ -233,7 +233,7 @@ def test_ingest_banner_visible_when_not_ingested(server_with_collection, browser
     page.wait_for_selector("#ingest-banner", state="visible", timeout=15000)
 
     banner_text = page.text_content("#ingest-banner")
-    assert "not yet ingested" in banner_text
+    assert "Uningested:" in banner_text
 
     page.close()
 
