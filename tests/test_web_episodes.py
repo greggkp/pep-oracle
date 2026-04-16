@@ -366,3 +366,85 @@ def test_used_chip_still_populates_question(server_with_collection, browser):
     question_val = page.locator("#question").input_value()
     assert len(question_val) > 0
     page.close()
+
+
+def test_ingest_banner_has_controls(server_with_collection, browser):
+    """The ingest banner should show latest button, text input, and custom ingest button."""
+    base_url, _ = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector("#ingest-banner", state="visible", timeout=15000)
+
+    assert page.locator("#ingest-latest-btn").is_visible()
+    assert page.locator("#ingest-input").is_visible()
+    assert page.locator("#ingest-custom-btn").is_visible()
+
+    page.close()
+
+
+def test_ingest_summary_collapses_ranges(server_with_collection, browser):
+    """Uningested summary should collapse consecutive episodes into ranges."""
+    base_url, collection = server_with_collection
+
+    # Ingest episodes 2 and 4 to create gaps: 1, 3, 5 uningested
+    _ingest_into_collection(collection, "guid-2", 2)
+    _ingest_into_collection(collection, "guid-4", 4)
+
+    from pep_oracle.server import _caches, _fetch_topics
+    _caches["topics"].set(_fetch_topics())
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector("#ingest-banner", state="visible", timeout=15000)
+
+    summary = page.text_content("#ingest-summary")
+    # Episodes 1, 3, 5 are uningested — no consecutive runs, so no ranges
+    assert "1" in summary
+    assert "3" in summary
+    assert "5" in summary
+
+    page.close()
+
+
+def test_ingest_latest_button_targets_newest(server_with_collection, browser):
+    """The 'Ingest latest' button should target the highest uningested episode number."""
+    base_url, collection = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector("#ingest-latest-btn", timeout=15000)
+
+    request_bodies = []
+    page.on("request", lambda req: request_bodies.append(req.post_data) if req.url.endswith("/ingest") and req.method == "POST" else None)
+
+    page.locator("#ingest-latest-btn").click()
+    page.wait_for_timeout(500)
+
+    assert len(request_bodies) == 1
+    body = json.loads(request_bodies[0])
+    assert body["episode_numbers"] == [5]
+
+    page.close()
+
+
+def test_ingest_custom_sends_episode_input(server_with_collection, browser):
+    """The custom ingest input should send episode_input string to the server."""
+    base_url, collection = server_with_collection
+
+    page = browser.new_page()
+    page.goto(base_url)
+    page.wait_for_selector("#ingest-input", timeout=15000)
+
+    request_bodies = []
+    page.on("request", lambda req: request_bodies.append(req.post_data) if req.url.endswith("/ingest") and req.method == "POST" else None)
+
+    page.fill("#ingest-input", "1-3")
+    page.locator("#ingest-custom-btn").click()
+    page.wait_for_timeout(500)
+
+    assert len(request_bodies) == 1
+    body = json.loads(request_bodies[0])
+    assert body["episode_input"] == "1-3"
+
+    page.close()
