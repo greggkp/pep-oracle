@@ -80,8 +80,8 @@ def query(
         }
         if "speaker_text" in meta:
             item["speaker_text"] = meta["speaker_text"]
-        if "speaker_list" in meta:
-            item["speaker_list"] = meta["speaker_list"]
+        if "speakers" in meta:
+            item["speakers"] = meta["speakers"]
         items.append(item)
 
     if recency_weight > 0 and items:
@@ -228,6 +228,8 @@ def _chunk_metadata(chunk: Chunk) -> dict:
     if chunk.speaker_turns is not None:
         import json
         meta["speakers"] = json.dumps(chunk.speaker_turns)
-        unique = sorted(set(t["speaker"] for t in chunk.speaker_turns))
-        meta["speaker_list"] = ",".join(unique)
+        unique = {t["speaker"] for t in chunk.speaker_turns}
+        for speaker in unique:
+            key = f"has_speaker_{speaker.lower().replace(' ', '_')}"
+            meta[key] = True
     return meta

@@ -80,7 +80,11 @@ def test_speaker_metadata_roundtrip():
     add_chunks(col, [chunk], [emb])
     results = query(col, emb, top_k=1)
     assert results[0]["speaker_text"] == "[Chas] I think so. [Dave] Me too."
-    assert results[0]["speaker_list"] == "Chas,Dave"
+    # Boolean speaker fields stored in metadata
+    meta = col.get(ids=["ep-1_0000"], include=["metadatas"])["metadatas"][0]
+    assert meta["has_speaker_chas"] is True
+    assert meta["has_speaker_dave"] is True
+    assert "speaker_list" not in meta
 
 
 def test_chunks_without_speaker_metadata():
@@ -89,7 +93,7 @@ def test_chunks_without_speaker_metadata():
     add_chunks(col, chunks, embeddings)
     results = query(col, embeddings[0], top_k=1)
     assert "speaker_text" not in results[0]
-    assert "speaker_list" not in results[0]
+    assert "speakers" not in results[0]
 
 
 def test_get_ingested_guids():
