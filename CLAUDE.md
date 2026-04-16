@@ -44,7 +44,7 @@ Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastA
 `feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → optional `transcripts/diarize.py` (pyannote speaker diarization) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert)
 
 **Query** (`query.py` orchestrates):
-Pre-process question via Claude Haiku (extract date/episode filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown
+Pre-process question via Claude Haiku (extract date/episode/speaker filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking + optional speaker filtering) → trim chunks to target speaker's portions if speaker filter active (`_trim_to_speaker`) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown. Compare queries ("Chas vs Dave on X") run dual retrieval (one per speaker, `top_k/2` each) with labeled context sections.
 
 **Topic chips** (`topics.py`):
 Topics are extracted deterministically from episode show notes at ingestion time: `parse_description_topics()` extracts timestamp labels → `clean_episode_topics()` strips segment prefixes (Correspondence, Not Normal, Stats Nug, Policy Time), extracts parenthetical subtopics, cleans Unleashed entries, and strips Cont. suffixes → `_ingest_one()` returns the topic entry; callers (`ingest_all`, `ingest_episode`) batch entries and call `save_topics()` once → persisted to `~/.pep-oracle/topics.json`. `/topics` endpoint reads from file — no API call. Frontend renders chips grouped by episode with inline episode numbers ("Cuba · Ep 253"), "More..." button loads older episodes.
@@ -61,7 +61,8 @@ Topics are extracted deterministically from episode show notes at ingestion time
 - **`rich` is an unlisted dependency** — used in `cli.py` for Markdown rendering but not declared in `pyproject.toml` (pulled in transitively).
 - **Web UI hot reload**: `index.html` is served via `FileResponse` (changes visible on page refresh), but `server.py` changes require a server restart since Python modules are cached at import time.
 - **Three ingestion entry points**: CLI (`cli.py ingest`), web API (`server.py POST /ingest`), and systemd timer (`deploy/pep-oracle-ingest.service`). When adding parameters to ingestion, all three must be updated.
-- **Speaker diarization** is optional (`--diarize` flag / `diarize: bool`). Requires `uv pip install -e ".[diarize]"` and `HF_TOKEN` env var. Speaker profiles stored at `~/.pep-oracle/speaker_profiles.json`.
+- **Speaker diarization** is optional via CLI (`--diarize` flag) but defaults to `True` in the server API (`IngestRequest.diarize`). Requires `uv pip install -e ".[diarize]"` and `HF_TOKEN` env var. Speaker profiles stored at `~/.pep-oracle/speaker_profiles.json`.
+- **Speaker metadata**: Diarized chunks store boolean `has_speaker_chas`, `has_speaker_dave` etc. fields in ChromaDB metadata (replacing the old `speaker_list` comma string). These enable ChromaDB `where` clause filtering by speaker. The `speakers` field (JSON string of turn boundaries) is kept for hybrid trim at query time.
 - **RSS feed timeout**: `feed.py` uses `requests.get()` with a 15s timeout for HTTP URLs. The server's `/status` endpoint catches feed failures gracefully so the web UI still loads.
 
 ## Environment
