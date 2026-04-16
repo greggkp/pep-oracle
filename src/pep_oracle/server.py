@@ -40,6 +40,7 @@ class AskRequest(BaseModel):
 class IngestRequest(BaseModel):
     force: bool = False
     episode_numbers: list[int] = []
+    episode_input: str = ""
     diarize: bool = False
 
 
@@ -225,6 +226,14 @@ async def api_ingest(req: IngestRequest):
     if _ingest_running:
         return {"status": "already_running"}
 
+    # Parse episode_input and merge with episode_numbers
+    try:
+        parsed = parse_episode_input(req.episode_input)
+    except ValueError as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    merged = sorted(set(req.episode_numbers + parsed))
+
     async def _run():
         global _ingest_running, _ingest_last_result, _ingest_progress
         try:
@@ -246,7 +255,7 @@ async def api_ingest(req: IngestRequest):
                 ingest_all,
                 force=req.force,
                 confirm_cost=False,
-                episode_numbers=req.episode_numbers or None,
+                episode_numbers=merged or None,
                 diarize=req.diarize,
                 progress_callback=_progress,
             )

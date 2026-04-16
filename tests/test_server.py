@@ -286,3 +286,30 @@ def test_freshness_returns_all_caches(client_and_collection):
     for key in ("topics", "status", "episodes"):
         assert "stale" in data[key]
         assert "updated_at" in data[key]
+
+
+def test_ingest_parses_episode_input(client_and_collection):
+    """POST /ingest with episode_input parses the string into episode numbers."""
+    import time
+    client, collection = client_and_collection
+
+    with patch("pep_oracle.server.ingest_all", return_value={"processed": 0, "skipped": 3, "failed": 0}) as mock_ingest:
+        resp = client.post("/ingest", json={"episode_input": "1-2"})
+        assert resp.status_code == 200
+        # Wait for the background task to call ingest_all
+        for _ in range(50):
+            if mock_ingest.call_args is not None:
+                break
+            time.sleep(0.1)
+
+    assert mock_ingest.call_args is not None, "ingest_all was never called"
+    call_kwargs = mock_ingest.call_args[1]
+    assert sorted(call_kwargs["episode_numbers"]) == [1, 2]
+
+
+def test_ingest_invalid_episode_input(client_and_collection):
+    """POST /ingest with invalid episode_input returns 400."""
+    client, _ = client_and_collection
+    resp = client.post("/ingest", json={"episode_input": "abc"})
+    assert resp.status_code == 400
+    assert "Invalid" in resp.json()["detail"]
