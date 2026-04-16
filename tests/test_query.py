@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from pep_oracle.query import build_context, format_timestamp, preprocess_query
+from pep_oracle.query import _trim_to_speaker, build_context, format_timestamp, preprocess_query
 
 
 def test_format_timestamp():
@@ -589,3 +589,35 @@ def test_ask_compare_speakers_no_results():
 
     assert "No relevant content found" in result
     mock_anthropic.messages.create.assert_not_called()
+
+
+def test_trim_to_speaker_multiple_turns():
+    """Should concatenate all turns for the target speaker."""
+    text = "[Chas] First point. [Dave] Response. [Chas] Follow-up."
+    result = _trim_to_speaker(text, "Chas")
+    assert "[Chas] First point." in result
+    assert "[Chas] Follow-up." in result
+    assert "[Dave]" not in result
+
+
+def test_trim_to_speaker_case_insensitive():
+    """Speaker matching should be case-insensitive."""
+    text = "[CHAS] Loud point. [Dave] Reply."
+    result = _trim_to_speaker(text, "chas")
+    assert "Loud point" in result
+    assert "[Dave]" not in result
+
+
+def test_trim_to_speaker_no_match():
+    """If target speaker has no turns, return empty string."""
+    text = "[Dave] Only Dave here."
+    result = _trim_to_speaker(text, "Chas")
+    assert result == ""
+
+
+def test_trim_to_speaker_single_speaker():
+    """If text has only the target speaker, return it all."""
+    text = "[Chas] All Chas here. More Chas talk."
+    result = _trim_to_speaker(text, "Chas")
+    assert "All Chas here" in result
+    assert "More Chas talk" in result
