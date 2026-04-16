@@ -1,5 +1,8 @@
 import asyncio
+import json
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,7 +13,6 @@ from pydantic import BaseModel
 from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
 from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
-from pep_oracle.ingest import ingest_all
 from pep_oracle.query import ask as do_ask
 from pep_oracle.store import get_client, get_collection, get_ingested_guids, get_ingestion_stats
 from pep_oracle.topics import bootstrap_topics, load_topics
@@ -231,32 +233,73 @@ async def api_ingest(req: IngestRequest):
         return JSONResponse(status_code=400, content={"detail": str(e)})
     merged = sorted(set(req.episode_numbers + parsed))
 
+    def _apply_progress(step: str) -> None:
+        # Episode-level messages look like "[1/3] Ep 255: TITLE..."
+        if step.startswith("["):
+            parts = step.split("] ", 1)
+            counts = parts[0].lstrip("[")
+            try:
+                done, total = counts.split("/")
+                _ingest_progress["episodes_done"] = int(done) - 1
+                _ingest_progress["episodes_total"] = int(total)
+            except ValueError:
+                pass
+            _ingest_progress["current_episode"] = parts[1] if len(parts) > 1 else ""
+            _ingest_progress["step"] = "starting"
+        else:
+            _ingest_progress["step"] = step
+
     async def _run():
         global _ingest_running, _ingest_last_result, _ingest_progress
         try:
-            def _progress(step: str):
-                global _ingest_progress
-                # Episode-level messages look like "[1/3] Ep 255: TITLE..."
-                if step.startswith("["):
-                    parts = step.split("] ", 1)
-                    counts = parts[0].lstrip("[")
-                    done, total = counts.split("/")
-                    _ingest_progress["episodes_done"] = int(done) - 1
-                    _ingest_progress["episodes_total"] = int(total)
-                    _ingest_progress["current_episode"] = parts[1] if len(parts) > 1 else ""
-                    _ingest_progress["step"] = "starting"
-                else:
-                    _ingest_progress["step"] = step
+            # Isolate ingestion in a subprocess: pyannote + Whisper can
+            # spike memory well past the server's working set, and an
+            # in-process OOM kills the API with it.
+            cmd = [sys.executable, "-m", "pep_oracle.ingest_worker"]
+            if req.force:
+                cmd.append("--force")
+            if req.diarize:
+                cmd.append("--diarize")
+            for n in merged:
+                cmd.extend(["--episode", str(n)])
 
-            result = await asyncio.to_thread(
-                ingest_all,
-                force=req.force,
-                confirm_cost=False,
-                episode_numbers=merged or None,
-                diarize=req.diarize,
-                progress_callback=_progress,
+            # MALLOC_ARENA_MAX=2 caps glibc's per-thread malloc arenas —
+            # pyannote/torch allocate from many threads and the default
+            # (8 × cores) wastes hundreds of MB to fragmentation.
+            env = {**os.environ, "MALLOC_ARENA_MAX": "2"}
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
             )
-            _ingest_last_result = result
+
+            result: dict | None = None
+            error: str | None = None
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").rstrip()
+                if line.startswith("PROGRESS: "):
+                    _apply_progress(line[len("PROGRESS: "):])
+                elif line.startswith("RESULT: "):
+                    try:
+                        result = json.loads(line[len("RESULT: "):])
+                    except json.JSONDecodeError:
+                        logger.warning("could not decode ingest result: %s", line)
+                elif line.startswith("ERROR: "):
+                    error = line[len("ERROR: "):]
+                    logger.error("ingest worker error: %s", error)
+                elif line:
+                    logger.info("ingest: %s", line)
+
+            code = await proc.wait()
+            if result is not None:
+                _ingest_last_result = result
+            elif error is not None:
+                _ingest_last_result = {"error": error}
+            else:
+                _ingest_last_result = {"error": f"ingest worker exited with code {code}"}
+
             # Invalidate all caches so frontend picks up new data
             for cache in _caches.values():
                 cache.invalidate()

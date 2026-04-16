@@ -289,22 +289,49 @@ def test_freshness_returns_all_caches(client_and_collection):
 
 
 def test_ingest_parses_episode_input(client_and_collection):
-    """POST /ingest with episode_input parses the string into episode numbers."""
+    """POST /ingest with episode_input spawns the worker with --episode args."""
+    import json as _json
     import time
-    client, collection = client_and_collection
+    client, _collection = client_and_collection
 
-    with patch("pep_oracle.server.ingest_all", return_value={"processed": 0, "skipped": 3, "failed": 0}) as mock_ingest:
+    class _FakeStdout:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._lines:
+                raise StopAsyncIteration
+            return self._lines.pop(0)
+
+    class _FakeProc:
+        def __init__(self, lines):
+            self.stdout = _FakeStdout(lines)
+
+        async def wait(self):
+            return 0
+
+    captured: dict = {}
+
+    async def _fake_exec(*args, **kwargs):
+        captured["cmd"] = args
+        payload = _json.dumps({"processed": 0, "skipped": 3, "failed": 0}).encode()
+        return _FakeProc([b"RESULT: " + payload + b"\n"])
+
+    with patch("pep_oracle.server.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         resp = client.post("/ingest", json={"episode_input": "1-2"})
         assert resp.status_code == 200
-        # Wait for the background task to call ingest_all
         for _ in range(50):
-            if mock_ingest.call_args is not None:
+            if "cmd" in captured:
                 break
             time.sleep(0.1)
 
-    assert mock_ingest.call_args is not None, "ingest_all was never called"
-    call_kwargs = mock_ingest.call_args[1]
-    assert sorted(call_kwargs["episode_numbers"]) == [1, 2]
+    assert "cmd" in captured, "ingest worker was never spawned"
+    cmd = captured["cmd"]
+    episodes_passed = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--episode"]
+    assert sorted(episodes_passed) == ["1", "2"]
 
 
 def test_ingest_invalid_episode_input(client_and_collection):
