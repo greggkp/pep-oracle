@@ -164,17 +164,31 @@
     margin-bottom: 12px;
     font-size: 0.85rem;
     color: #92400e;
-    align-items: center;
-    gap: 10px;
+    gap: 8px;
+    flex-direction: column;
   }
-  #ingest-banner .ingest-text { flex: 1; }
-  #ingest-banner button {
+  #ingest-banner .ingest-summary { line-height: 1.5; }
+  #ingest-banner .ingest-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #ingest-banner .ingest-controls button {
     padding: 6px 14px;
     font-size: 0.82rem;
     background: #f59e0b;
     border-radius: 6px;
+    white-space: nowrap;
   }
-  #ingest-banner button:hover { background: #d97706; }
+  #ingest-banner .ingest-controls button:hover { background: #d97706; }
+  #ingest-banner #ingest-input {
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    border: 1px solid #fbbf24;
+    border-radius: 6px;
+    flex: 1;
+    min-width: 120px;
+    outline: none;
+    color: #92400e;
+    background: #fffdf5;
+  }
+  #ingest-banner #ingest-input:focus { border-color: #d97706; }
   #ingest-banner .ingest-progress {
     font-style: italic;
     color: #b45309;
@@ -195,8 +209,13 @@
   <div id="topics"></div>
   <div id="topics-updating" class="updating-hint" style="display:none">Updating topics...</div>
   <div id="ingest-banner">
-    <span class="ingest-text"></span>
-    <button id="ingest-btn" type="button">Ingest now</button>
+    <div class="ingest-summary" id="ingest-summary"></div>
+    <div class="ingest-controls">
+      <button id="ingest-latest-btn" type="button">Ingest latest</button>
+      <input type="text" id="ingest-input" placeholder="e.g. 150-200, 210, 215">
+      <button id="ingest-custom-btn" type="button">Ingest</button>
+    </div>
+    <div class="ingest-progress" id="ingest-progress" style="display:none"></div>
   </div>
 
   <form id="ask-form">
@@ -229,8 +248,28 @@
   const collapsedArea = document.getElementById("collapsed-area");
   const topicsEl = document.getElementById("topics");
   const ingestBanner = document.getElementById("ingest-banner");
-  const ingestBannerText = ingestBanner.querySelector(".ingest-text");
-  const ingestBtn = document.getElementById("ingest-btn");
+  const ingestSummary = document.getElementById("ingest-summary");
+  const ingestLatestBtn = document.getElementById("ingest-latest-btn");
+  const ingestCustomBtn = document.getElementById("ingest-custom-btn");
+  const ingestInput = document.getElementById("ingest-input");
+  const ingestProgress = document.getElementById("ingest-progress");
+
+  function collapseRanges(nums) {
+    if (nums.length === 0) return "";
+    const sorted = [...nums].sort((a, b) => a - b);
+    const parts = [];
+    let start = sorted[0], end = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i] === end + 1) {
+        end = sorted[i];
+      } else {
+        parts.push(start === end ? "" + start : start + "-" + end);
+        start = end = sorted[i];
+      }
+    }
+    parts.push(start === end ? "" + start : start + "-" + end);
+    return parts.join(", ");
+  }
 
   let conversationHistory = [];
   let notIngestedEpisodes = [];
@@ -499,10 +538,7 @@
     }
 
     if (notIngestedEpisodes.length > 0) {
-      const epList = notIngestedEpisodes.join(", ");
-      const label = notIngestedEpisodes.length === 1 ? "Episode" : "Episodes";
-      ingestBannerText.textContent = label + " " + epList +
-        " available but not yet ingested.";
+      ingestSummary.textContent = "Uningested: " + collapseRanges(notIngestedEpisodes);
       ingestBanner.style.display = "flex";
     } else {
       ingestBanner.style.display = "none";
@@ -521,30 +557,47 @@
     }
   }
 
-  ingestBtn.addEventListener("click", async () => {
-    ingestBtn.disabled = true;
-    ingestBtn.textContent = "Starting...";
-    try {
-      const resp = await fetch("/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: false, episode_numbers: notIngestedEpisodes, diarize: true }),
+  function startIngestion(body) {
+    ingestLatestBtn.disabled = true;
+    ingestCustomBtn.disabled = true;
+    ingestInput.disabled = true;
+    ingestProgress.style.display = "";
+    ingestProgress.textContent = "Starting\u2026";
+
+    fetch("/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(resp => resp.json())
+      .then(data => {
+        if (data.status === "already_running" || data.status === "started") {
+          pollIngestion();
+          startFreshnessPolling();
+        } else if (data.detail) {
+          ingestProgress.textContent = "Error: " + data.detail;
+          ingestLatestBtn.disabled = false;
+          ingestCustomBtn.disabled = false;
+          ingestInput.disabled = false;
+        }
+      })
+      .catch(() => {
+        ingestProgress.textContent = "Request failed.";
+        ingestLatestBtn.disabled = false;
+        ingestCustomBtn.disabled = false;
+        ingestInput.disabled = false;
       });
-      const data = await resp.json();
-      if (data.status === "already_running" || data.status === "started") {
-        ingestBtn.style.display = "none";
-        const progress = document.createElement("span");
-        progress.className = "ingest-progress";
-        progress.textContent = "Ingesting\u2026";
-        ingestBannerText.appendChild(document.createTextNode(" "));
-        ingestBannerText.appendChild(progress);
-        pollIngestion();
-        startFreshnessPolling();
-      }
-    } catch (e) {
-      ingestBtn.disabled = false;
-      ingestBtn.textContent = "Ingest now";
-    }
+  }
+
+  ingestLatestBtn.addEventListener("click", () => {
+    const latest = Math.max(...notIngestedEpisodes);
+    startIngestion({ episode_numbers: [latest], diarize: true });
+  });
+
+  ingestCustomBtn.addEventListener("click", () => {
+    const val = ingestInput.value.trim();
+    if (!val) return;
+    startIngestion({ episode_input: val, diarize: true });
   });
 
   function pollIngestion() {
@@ -555,10 +608,10 @@
         if (!data.running) {
           clearInterval(timer);
           if (data.last_result && data.last_result.error) {
-            ingestBannerText.textContent = "Ingestion failed: " + data.last_result.error;
-            ingestBtn.style.display = "";
-            ingestBtn.disabled = false;
-            ingestBtn.textContent = "Retry";
+            ingestProgress.textContent = "Ingestion failed: " + data.last_result.error;
+            ingestLatestBtn.disabled = false;
+            ingestCustomBtn.disabled = false;
+            ingestInput.disabled = false;
           } else {
             ingestBanner.style.display = "none";
             // Remove not-ingested styling from chips
@@ -582,7 +635,7 @@
               progressText += ": " + data.step;
             }
           }
-          ingestBannerText.textContent = progressText;
+          ingestProgress.textContent = progressText;
         }
       } catch (e) {
         // keep polling
@@ -632,9 +685,12 @@
       const resp = await fetch("/ingest/status");
       const data = await resp.json();
       if (data.running) {
-        ingestBtn.style.display = "none";
         ingestBanner.style.display = "flex";
-        ingestBannerText.textContent = "Ingesting\u2026";
+        ingestLatestBtn.disabled = true;
+        ingestCustomBtn.disabled = true;
+        ingestInput.disabled = true;
+        ingestProgress.style.display = "";
+        ingestProgress.textContent = "Ingesting\u2026";
         pollIngestion();
       }
     } catch (e) {
