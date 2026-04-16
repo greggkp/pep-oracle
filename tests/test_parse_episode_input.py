@@ -52,5 +52,10 @@ def test_non_numeric_raises():
 
 
 def test_negative_number_raises():
-    with pytest.raises(ValueError, match="-5"):
+    with pytest.raises(ValueError, match="Invalid episode number"):
         parse_episode_input("-5")
+
+
+def test_range_too_large():
+    with pytest.raises(ValueError, match="too large"):
+        parse_episode_input("1-2000")

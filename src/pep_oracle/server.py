@@ -56,6 +56,8 @@ def parse_episode_input(s: str) -> list[int]:
         token = token.strip()
         if not token:
             continue
+        if token.startswith("-"):
+            raise ValueError(f"Invalid episode number: {token}")
         if "-" in token:
             parts = token.split("-", 1)
             try:
@@ -63,10 +65,10 @@ def parse_episode_input(s: str) -> list[int]:
                 end = int(parts[1].strip())
             except ValueError:
                 raise ValueError(f"Invalid range: {token}")
-            if start < 0 or end < 0:
-                raise ValueError(f"Invalid range: {token}")
             if start > end:
                 raise ValueError(f"Invalid range: {token}")
+            if end - start > 1000:
+                raise ValueError(f"Range too large: {token} (max 1000)")
             nums.update(range(start, end + 1))
         else:
             try:
