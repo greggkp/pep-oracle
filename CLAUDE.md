@@ -41,7 +41,7 @@ uv run pep-oracle-server                     # starts FastAPI on 0.0.0.0:8000
 Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastAPI) serving `src/pep_oracle/web/index.html`.
 
 **Ingestion** (`ingest.py` orchestrates):
-`feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → optional `transcripts/diarize.py` (pyannote speaker diarization) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert)
+`feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → optional `transcripts/diarize.py` (pyannote speaker diarization) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert). Web API ingestion runs in a subprocess (`ingest_worker.py`) to isolate pyannote/Whisper memory spikes from the server process (`MALLOC_ARENA_MAX=2`).
 
 **Query** (`query.py` orchestrates):
 Pre-process question via Claude Haiku (extract date/episode/speaker filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking + optional speaker filtering) → trim chunks to target speaker's portions if speaker filter active (`_trim_to_speaker`) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown. Compare queries ("Chas vs Dave on X") run dual retrieval (one per speaker, `top_k/2` each) with labeled context sections.
@@ -63,6 +63,7 @@ Topics are extracted deterministically from episode show notes at ingestion time
 - **Three ingestion entry points**: CLI (`cli.py ingest`), web API (`server.py POST /ingest`), and systemd timer (`deploy/pep-oracle-ingest.service`). When adding parameters to ingestion, all three must be updated.
 - **Speaker diarization** is optional via CLI (`--diarize` flag) but defaults to `True` in the server API (`IngestRequest.diarize`). Requires `uv pip install -e ".[diarize]"` and `HF_TOKEN` env var. Speaker profiles stored at `~/.pep-oracle/speaker_profiles.json`.
 - **Speaker metadata**: Diarized chunks store boolean `has_speaker_chas`, `has_speaker_dave` etc. fields in ChromaDB metadata (replacing the old `speaker_list` comma string). These enable ChromaDB `where` clause filtering by speaker. The `speakers` field (JSON string of turn boundaries) is kept for hybrid trim at query time.
+- **Chunked diarization**: Audio longer than 25 minutes is diarized in chunks (25-min windows + 30s overlap) to bound peak RAM at ~2 GB instead of ~7 GB for a full 2-hour episode. Label stitching across chunk boundaries uses overlap-zone speaker activity + union-find.
 - **RSS feed timeout**: `feed.py` uses `requests.get()` with a 15s timeout for HTTP URLs. The server's `/status` endpoint catches feed failures gracefully so the web UI still loads.
 
 ## Environment

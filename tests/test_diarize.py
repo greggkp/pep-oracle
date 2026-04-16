@@ -11,6 +11,10 @@ from pep_oracle.transcripts.diarize import (
     save_speaker_profiles,
     _save_cache,
     _load_cached,
+    _activity_by_label,
+    _turns_overlap,
+    _stitch_equivalences,
+    _relabel_and_merge,
 )
 
 
@@ -161,3 +165,85 @@ def test_map_speaker_names_preserves_none():
 
     result = map_speaker_names(segments, speaker_segments, profile_path=nonexistent)
     assert result[0].speaker is None
+
+
+def test_activity_by_label_clips_to_window():
+    segs = [
+        SpeakerSegment(speaker="A", start=100, end=150),  # fully inside
+        SpeakerSegment(speaker="A", start=140, end=160),  # partial overlap
+        SpeakerSegment(speaker="B", start=200, end=210),  # fully outside
+    ]
+    act = _activity_by_label(segs, window_start=120, window_end=155)
+    assert act["A"] == [(120, 150), (140, 155)]
+    assert "B" not in act
+
+
+def test_turns_overlap_sums_pairwise():
+    a = [(100.0, 120.0), (140.0, 150.0)]
+    b = [(110.0, 145.0)]
+    # (100-120)∩(110-145)=10 + (140-150)∩(110-145)=5 → 15
+    assert _turns_overlap(a, b) == 15.0
+
+
+def test_stitch_equivalences_swapped_labels():
+    """Chunk 1 calls Chas SPEAKER_00; chunk 2 calls him SPEAKER_01 — stitch
+    must catch the swap via overlap-window activity."""
+    chunk0 = (0.0, 1530.0, [
+        SpeakerSegment(speaker="c0_SPEAKER_00", start=1500, end=1515),  # Chas in overlap
+        SpeakerSegment(speaker="c0_SPEAKER_01", start=1520, end=1530),  # Dave in overlap
+    ])
+    chunk1 = (1500.0, 3030.0, [
+        SpeakerSegment(speaker="c1_SPEAKER_01", start=1500, end=1515),  # Chas labelled 01 here
+        SpeakerSegment(speaker="c1_SPEAKER_00", start=1520, end=1530),  # Dave labelled 00 here
+    ])
+    pairs = _stitch_equivalences([chunk0, chunk1])
+    assert ("c0_SPEAKER_00", "c1_SPEAKER_01") in pairs
+    assert ("c0_SPEAKER_01", "c1_SPEAKER_00") in pairs
+
+
+def test_stitch_equivalences_empty_overlap():
+    chunk0 = (0.0, 10.0, [SpeakerSegment(speaker="c0_SPEAKER_00", start=0, end=5)])
+    chunk1 = (20.0, 30.0, [SpeakerSegment(speaker="c1_SPEAKER_00", start=20, end=25)])
+    # chunks don't overlap (10 < 20) — no equivalences
+    assert _stitch_equivalences([chunk0, chunk1]) == []
+
+
+def test_relabel_and_merge_unions_equivalent_speakers():
+    segs = [
+        SpeakerSegment(speaker="c0_SPEAKER_00", start=0, end=100),
+        SpeakerSegment(speaker="c0_SPEAKER_01", start=100, end=200),
+        SpeakerSegment(speaker="c1_SPEAKER_01", start=200, end=300),  # same as c0_SPEAKER_00
+        SpeakerSegment(speaker="c1_SPEAKER_00", start=300, end=400),  # same as c0_SPEAKER_01
+    ]
+    equivs = [("c0_SPEAKER_00", "c1_SPEAKER_01"), ("c0_SPEAKER_01", "c1_SPEAKER_00")]
+    out = _relabel_and_merge(segs, equivs)
+    # Two global speakers only
+    assert len({s.speaker for s in out}) == 2
+    # Time totals per global label should match the real person's total
+    totals = {}
+    for s in out:
+        totals[s.speaker] = totals.get(s.speaker, 0) + (s.end - s.start)
+    assert sorted(totals.values()) == [200, 200]
+
+
+def test_relabel_and_merge_merges_adjacent_same_speaker():
+    segs = [
+        SpeakerSegment(speaker="c0_SPEAKER_00", start=1495, end=1510),
+        SpeakerSegment(speaker="c1_SPEAKER_00", start=1500, end=1520),  # overlapping in time
+    ]
+    equivs = [("c0_SPEAKER_00", "c1_SPEAKER_00")]
+    out = _relabel_and_merge(segs, equivs)
+    assert len(out) == 1
+    assert out[0].start == 1495
+    assert out[0].end == 1520
+
+
+def test_relabel_and_merge_preserves_concurrent_speakers():
+    # Two speakers overlapping in time should remain as two segments.
+    segs = [
+        SpeakerSegment(speaker="c0_SPEAKER_00", start=0, end=10),
+        SpeakerSegment(speaker="c0_SPEAKER_01", start=5, end=15),
+    ]
+    out = _relabel_and_merge(segs, [])
+    assert len(out) == 2
+    assert len({s.speaker for s in out}) == 2

@@ -1,5 +1,7 @@
 import json
 import logging
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +12,12 @@ from pep_oracle.models import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
+# Audio longer than this (seconds) is diarized in chunks to bound peak RAM —
+# pyannote loads the full waveform + embeddings into memory, so a 2-hour
+# episode would use ~7 GB RSS. Chunked processing caps it at ~2 GB.
+CHUNK_SECONDS = 1500  # 25 minutes
+CHUNK_OVERLAP_SECONDS = 30
+
 
 @dataclass
 class SpeakerSegment:
@@ -18,11 +26,16 @@ class SpeakerSegment:
     end: float
 
 
-def diarize_audio(
-    audio_path: Path,
-    num_speakers: int | None = None,
-) -> list[SpeakerSegment]:
-    """Run pyannote-audio diarization on an audio file."""
+def _audio_duration_seconds(audio_path: Path) -> float:
+    result = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+        capture_output=True, text=True, check=True,
+    )
+    return float(result.stdout.strip())
+
+
+def _load_pipeline():
     try:
         from pyannote.audio import Pipeline
     except ImportError:
@@ -40,25 +53,217 @@ def diarize_audio(
             "the license at https://huggingface.co/pyannote/speaker-diarization-3.1"
         )
 
-    pipeline = Pipeline.from_pretrained(
+    return Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
         token=hf_token,
     )
 
+
+def _run_pipeline(pipeline, audio_path: Path, num_speakers: int | None) -> list[SpeakerSegment]:
     kwargs = {}
     if num_speakers is not None:
         kwargs["num_speakers"] = num_speakers
-
     diarization = pipeline(str(audio_path), **kwargs)
-
-    segments = []
+    segs = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
-        segments.append(SpeakerSegment(
-            speaker=speaker,
-            start=turn.start,
-            end=turn.end,
+        segs.append(SpeakerSegment(speaker=speaker, start=turn.start, end=turn.end))
+    return segs
+
+
+def diarize_audio(
+    audio_path: Path,
+    num_speakers: int | None = None,
+) -> list[SpeakerSegment]:
+    """Run pyannote-audio diarization on an audio file.
+
+    For audio longer than CHUNK_SECONDS, the work is split into overlapping
+    chunks and stitched — this caps peak memory regardless of episode length.
+    """
+    try:
+        duration = _audio_duration_seconds(audio_path)
+    except Exception:
+        duration = None
+
+    pipeline = _load_pipeline()
+
+    if duration is None or duration <= CHUNK_SECONDS + CHUNK_OVERLAP_SECONDS:
+        return _run_pipeline(pipeline, audio_path, num_speakers)
+
+    return _diarize_chunked(audio_path, duration, pipeline, num_speakers)
+
+
+def _diarize_chunked(
+    audio_path: Path,
+    duration: float,
+    pipeline,
+    num_speakers: int | None,
+) -> list[SpeakerSegment]:
+    """Split audio with ffmpeg, run pyannote per chunk, stitch global labels."""
+    chunks: list[tuple[float, float, list[SpeakerSegment]]] = []  # (start, end, segs)
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        i = 0
+        while True:
+            start = i * CHUNK_SECONDS
+            if start >= duration:
+                break
+            end = min(start + CHUNK_SECONDS + CHUNK_OVERLAP_SECONDS, duration)
+            chunk_path = tmp / f"chunk_{i:03d}.wav"
+            subprocess.run(
+                ["ffmpeg", "-v", "quiet", "-y",
+                 "-ss", str(start), "-t", str(end - start),
+                 "-i", str(audio_path),
+                 "-ac", "1", "-ar", "16000", str(chunk_path)],
+                check=True,
+            )
+            click.echo(f"  chunk {i+1} ({start/60:.0f}-{end/60:.0f}min)...", nl=False)
+            local = _run_pipeline(pipeline, chunk_path, num_speakers)
+            # offset timestamps to absolute; prefix labels to keep chunks' label
+            # spaces distinct (pyannote reuses SPEAKER_00/01 per call).
+            shifted = [
+                SpeakerSegment(speaker=f"c{i}_{s.speaker}", start=s.start + start, end=s.end + start)
+                for s in local
+            ]
+            click.echo(f" {len({s.speaker for s in shifted})} speakers")
+            chunks.append((start, end, shifted))
+            chunk_path.unlink(missing_ok=True)
+            if end >= duration:
+                break
+            i += 1
+
+    all_segs: list[SpeakerSegment] = []
+    for _, _, segs in chunks:
+        all_segs.extend(segs)
+
+    equivalences = _stitch_equivalences(chunks)
+    return _relabel_and_merge(all_segs, equivalences)
+
+
+def _stitch_equivalences(
+    chunks: list[tuple[float, float, list[SpeakerSegment]]],
+) -> list[tuple[str, str]]:
+    """Pair prefixed labels across adjacent chunks using overlap-zone activity.
+
+    Within the overlap window shared by chunk_i and chunk_{i+1}, the label
+    from each chunk that spends the most time speaking during the same
+    sub-intervals is declared the same speaker.
+    """
+    pairs: list[tuple[str, str]] = []
+    for i in range(len(chunks) - 1):
+        _, end_i, segs_i = chunks[i]
+        start_j, _, segs_j = chunks[i + 1]
+        o_start, o_end = start_j, end_i
+        if o_end <= o_start:
+            continue
+        act_i = _activity_by_label(segs_i, o_start, o_end)
+        act_j = _activity_by_label(segs_j, o_start, o_end)
+        if not act_i or not act_j:
+            continue
+        # For each (label_i, label_j) compute the bidirectional overlap within
+        # the window — i.e. time where both are active simultaneously.
+        scored: list[tuple[float, str, str]] = []
+        for li, turns_i in act_i.items():
+            for lj, turns_j in act_j.items():
+                overlap = _turns_overlap(turns_i, turns_j)
+                if overlap > 0:
+                    scored.append((overlap, li, lj))
+        # Greedy one-to-one match: highest overlap first.
+        scored.sort(reverse=True)
+        used_i: set[str] = set()
+        used_j: set[str] = set()
+        for _score, li, lj in scored:
+            if li in used_i or lj in used_j:
+                continue
+            pairs.append((li, lj))
+            used_i.add(li)
+            used_j.add(lj)
+    return pairs
+
+
+def _activity_by_label(
+    segs: list[SpeakerSegment],
+    window_start: float,
+    window_end: float,
+) -> dict[str, list[tuple[float, float]]]:
+    """Return the in-window turn intervals grouped by speaker label."""
+    out: dict[str, list[tuple[float, float]]] = {}
+    for s in segs:
+        a = max(s.start, window_start)
+        b = min(s.end, window_end)
+        if b > a:
+            out.setdefault(s.speaker, []).append((a, b))
+    return out
+
+
+def _turns_overlap(
+    turns_a: list[tuple[float, float]],
+    turns_b: list[tuple[float, float]],
+) -> float:
+    """Total time where any interval in a overlaps any in b."""
+    total = 0.0
+    for sa, ea in turns_a:
+        for sb, eb in turns_b:
+            total += max(0.0, min(ea, eb) - max(sa, sb))
+    return total
+
+
+def _relabel_and_merge(
+    segs: list[SpeakerSegment],
+    equivalences: list[tuple[str, str]],
+) -> list[SpeakerSegment]:
+    """Apply union-find over equivalences, rename to SPEAKER_NN, merge turns."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for a, b in equivalences:
+        union(a, b)
+
+    # Assign a fresh SPEAKER_NN per component in order of first appearance.
+    component_label: dict[str, str] = {}
+    next_id = 0
+    relabeled: list[SpeakerSegment] = []
+    for s in segs:
+        root = find(s.speaker)
+        if root not in component_label:
+            component_label[root] = f"SPEAKER_{next_id:02d}"
+            next_id += 1
+        relabeled.append(SpeakerSegment(
+            speaker=component_label[root],
+            start=s.start,
+            end=s.end,
         ))
-    return segments
+
+    # Per-speaker interval union: sort and merge adjacent/overlapping turns
+    # that now share the same global label (dedupes the overlap regions).
+    by_speaker: dict[str, list[SpeakerSegment]] = {}
+    for s in relabeled:
+        by_speaker.setdefault(s.speaker, []).append(s)
+
+    merged: list[SpeakerSegment] = []
+    for speaker, group in by_speaker.items():
+        group.sort(key=lambda s: s.start)
+        cur_start, cur_end = group[0].start, group[0].end
+        for s in group[1:]:
+            if s.start <= cur_end:
+                cur_end = max(cur_end, s.end)
+            else:
+                merged.append(SpeakerSegment(speaker=speaker, start=cur_start, end=cur_end))
+                cur_start, cur_end = s.start, s.end
+        merged.append(SpeakerSegment(speaker=speaker, start=cur_start, end=cur_end))
+
+    merged.sort(key=lambda s: s.start)
+    return merged
 
 
 def align_speakers(
