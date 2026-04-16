@@ -490,3 +490,33 @@ def test_build_context_no_speaker_unchanged():
     ctx = build_context(results)
     assert "[Chas]" in ctx
     assert "[Dave]" in ctx
+
+
+def test_ask_single_speaker_passes_filter():
+    """ask() should pass speaker filter to store_query and build_context."""
+    mock_anthropic = MagicMock()
+    mock_anthropic.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="Chas said tariffs are bad.")]
+    )
+
+    with patch("pep_oracle.query.preprocess_query", return_value={
+        "episode_numbers": [], "after_date": None, "before_date": None,
+        "search_query": "tariffs", "prefer_recent": False,
+        "speaker": "Chas", "compare_speakers": False,
+    }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
+         patch("pep_oracle.query.get_client"), \
+         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.store_query", return_value=[{
+            "episode_title": "Ep 255", "episode_number": 255,
+            "episode_date": "2026-03-20", "start_time": 100.0,
+            "end_time": 200.0, "text": "Tariff discussion...",
+            "speaker_text": "[Chas] Tariffs are bad. [Dave] I disagree.",
+            "speakers": '[{"speaker": "Chas", "start": 100.0, "end": 150.0}]',
+         }]) as mock_store:
+        from pep_oracle.query import ask
+        ask("what did Chas say about tariffs?", anthropic_client=mock_anthropic)
+
+    # Verify speaker was passed to store_query
+    mock_store.assert_called_once()
+    call_kwargs = mock_store.call_args
+    assert call_kwargs.kwargs.get("speaker") == "Chas"

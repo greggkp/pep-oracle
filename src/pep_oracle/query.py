@@ -238,21 +238,47 @@ def ask(
     client = get_client()
     collection = get_collection(client)
     recency_weight = 0.3 if filters.get("prefer_recent") else 0.0
-    results = store_query(
-        collection,
-        query_embedding,
-        top_k=top_k,
-        episode_numbers=filters["episode_numbers"] or None,
-        after_date=filters["after_date"],
-        before_date=filters["before_date"],
-        recency_weight=recency_weight,
-    )
+    speaker = filters.get("speaker")
+    compare = filters.get("compare_speakers", False)
 
-    if not results:
-        return "No relevant content found. Have you ingested any episodes yet?"
+    if compare:
+        # Dual retrieval: half for Chas, half for Dave
+        half_k = max(top_k // 2, 1)
+        chas_results = store_query(
+            collection, query_embedding, top_k=half_k,
+            episode_numbers=filters["episode_numbers"] or None,
+            after_date=filters["after_date"],
+            before_date=filters["before_date"],
+            recency_weight=recency_weight,
+            speaker="Chas",
+        )
+        dave_results = store_query(
+            collection, query_embedding, top_k=half_k,
+            episode_numbers=filters["episode_numbers"] or None,
+            after_date=filters["after_date"],
+            before_date=filters["before_date"],
+            recency_weight=recency_weight,
+            speaker="Dave",
+        )
+        chas_context = build_context(chas_results, speaker="Chas")
+        dave_context = build_context(dave_results, speaker="Dave")
+        context = f"CHAS'S STATEMENTS:\n\n{chas_context}\n\nDAVE'S STATEMENTS:\n\n{dave_context}"
+        if not chas_results and not dave_results:
+            return "No relevant content found. Have you ingested any episodes yet?"
+    else:
+        results = store_query(
+            collection, query_embedding, top_k=top_k,
+            episode_numbers=filters["episode_numbers"] or None,
+            after_date=filters["after_date"],
+            before_date=filters["before_date"],
+            recency_weight=recency_weight,
+            speaker=speaker,
+        )
+        if not results:
+            return "No relevant content found. Have you ingested any episodes yet?"
+        context = build_context(results, speaker=speaker)
 
     # Build prompt and call Claude
-    context = build_context(results)
     user_message = f"TRANSCRIPT EXCERPTS:\n\n{context}\n\nQUESTION: {question}"
     messages = list(history or []) + [{"role": "user", "content": user_message}]
     response = anthropic_client.messages.create(
