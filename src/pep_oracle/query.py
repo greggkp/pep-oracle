@@ -34,13 +34,16 @@ attribute statements to the specific speaker. Use phrases like \
 PREPROCESS_PROMPT = """\
 Extract search filters from this podcast question. Today's date is {today}.
 The podcast has episodes from {earliest_date} to {latest_date} (episodes {earliest_ep} to {latest_ep}).
+The podcast hosts are Chas Licciardello and Dr David Smith (Dave).
 
 Return a JSON object with these fields:
 - "episode_numbers": list of specific episode numbers mentioned (empty list if none)
 - "after_date": earliest date to include as "YYYY-MM-DD" (null if no time constraint)
 - "before_date": latest date to include as "YYYY-MM-DD" (null if no time constraint)
-- "search_query": the core topic to search for (rewrite the question as a concise search phrase)
+- "search_query": the core topic to search for (rewrite the question as a concise search phrase, EXCLUDING speaker names)
 - "prefer_recent": true if the user wants the LATEST/most recent information, false otherwise
+- "speaker": "Chas" or "Dave" if the question targets a specific speaker, null otherwise
+- "compare_speakers": true if the question asks to compare what Chas said vs Dave (or vice versa), false otherwise
 
 IMPORTANT: Set after_date for questions about current/recent/ongoing events. Words like \
 "soon", "will", "currently", "right now", "these days", "latest", "recent", present tense \
@@ -48,19 +51,24 @@ questions about evolving situations — all imply the user wants RECENT episodes
 Use after_date = 60 days before today for these. Only leave after_date as null for \
 timeless/historical questions like "who is X?" or "when did they first discuss Y?".
 
+IMPORTANT: Strip speaker names from search_query. "What did Chas say about tariffs?" → \
+search_query should be "tariffs", NOT "Chas tariffs". The speaker field handles filtering.
+
 If conversation history is provided, use it to resolve pronouns and references \
 in the question. For example, if the user previously asked about "Pete Hegseth" \
 and now asks "what does he think?", rewrite the search query to include "Pete Hegseth".
 
 Examples:
-- "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran", "prefer_recent": false}}
-- "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran war ending", "prefer_recent": true}}
-- "what are they saying about tariffs?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "tariffs trade policy", "prefer_recent": true}}
-- "latest on Iran?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran latest developments", "prefer_recent": true}}
-- "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed", "prefer_recent": false}}
-- "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is", "prefer_recent": false}}
-- "when did they first discuss the Iran situation?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran first discussion", "prefer_recent": false}}
-- Conversation: User asked about Pete Hegseth. Question: "what does he think about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Pete Hegseth tariffs opinion", "prefer_recent": false}}
+- "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
+- "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran war ending", "prefer_recent": true, "speaker": null, "compare_speakers": false}}
+- "what did Chas say about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "tariffs", "prefer_recent": false, "speaker": "Chas", "compare_speakers": false}}
+- "does Dave think Trump will win?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Trump winning election", "prefer_recent": false, "speaker": "Dave", "compare_speakers": false}}
+- "Chas vs Dave on immigration" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "immigration", "prefer_recent": false, "speaker": null, "compare_speakers": true}}
+- "what are they saying about tariffs?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "tariffs trade policy", "prefer_recent": true, "speaker": null, "compare_speakers": false}}
+- "latest on Iran?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran latest developments", "prefer_recent": true, "speaker": null, "compare_speakers": false}}
+- "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
+- "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
+- Conversation: User asked about Pete Hegseth. Question: "what does he think about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Pete Hegseth tariffs opinion", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
 
 Respond with ONLY the JSON object, no other text.
 
@@ -164,6 +172,8 @@ def preprocess_query(
             "before_date": None,
             "search_query": question,
             "prefer_recent": False,
+            "speaker": None,
+            "compare_speakers": False,
         }
 
     return {
@@ -172,6 +182,8 @@ def preprocess_query(
         "before_date": parsed.get("before_date"),
         "search_query": parsed.get("search_query", question),
         "prefer_recent": parsed.get("prefer_recent", False),
+        "speaker": parsed.get("speaker"),
+        "compare_speakers": parsed.get("compare_speakers", False),
     }
 
 

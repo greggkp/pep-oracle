@@ -385,3 +385,61 @@ def test_ask_without_history_sends_single_message():
     messages = call_kwargs.kwargs["messages"]
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
+
+
+def test_preprocess_query_detects_single_speaker():
+    """Pre-processor should extract speaker name when question targets one person."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "tariffs", "prefer_recent": false, "speaker": "Chas", "compare_speakers": false}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query("what did Chas say about tariffs?", anthropic_client=mock_client)
+
+    assert result["speaker"] == "Chas"
+    assert result["compare_speakers"] is False
+    assert result["search_query"] == "tariffs"
+
+
+def test_preprocess_query_detects_compare():
+    """Pre-processor should detect compare intent."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "immigration", "prefer_recent": false, "speaker": null, "compare_speakers": true}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query("Chas vs Dave on immigration", anthropic_client=mock_client)
+
+    assert result["speaker"] is None
+    assert result["compare_speakers"] is True
+
+
+def test_preprocess_query_no_speaker_defaults():
+    """Pre-processor should default speaker to None and compare to False."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text='{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "tariffs", "prefer_recent": false}'
+    )]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("pep_oracle.query.get_ingestion_stats", return_value={
+        "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
+        "earliest_episode": 200, "latest_episode": 253,
+    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+        result = preprocess_query("what about tariffs?", anthropic_client=mock_client)
+
+    assert result["speaker"] is None
+    assert result["compare_speakers"] is False
