@@ -41,7 +41,7 @@ class IngestRequest(BaseModel):
     force: bool = False
     episode_numbers: list[int] = []
     episode_input: str = ""
-    diarize: bool = False
+    diarize: bool = True
 
 
 def parse_episode_input(s: str) -> list[int]:
