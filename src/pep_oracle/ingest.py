@@ -71,16 +71,17 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
     add_chunks(collection, chunks, embeddings)
     click.echo(f"  Stored {len(chunks)} excerpts")
 
-    # Extract and save topics from show notes
+    # Extract topics from show notes (caller batches the save)
     raw_labels = parse_description_topics(episode.description or "")
     cleaned = clean_episode_topics(raw_labels)
+    topic_entry = None
     if cleaned:
-        save_topics([{
+        topic_entry = {
             "episode_number": episode.episode_number,
             "date": episode.pub_date.strftime("%Y-%m-%d"),
             "topics": cleaned,
-        }], TOPICS_PATH)
-    return True
+        }
+    return True, topic_entry
 
 
 def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: list[int] | None = None, diarize: bool = False, progress_callback=None) -> dict:
@@ -156,17 +157,24 @@ def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: 
 
     succeeded = 0
     failed = 0
+    topic_entries: list[dict] = []
     for i, episode in enumerate(to_process, 1):
         label = f"Ep {episode.episode_number or '?'}"
         click.echo(f"[{i}/{len(to_process)}] {label}: {episode.title[:60]}")
         if progress_callback:
             progress_callback(f"[{i}/{len(to_process)}] {label}: {episode.title[:60]}")
         try:
-            if _ingest_one(episode, collection, force=force, diarize=diarize, progress_callback=progress_callback):
+            ok, topic_entry = _ingest_one(episode, collection, force=force, diarize=diarize, progress_callback=progress_callback)
+            if ok:
                 succeeded += 1
+                if topic_entry:
+                    topic_entries.append(topic_entry)
         except Exception as e:
             click.echo(f"  FAILED: {e}")
             failed += 1
+
+    if topic_entries:
+        save_topics(topic_entries, TOPICS_PATH)
 
     click.echo(f"\nDone: {succeeded} ingested, {failed} failed, {already} already up-to-date")
     return {"processed": succeeded, "skipped": already, "failed": failed}
@@ -200,14 +208,21 @@ def ingest_episode(episode_id: str, force: bool = False, diarize: bool = False) 
 
     ingested = get_ingested_guids(collection)
     any_succeeded = False
+    topic_entries: list[dict] = []
     for match in matches:
         if match.guid in ingested and not force:
             click.echo(f"Already ingested: {match.title}")
             continue
 
         click.echo(f"Ingesting: {match.title}")
-        if _ingest_one(match, collection, force=force, diarize=diarize):
+        ok, topic_entry = _ingest_one(match, collection, force=force, diarize=diarize)
+        if ok:
             any_succeeded = True
+            if topic_entry:
+                topic_entries.append(topic_entry)
+
+    if topic_entries:
+        save_topics(topic_entries, TOPICS_PATH)
 
     if not any_succeeded and all(m.guid in ingested for m in matches):
         click.echo("Use --force to re-ingest.")

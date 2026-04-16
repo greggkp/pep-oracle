@@ -12,6 +12,13 @@ _UNLEASHED_RE = re.compile(r"^Unleashed\s*:\s*(.+)", re.IGNORECASE)
 _CONT_RE = re.compile(r"\s+Cont\.?\s*$")
 _PARENS_RE = re.compile(r"\(([^)]+)\)")
 
+
+def _default_topics_path(path: Path | None) -> Path:
+    if path is None:
+        from pep_oracle.config import TOPICS_PATH
+        return TOPICS_PATH
+    return path
+
 def parse_description_topics(description: str) -> list[str]:
     """Extract topic labels from timestamp lines in an episode description.
 
@@ -92,9 +99,7 @@ def clean_episode_topics(labels: list[str]) -> list[str]:
 
 def load_topics(path: Path | None = None) -> list[dict]:
     """Load episode topics from disk. Returns list of episode dicts, or empty list if missing/corrupt."""
-    if path is None:
-        from pep_oracle.config import TOPICS_PATH
-        path = TOPICS_PATH
+    path = _default_topics_path(path)
     try:
         data = json.loads(path.read_text())
         return data.get("episodes", [])
@@ -108,9 +113,7 @@ def save_topics(new_episodes: list[dict], path: Path | None = None) -> None:
     New episodes overwrite existing entries with the same episode_number.
     Result is sorted newest-first by episode_number.
     """
-    if path is None:
-        from pep_oracle.config import TOPICS_PATH
-        path = TOPICS_PATH
+    path = _default_topics_path(path)
     existing = load_topics(path)
     # Build map: existing episodes, then overlay new ones
     by_num = {ep["episode_number"]: ep for ep in existing}
@@ -127,9 +130,7 @@ def bootstrap_topics(episodes: list[Episode], path: Path | None = None) -> None:
     Used on first /topics request when topics.json doesn't exist yet.
     Parses timestamp labels and cleans them for each episode.
     """
-    if path is None:
-        from pep_oracle.config import TOPICS_PATH
-        path = TOPICS_PATH
+    path = _default_topics_path(path)
     entries: list[dict] = []
     for ep in episodes:
         if ep.episode_number is None:

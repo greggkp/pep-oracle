@@ -102,6 +102,10 @@ def server_with_collection(tmp_path):
     port = sockets[0].getsockname()[1] if sockets else None
     assert port, "Server failed to bind"
 
+    from pep_oracle.server import _caches, _fetch_topics, _fetch_status
+    _caches["topics"].set(_fetch_topics())
+    _caches["status"].set(_fetch_status())
+
     yield f"http://127.0.0.1:{port}", collection
 
     server.should_exit = True
@@ -186,9 +190,6 @@ def test_initial_chips_from_latest_episode(server_with_collection, browser):
     """Initially only the latest episode's topics are shown as chips."""
     base_url, _ = server_with_collection
 
-    from pep_oracle.server import _caches, _fetch_topics
-    _caches["topics"].set(_fetch_topics())
-
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_selector(".topic-chip:not(.more)", timeout=10000)
@@ -227,9 +228,6 @@ def test_ingest_banner_visible_when_not_ingested(server_with_collection, browser
     """The ingest banner should appear when un-ingested episodes exist."""
     base_url, collection = server_with_collection
 
-    from pep_oracle.server import _caches, _fetch_topics
-    _caches["topics"].set(_fetch_topics())
-
     page = browser.new_page()
     page.goto(base_url)
     page.wait_for_selector("#ingest-banner", state="visible", timeout=15000)
@@ -263,9 +261,6 @@ def test_ingest_banner_hidden_when_all_ingested(server_with_collection, browser)
 def test_not_ingested_chip_tooltip(server_with_collection, browser):
     """Un-ingested chips should show '(not yet ingested)' in their tooltip."""
     base_url, collection = server_with_collection
-
-    from pep_oracle.server import _caches, _fetch_topics
-    _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)
@@ -330,9 +325,6 @@ def test_more_button_visible_when_more_episodes(server_with_collection, browser)
 def test_more_button_adds_next_episode_chips(server_with_collection, browser):
     """Clicking 'More...' adds the next episode's topics."""
     base_url, _ = server_with_collection
-
-    from pep_oracle.server import _caches, _fetch_topics
-    _caches["topics"].set(_fetch_topics())
 
     page = browser.new_page()
     page.goto(base_url)

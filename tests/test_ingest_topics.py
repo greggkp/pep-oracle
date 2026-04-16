@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from pep_oracle.ingest import _ingest_one
 from pep_oracle.models import Episode
-from pep_oracle.topics import load_topics
+from pep_oracle.topics import load_topics, save_topics
 
 
 def _make_episode(num, description=""):
@@ -43,8 +43,11 @@ def test_ingest_saves_topics(mock_add, mock_embed, mock_chunk, mock_transcript, 
     mock_embed.return_value = [[0.1] * 10]
     collection = MagicMock()
 
-    with patch("pep_oracle.ingest.TOPICS_PATH", topics_path):
-        _ingest_one(ep, collection)
+    ok, topic_entry = _ingest_one(ep, collection)
+
+    assert ok
+    assert topic_entry is not None
+    save_topics([topic_entry], topics_path)
 
     loaded = load_topics(topics_path)
     assert len(loaded) == 1
@@ -70,7 +73,8 @@ def test_ingest_no_topics_when_no_timestamps(mock_add, mock_embed, mock_chunk, m
     mock_embed.return_value = [[0.1] * 10]
     collection = MagicMock()
 
-    with patch("pep_oracle.ingest.TOPICS_PATH", topics_path):
-        _ingest_one(ep, collection)
+    ok, topic_entry = _ingest_one(ep, collection)
 
+    assert ok
+    assert topic_entry is None
     assert not topics_path.exists()

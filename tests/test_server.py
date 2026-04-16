@@ -65,6 +65,13 @@ def client_and_collection():
     from pep_oracle.server import app
 
     with TestClient(app) as tc:
+        # Wait for lifespan background cache refreshes to complete
+        import time
+        for entry in _caches.values():
+            for _ in range(50):
+                if not entry.refreshing:
+                    break
+                time.sleep(0.05)
         yield tc, collection
 
     for p in patches:

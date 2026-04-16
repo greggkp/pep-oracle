@@ -238,6 +238,17 @@
   let lastUpdated = { topics: null, status: null, episodes: null };
   let freshnessTimer = null;
 
+  function collapseCurrentConversation() {
+    if (conversationHistory.length === 0) return;
+    const firstUserMsg = conversationHistory.find(m => m.role === "user");
+    const msgCount = conversationHistory.filter(m => m.role === "user").length;
+    collapsedThreads.push({
+      label: firstUserMsg ? firstUserMsg.content : "Conversation",
+      count: msgCount,
+      messages: [...conversationHistory],
+    });
+  }
+
   function addBubble(role, content) {
     const row = document.createElement("div");
     row.className = "bubble-row " + role;
@@ -313,15 +324,7 @@
 
   newConvoBtn.addEventListener("click", () => {
     if (conversationHistory.length === 0) return;
-
-    const firstUserMsg = conversationHistory.find(m => m.role === "user");
-    const msgCount = conversationHistory.filter(m => m.role === "user").length;
-    collapsedThreads.push({
-      label: firstUserMsg ? firstUserMsg.content : "Conversation",
-      count: msgCount,
-      messages: [...conversationHistory],
-    });
-
+    collapseCurrentConversation();
     renderCollapsed();
     conversationHistory = [];
     threadEl.innerHTML = "";
@@ -387,28 +390,15 @@
   }
 
   function resumeThread(idx) {
-    if (submitBtn.disabled) return; // request in flight
+    if (submitBtn.disabled) return;
 
-    // Capture thread reference before mutating the array
     const thread = collapsedThreads[idx];
+    collapseCurrentConversation();
 
-    // If there's an active conversation, collapse it first
-    if (conversationHistory.length > 0) {
-      const firstUserMsg = conversationHistory.find(m => m.role === "user");
-      const msgCount = conversationHistory.filter(m => m.role === "user").length;
-      collapsedThreads.push({
-        label: firstUserMsg ? firstUserMsg.content : "Conversation",
-        count: msgCount,
-        messages: [...conversationHistory],
-      });
-    }
-
-    // Restore the selected thread
     conversationHistory = [...thread.messages];
     collapsedThreads.splice(collapsedThreads.indexOf(thread), 1);
 
-    // Re-render: clear thread, re-add each message via addBubble
-    threadEl.innerHTML = "";  /* safe: clearing children, matches newConvoBtn pattern */
+    threadEl.innerHTML = "";
     conversationHistory.forEach(msg => addBubble(msg.role, msg.content));
     renderCollapsed();
     updateUIState();
