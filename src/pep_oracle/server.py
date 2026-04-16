@@ -204,9 +204,6 @@ def _fetch_topics():
     except Exception:
         ingested_eps = set()
     not_ingested = sorted(feed_eps - ingested_eps)
-    if ingested_eps:
-        latest_ingested = max(ingested_eps)
-        not_ingested = [ep for ep in not_ingested if ep > latest_ingested]
     return {"episodes": topic_episodes, "not_ingested_episodes": not_ingested}
 
 

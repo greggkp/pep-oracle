@@ -313,3 +313,28 @@ def test_ingest_invalid_episode_input(client_and_collection):
     resp = client.post("/ingest", json={"episode_input": "abc"})
     assert resp.status_code == 400
     assert "Invalid" in resp.json()["detail"]
+
+
+def test_topics_returns_all_uningested_episodes(client_and_collection, tmp_path):
+    """The /topics endpoint should return ALL uningested episodes, not just newer-than-latest."""
+    client, collection = client_and_collection
+
+    # Ingest only episode 2 (creates a gap: 1 is older and uningested)
+    _ingest_chunk(collection, "guid-2", 2)
+
+    topics_path = tmp_path / "topics.json"
+    import json
+    topics_path.write_text(json.dumps({"episodes": []}))
+
+    from pep_oracle.server import _caches, _fetch_topics
+    with patch("pep_oracle.server.TOPICS_PATH", topics_path):
+        _caches["topics"].set(_fetch_topics())
+
+    resp = client.get("/topics")
+    data = resp.json()
+    not_ingested = data["not_ingested_episodes"]
+
+    # Episode 1 is older than 2 but should still appear; episode 3 is newer
+    assert 1 in not_ingested
+    assert 3 in not_ingested
+    assert 2 not in not_ingested
