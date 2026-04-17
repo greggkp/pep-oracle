@@ -13,7 +13,7 @@ from pep_oracle.transcripts.manager import get_transcript
 
 logger = logging.getLogger(__name__)
 
-WHISPER_COST_PER_MINUTE = 0.006
+WHISPER_COST_PER_MINUTE = 0.001  # Modal L4 ~$0.06/hr of audio
 
 
 def estimate_whisper_cost(episodes: list[Episode]) -> float:
@@ -34,7 +34,7 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
     if progress_callback:
         progress_callback("transcribing")
     segments, source = get_transcript(
-        episode, delete_audio_after=True, progress_callback=progress_callback,
+        episode, progress_callback=progress_callback,
     )
     click.echo(f"  Transcript: {source} ({len(segments)} segments)")
 
@@ -133,12 +133,11 @@ def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: 
     already = len(episodes) - len(to_process)
     click.echo(f"{len(to_process)} episodes to process ({already} already ingested)")
 
-    # Estimate cost for episodes that will need Whisper
+    # Estimate Modal GPU cost; gate a large backfill.
     if confirm_cost:
         cost = estimate_whisper_cost(to_process)
-        if cost > 0.50:
-            click.echo(f"Estimated max Whisper cost: ${cost:.2f}")
-            click.echo("(Episodes with Apple transcripts will be free)")
+        if cost > 2.00:
+            click.echo(f"Estimated Modal GPU cost: ${cost:.2f}")
             if not click.confirm("Proceed?"):
                 return {"processed": 0, "skipped": len(episodes), "failed": 0}
 

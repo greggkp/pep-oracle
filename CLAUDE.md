@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-pep-oracle is a CLI tool that transcribes and queries the "PEP with Chas and Dr Dave" podcast using RAG. It ingests episodes (via OpenAI Whisper), chunks and embeds them, stores in ChromaDB, and answers natural language questions via Claude.
+pep-oracle is a CLI tool that transcribes and queries the "PEP with Chas and Dr Dave" podcast using RAG. It ingests episodes (transcribed via faster-whisper on Modal), chunks and embeds them, stores in ChromaDB, and answers natural language questions via Claude.
 
 ## Commands
 
@@ -41,7 +41,7 @@ uv run pep-oracle-server                     # starts FastAPI on 0.0.0.0:8000
 Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastAPI) serving `src/pep_oracle/web/index.html`.
 
 **Ingestion** (`ingest.py` orchestrates):
-`feed.py` (RSS parse) → `transcripts/manager.py` (Whisper with caching) → optional `transcripts/diarize.py` (diarization via Modal GPU, `cloud/diarize_modal.py`) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert). Web API ingestion runs in a subprocess (`ingest_worker.py`) to isolate ingest failures from the server process.
+`feed.py` (RSS parse) → `transcripts/manager.py` (transcription via Modal GPU, `cloud/transcribe_modal.py`, with caching) → optional `transcripts/diarize.py` (diarization via Modal GPU, `cloud/diarize_modal.py`) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert). Web API ingestion runs in a subprocess (`ingest_worker.py`) to isolate ingest failures from the server process.
 
 **Query** (`query.py` orchestrates):
 Pre-process question via Claude Haiku (extract date/episode/speaker filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking + optional speaker filtering) → trim chunks to target speaker's portions if speaker filter active (`_trim_to_speaker`) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown. Compare queries ("Chas vs Dave on X") run dual retrieval (one per speaker, `top_k/2` each) with labeled context sections.
@@ -52,12 +52,12 @@ Topics are extracted deterministically from episode show notes at ingestion time
 ## Key design decisions
 
 - **Data transfer between machines**: Use `pep-oracle export` / `import` to move ingested episodes. Never copy ChromaDB files directly — ChromaDB must handle its own writes via upsert to avoid corruption. Export produces a JSON file with chunks, embeddings, and metadata.
-- **Audio splitting uses ffmpeg directly** (not pydub) for speed — seeks without decoding the full file. Requires ffmpeg on PATH.
-- **Data stored at `~/.pep-oracle/`** (cache/audio, cache/transcripts, chroma), not in the project directory. Override with `PEP_ORACLE_DATA_DIR`.
+- **Data stored at `~/.pep-oracle/`** (cache/transcripts, cache/diarization, chroma), not in the project directory. Override with `PEP_ORACLE_DATA_DIR`. (`cache/audio/` is no longer written — both Modal functions fetch audio directly from `episode.audio_url`. The directory is left alone if it exists from a prior install; `rm -rf` at will.)
 - **Incremental ingestion**: episodes tracked by GUID in ChromaDB metadata; already-ingested episodes are skipped unless `--force`.
+- **Cloud transcription**: Transcription runs on a Modal L4 GPU (`cloud/transcribe_modal.py`) using `faster-whisper large-v3`. Modal fetches audio from the RSS enclosure URL — no local audio download. Model weights (~3 GB) persist in a `modal.Volume` (`pep-oracle-whisper-cache`) so cold starts only reseed on first deploy. Cost ~$0.07–0.13 per 2-hour episode; wall-clock ~5–10 min. Deploy with `modal deploy cloud/transcribe_modal.py`. Fail-fast on Modal errors (no fallback). Cache format at `~/.pep-oracle/cache/transcripts/{guid}.whisper.json` is unchanged from the OpenAI-era so pre-existing caches still load.
 - **Embedding batches of 20** to stay within OpenAI's 40k TPM rate limit on lower-tier plans.
 - **Episode number regex** handles both English `(Ep NNN)` and Spanish `(Episodio NNN)` title formats.
-- **`pydub` is a vestigial dependency** — listed in `pyproject.toml` but never imported. Audio splitting uses ffmpeg subprocess calls directly.
+- **`pydub` is a vestigial dependency** — listed in `pyproject.toml` but never imported.
 - **`rich` is an unlisted dependency** — used in `cli.py` for Markdown rendering but not declared in `pyproject.toml` (pulled in transitively).
 - **Web UI hot reload**: `index.html` is served via `FileResponse` (changes visible on page refresh), but `server.py` changes require a server restart since Python modules are cached at import time.
 - **Three ingestion entry points**: CLI (`cli.py ingest`), web API (`server.py POST /ingest`), and systemd timer (`deploy/pep-oracle-ingest.service`). When adding parameters to ingestion, all three must be updated.
@@ -69,15 +69,15 @@ Topics are extracted deterministically from episode show notes at ingestion time
 ## Environment
 
 Required in `.env` (loaded via python-dotenv):
-- `OPENAI_API_KEY` — for embeddings (`text-embedding-3-small`) and Whisper transcription
+- `OPENAI_API_KEY` — for embeddings (`text-embedding-3-small`)
 - `ANTHROPIC_API_KEY` — for Claude query responses
+- `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` — Modal credentials for cloud transcription and diarization
 
 Optional:
 - `PEP_ORACLE_DATA_DIR` — override default `~/.pep-oracle/` data directory
 - `PEP_ORACLE_HOST` / `PEP_ORACLE_PORT` — server bind address (default `0.0.0.0:8000`)
-- `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` — Modal credentials for cloud diarization
 
-Requires **ffmpeg** on PATH for audio splitting.
+No host-side ffmpeg required — both Modal images apt-install their own.
 
 ## Deployment
 
@@ -87,7 +87,7 @@ Requires **ffmpeg** on PATH for audio splitting.
 
 ## Testing
 
-Tests use fixtures in `tests/fixtures/` (RSS XML). External APIs are mocked. ChromaDB tests use ephemeral in-memory clients. Whisper splitting tests generate audio via ffmpeg's sine generator. Web UI tests (`test_web_*.py`) use Playwright.
+Tests use fixtures in `tests/fixtures/` (RSS XML). External APIs are mocked, including Modal — `pep_oracle.transcripts.whisper.modal` / `pep_oracle.transcripts.diarize.modal` are monkeypatched with a fake whose `Function.from_name(...).remote(...)` returns fixture dicts. ChromaDB tests use ephemeral in-memory clients. Web UI tests (`test_web_*.py`) use Playwright.
 
 Tests marked `@pytest.mark.live` (in `test_web_live.py`) hit real APIs and are excluded by default. Run with `pytest -m live` to include them.
 

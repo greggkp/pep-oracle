@@ -45,8 +45,8 @@ def _fresh_collection():
 def test_estimate_whisper_cost():
     episodes = [_make_episode(1, duration=3600), _make_episode(2, duration=7200)]
     cost = estimate_whisper_cost(episodes)
-    # 60 + 120 = 180 minutes × $0.006 = $1.08
-    assert abs(cost - 1.08) < 0.01
+    # 60 + 120 = 180 minutes × $0.001 = $0.18
+    assert abs(cost - 0.18) < 0.01
 
 
 @patch("pep_oracle.ingest.fetch_episodes")
