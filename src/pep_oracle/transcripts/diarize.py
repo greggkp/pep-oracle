@@ -63,7 +63,9 @@ def _run_pipeline(pipeline, audio_path: Path, num_speakers: int | None) -> list[
     kwargs = {}
     if num_speakers is not None:
         kwargs["num_speakers"] = num_speakers
-    diarization = pipeline(str(audio_path), **kwargs)
+    result = pipeline(str(audio_path), **kwargs)
+    # pyannote ≥3.3 returns DiarizeOutput; unwrap to Annotation
+    diarization = getattr(result, "speaker_diarization", result)
     segs = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
         segs.append(SpeakerSegment(speaker=speaker, start=turn.start, end=turn.end))

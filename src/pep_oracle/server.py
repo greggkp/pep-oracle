@@ -17,6 +17,7 @@ from pep_oracle.query import ask as do_ask
 from pep_oracle.store import get_client, get_collection, get_ingested_guids, get_ingestion_stats
 from pep_oracle.topics import bootstrap_topics, load_topics
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
