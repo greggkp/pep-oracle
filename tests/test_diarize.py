@@ -247,3 +247,60 @@ def test_relabel_and_merge_preserves_concurrent_speakers():
     out = _relabel_and_merge(segs, [])
     assert len(out) == 2
     assert len({s.speaker for s in out}) == 2
+
+
+def test_diarize_audio_calls_modal(monkeypatch):
+    """diarize_audio looks up the deployed Modal function and returns parsed segments."""
+    from pep_oracle.transcripts import diarize as diarize_module
+
+    calls = []
+
+    class FakeRemote:
+        def remote(self, audio_url, num_speakers):
+            calls.append((audio_url, num_speakers))
+            return [
+                {"speaker": "SPEAKER_00", "start": 0.0, "end": 5.5},
+                {"speaker": "SPEAKER_01", "start": 5.5, "end": 10.0},
+            ]
+
+    class FakeModal:
+        class Function:
+            @staticmethod
+            def from_name(app_name, func_name):
+                assert app_name == "pep-oracle-diarize"
+                assert func_name == "diarize"
+                return FakeRemote()
+
+    monkeypatch.setattr(diarize_module, "modal", FakeModal)
+
+    result = diarize_module.diarize_audio("https://example.com/ep.mp3", num_speakers=2)
+
+    assert calls == [("https://example.com/ep.mp3", 2)]
+    assert len(result) == 2
+    assert result[0].speaker == "SPEAKER_00"
+    assert result[0].start == 0.0
+    assert result[0].end == 5.5
+    assert result[1].speaker == "SPEAKER_01"
+
+
+def test_diarize_audio_no_num_speakers(monkeypatch):
+    """num_speakers defaults to None."""
+    from pep_oracle.transcripts import diarize as diarize_module
+
+    received = {}
+
+    class FakeRemote:
+        def remote(self, audio_url, num_speakers):
+            received["num_speakers"] = num_speakers
+            return []
+
+    class FakeModal:
+        class Function:
+            @staticmethod
+            def from_name(app_name, func_name):
+                return FakeRemote()
+
+    monkeypatch.setattr(diarize_module, "modal", FakeModal)
+
+    diarize_module.diarize_audio("https://example.com/ep.mp3")
+    assert received["num_speakers"] is None

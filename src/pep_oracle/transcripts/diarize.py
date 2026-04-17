@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
+import modal
 
 from pep_oracle.config import DIARIZATION_CACHE_DIR, SPEAKER_PROFILES_PATH, ensure_dirs
 from pep_oracle.models import TranscriptSegment
@@ -73,25 +74,13 @@ def _run_pipeline(pipeline, audio_path: Path, num_speakers: int | None) -> list[
 
 
 def diarize_audio(
-    audio_path: Path,
+    audio_url: str,
     num_speakers: int | None = None,
 ) -> list[SpeakerSegment]:
-    """Run pyannote-audio diarization on an audio file.
-
-    For audio longer than CHUNK_SECONDS, the work is split into overlapping
-    chunks and stitched — this caps peak memory regardless of episode length.
-    """
-    try:
-        duration = _audio_duration_seconds(audio_path)
-    except Exception:
-        duration = None
-
-    pipeline = _load_pipeline()
-
-    if duration is None or duration <= CHUNK_SECONDS + CHUNK_OVERLAP_SECONDS:
-        return _run_pipeline(pipeline, audio_path, num_speakers)
-
-    return _diarize_chunked(audio_path, duration, pipeline, num_speakers)
+    """Run pyannote diarization on a Modal GPU. Returns parsed speaker segments."""
+    f = modal.Function.from_name("pep-oracle-diarize", "diarize")
+    raw = f.remote(audio_url, num_speakers)
+    return [SpeakerSegment(**r) for r in raw]
 
 
 def _diarize_chunked(
