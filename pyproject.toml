@@ -12,6 +12,7 @@ dependencies = [
     "click",
     "chromadb",
     "feedparser",
+    "modal>=0.64,<1",
     "openai",
     "audioop-lts;python_version>='3.13'",
     "pydub",
@@ -21,7 +22,6 @@ dependencies = [
 
 [project.optional-dependencies]
 server = ["fastapi", "uvicorn[standard]"]
-diarize = ["pyannote.audio", "torch", "torchaudio"]
 
 [project.scripts]
 pep-oracle = "pep_oracle.cli:cli"
