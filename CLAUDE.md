@@ -93,7 +93,7 @@ Tests marked `@pytest.mark.live` (in `test_web_live.py`) hit real APIs and are e
 
 **ChromaDB test isolation**: `chromadb.Client()` (ephemeral) shares state via `SharedSystemClient` cache within a process. Tests that ingest data into a collection must delete it in teardown (`client.delete_collection("pep_oracle")`) or subsequent test files will see stale data.
 
-**Server restart after commits**: A Claude Code `PostToolUse` hook restarts the pep-oracle server after `git commit` commands. The server runs as `uv run pep-oracle-server` (not systemd). Logs go to `/tmp/pep-oracle-server.log`.
+**Server restart after commits**: A Claude Code `PostToolUse` hook (`.claude/hooks/restart-server.sh`) runs `sudo systemctl restart pep-oracle-api.service` after `git commit` commands so code changes are picked up. The server runs under systemd (`pep-oracle-api.service`); logs go to journald (`journalctl -u pep-oracle-api.service`).
 
 ## Future enhancements
 
