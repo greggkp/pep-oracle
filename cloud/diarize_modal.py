@@ -9,12 +9,16 @@ app = modal.App("pep-oracle-diarize")
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
+    # pyannote.audio 3.3.2 passes use_auth_token through to hf_hub_download,
+    # which dropped that kwarg in huggingface_hub 0.26. Pin hub < 0.26.
+    # torch/torchaudio 2.5.1 avoids the AudioMetaData issue in 3.3.x.
     .pip_install(
-        "pyannote.audio==3.3.*",
-        "numpy",
+        "torch==2.5.1",
+        "torchaudio==2.5.1",
+        "pyannote.audio==3.3.2",
+        "huggingface_hub<0.26",
+        "numpy<2",
         "soundfile",
-        "torch",
-        "torchaudio",
     )
 )
 
@@ -34,6 +38,7 @@ def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
     sorted by start time.
     """
     import os
+    import subprocess
     import tempfile
     import urllib.request
     from pathlib import Path
@@ -44,21 +49,31 @@ def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
     hf_token = os.environ["HF_TOKEN"]
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        token=hf_token,
+        use_auth_token=hf_token,
     )
     pipeline.to(torch.device("cuda"))
 
     with tempfile.TemporaryDirectory() as td:
-        audio_path = Path(td) / "audio.mp3"
+        mp3_path = Path(td) / "audio.mp3"
+        wav_path = Path(td) / "audio.wav"
         try:
-            urllib.request.urlretrieve(audio_url, audio_path)
+            urllib.request.urlretrieve(audio_url, mp3_path)
         except Exception as e:
             raise RuntimeError(f"audio fetch failed: {e}") from e
+
+        # pyannote 4.x rejects mp3s where decoded samples don't match the
+        # requested chunk size (off-by-a-few due to mp3 frame boundaries).
+        # Transcode to 16 kHz mono wav so chunking is sample-exact.
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(mp3_path), "-ac", "1", "-ar", "16000", str(wav_path)],
+            check=True,
+            capture_output=True,
+        )
 
         kwargs = {}
         if num_speakers is not None:
             kwargs["num_speakers"] = num_speakers
-        result = pipeline(str(audio_path), **kwargs)
+        result = pipeline(str(wav_path), **kwargs)
 
     # pyannote ≥3.3 returns DiarizeOutput; unwrap to Annotation
     diarization = getattr(result, "speaker_diarization", result)
