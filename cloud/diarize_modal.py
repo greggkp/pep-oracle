@@ -20,15 +20,18 @@ image = (
         "numpy<2",
         "soundfile",
     )
+    .env({"HF_HOME": "/cache/hf"})
 )
 
 hf_secret = modal.Secret.from_name("huggingface-token")
+model_cache = modal.Volume.from_name("pep-oracle-pyannote-cache", create_if_missing=True)
 
 
 @app.function(
     image=image,
     gpu="L4",
     secrets=[hf_secret],
+    volumes={"/cache/hf": model_cache},
     timeout=1800,
 )
 def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
