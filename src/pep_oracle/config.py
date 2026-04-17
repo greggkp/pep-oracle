@@ -13,7 +13,6 @@ APPLE_PODCAST_ID = "1499646320"
 
 DATA_DIR = Path(os.getenv("PEP_ORACLE_DATA_DIR", Path.home() / ".pep-oracle"))
 CACHE_DIR = DATA_DIR / "cache"
-AUDIO_CACHE_DIR = CACHE_DIR / "audio"
 TRANSCRIPT_CACHE_DIR = CACHE_DIR / "transcripts"
 DIARIZATION_CACHE_DIR = CACHE_DIR / "diarization"
 CHROMA_DIR = DATA_DIR / "chroma"
@@ -26,5 +25,5 @@ QUERY_MODEL = "claude-sonnet-4-20250514"
 
 
 def ensure_dirs() -> None:
-    for d in (AUDIO_CACHE_DIR, TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
+    for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
         d.mkdir(parents=True, exist_ok=True)

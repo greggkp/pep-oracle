@@ -27,37 +27,70 @@ def test_returns_whisper_cache_if_available(tmp_path):
     with (
         patch("pep_oracle.transcripts.manager._has_cached_whisper_transcript", return_value=True),
         patch("pep_oracle.transcripts.manager.TRANSCRIPT_CACHE_DIR", tmp_path),
-        patch("pep_oracle.transcripts.whisper._load_cached", return_value=FAKE_SEGMENTS),
+        patch("pep_oracle.transcripts.manager._load_cached", return_value=FAKE_SEGMENTS),
     ):
         segments, source = get_transcript(_make_episode())
     assert source == "whisper_cached"
     assert len(segments) == 2
 
 
-def test_falls_back_to_whisper(tmp_path):
-    audio_path = tmp_path / "test.mp3"
-    audio_path.write_bytes(b"fake audio")
+def test_invokes_modal_transcribe(tmp_path, monkeypatch):
+    """get_transcript calls the Modal transcribe function and caches the result."""
+    from pep_oracle.transcripts import whisper as whisper_module
 
-    with (
-        patch("pep_oracle.transcripts.manager._has_cached_whisper_transcript", return_value=False),
+    monkeypatch.setattr(whisper_module, "TRANSCRIPT_CACHE_DIR", tmp_path)
+    monkeypatch.setattr("pep_oracle.transcripts.manager.TRANSCRIPT_CACHE_DIR", tmp_path)
 
-        patch("pep_oracle.transcripts.manager.download_audio", return_value=audio_path),
-        patch("pep_oracle.transcripts.manager.transcribe_episode", return_value=FAKE_SEGMENTS),
-    ):
-        segments, source = get_transcript(_make_episode(), delete_audio_after=False)
+    calls = []
+
+    class FakeRemote:
+        def remote(self, audio_url):
+            calls.append(audio_url)
+            return [
+                {"text": "Hello", "start_time": 0.0, "end_time": 1.0},
+                {"text": "World", "start_time": 1.0, "end_time": 2.0},
+            ]
+
+    class FakeModal:
+        class Function:
+            @staticmethod
+            def from_name(app_name, func_name):
+                assert app_name == "pep-oracle-transcribe"
+                assert func_name == "transcribe"
+                return FakeRemote()
+
+    monkeypatch.setattr(whisper_module, "modal", FakeModal)
+
+    segments, source = get_transcript(_make_episode())
+
+    assert calls == ["https://example.com/test.mp3"]
     assert source == "whisper"
-    assert segments == FAKE_SEGMENTS
+    assert len(segments) == 2
+    assert segments[0].text == "Hello"
+    assert segments[1].start_time == 1.0
+    assert (tmp_path / "test-guid-123.whisper.json").exists()
 
 
-def test_deletes_audio_after_whisper(tmp_path):
-    audio_path = tmp_path / "test.mp3"
-    audio_path.write_bytes(b"fake audio")
+def test_transcribe_cache_round_trip(tmp_path, monkeypatch):
+    """Second call with cached transcript returns from disk without touching Modal."""
+    from pep_oracle.transcripts import whisper as whisper_module
 
-    with (
-        patch("pep_oracle.transcripts.manager._has_cached_whisper_transcript", return_value=False),
+    monkeypatch.setattr(whisper_module, "TRANSCRIPT_CACHE_DIR", tmp_path)
+    monkeypatch.setattr("pep_oracle.transcripts.manager.TRANSCRIPT_CACHE_DIR", tmp_path)
 
-        patch("pep_oracle.transcripts.manager.download_audio", return_value=audio_path),
-        patch("pep_oracle.transcripts.manager.transcribe_episode", return_value=FAKE_SEGMENTS),
-    ):
-        get_transcript(_make_episode(), delete_audio_after=True)
-    assert not audio_path.exists()
+    cache_path = tmp_path / "test-guid-123.whisper.json"
+    cache_path.write_text(
+        '[{"text": "Cached", "start_time": 0.0, "end_time": 1.0}]'
+    )
+
+    class ExplodingModal:
+        class Function:
+            @staticmethod
+            def from_name(*a, **kw):
+                raise AssertionError("Modal should not be called when cache exists")
+
+    monkeypatch.setattr(whisper_module, "modal", ExplodingModal)
+
+    segments, source = get_transcript(_make_episode())
+    assert source == "whisper_cached"
+    assert segments[0].text == "Cached"
