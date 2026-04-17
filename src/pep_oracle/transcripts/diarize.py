@@ -179,7 +179,7 @@ def _match_speakers_to_profiles(
 
 def diarize_transcript(
     transcript_segments: list[TranscriptSegment],
-    audio_path: Path,
+    audio_url: str,
     episode_guid: str,
     num_speakers: int | None = None,
     profile_path: Path | None = None,
@@ -200,7 +200,7 @@ def diarize_transcript(
         if progress_callback:
             progress_callback("diarizing speakers")
         click.echo("  Diarizing speakers...", nl=False)
-        speaker_segments = diarize_audio(audio_path, num_speakers=num_speakers)
+        speaker_segments = diarize_audio(audio_url, num_speakers=num_speakers)
         _save_cache(speaker_segments, cache_path)
         unique = len(set(s.speaker for s in speaker_segments))
         click.echo(f" {unique} speakers, {len(speaker_segments)} segments")

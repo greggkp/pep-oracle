@@ -79,7 +79,6 @@ def ask(question: str, top_k: int) -> None:
 @click.option("--episode", "episode_id", type=str, required=True, help="Episode number or GUID to use for speaker identification.")
 def identify_speakers(episode_id: str) -> None:
     """Identify and label speakers for diarization (one-time setup)."""
-    from pep_oracle.config import AUDIO_CACHE_DIR
     from pep_oracle.transcripts.diarize import (
         diarize_audio,
         save_speaker_profiles,
@@ -89,7 +88,6 @@ def identify_speakers(episode_id: str) -> None:
         _save_cache,
     )
     from pep_oracle.config import DIARIZATION_CACHE_DIR, SPEAKER_PROFILES_PATH, ensure_dirs
-    from pep_oracle.transcripts.manager import download_audio
 
     ensure_dirs()
     episodes = fetch_episodes()
@@ -108,20 +106,14 @@ def identify_speakers(episode_id: str) -> None:
 
     click.echo(f"Using episode: {match.title}")
 
-    # Download audio if needed
-    audio_path = AUDIO_CACHE_DIR / f"{match.guid}.mp3"
-    if not audio_path.exists():
-        click.echo("Downloading audio...")
-        audio_path = download_audio(match)
-
-    # Diarize
+    # Diarize (Modal downloads from the URL directly)
     cache_path = DIARIZATION_CACHE_DIR / f"{match.guid}.json"
     if cache_path.exists():
         click.echo("Using cached diarization...")
         speaker_segments = _load_cached(cache_path)
     else:
-        click.echo("Diarizing audio (this may take a while)...")
-        speaker_segments = diarize_audio(audio_path)
+        click.echo("Diarizing audio on Modal...")
+        speaker_segments = diarize_audio(match.audio_url)
         _save_cache(speaker_segments, cache_path)
 
     # Find unique speakers and their total speaking time
@@ -170,10 +162,6 @@ def identify_speakers(episode_id: str) -> None:
     save_speaker_profiles(profiles)
     click.echo(f"\nSaved profiles for: {', '.join(profiles.keys())}")
     click.echo(f"Profiles stored at: {SPEAKER_PROFILES_PATH}")
-
-    # Clean up audio
-    if audio_path.exists():
-        audio_path.unlink()
 
 
 @cli.command(name="export")

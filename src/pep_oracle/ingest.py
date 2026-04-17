@@ -33,28 +33,18 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
 
     if progress_callback:
         progress_callback("transcribing")
-    # Keep audio if we need it for diarization
     segments, source = get_transcript(
-        episode, delete_audio_after=not diarize, progress_callback=progress_callback,
+        episode, delete_audio_after=True, progress_callback=progress_callback,
     )
     click.echo(f"  Transcript: {source} ({len(segments)} segments)")
 
     if diarize:
         from pep_oracle.transcripts.diarize import diarize_transcript
-        from pep_oracle.transcripts.manager import download_audio
-        from pep_oracle.config import AUDIO_CACHE_DIR
 
-        audio_path = AUDIO_CACHE_DIR / f"{episode.guid}.mp3"
-        if not audio_path.exists():
-            audio_path = download_audio(episode)
-        try:
-            segments = diarize_transcript(
-                segments, audio_path, episode.guid,
-                progress_callback=progress_callback,
-            )
-        finally:
-            if audio_path.exists():
-                audio_path.unlink()
+        segments = diarize_transcript(
+            segments, episode.audio_url, episode.guid,
+            progress_callback=progress_callback,
+        )
 
     chunks = chunk_transcript(segments, episode)
     if not chunks:
