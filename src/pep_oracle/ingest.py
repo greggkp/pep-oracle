@@ -136,7 +136,7 @@ def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: 
     # Estimate Modal GPU cost; gate a large backfill.
     if confirm_cost:
         cost = estimate_whisper_cost(to_process)
-        if cost > 2.00:
+        if cost > 10.00:
             click.echo(f"Estimated Modal GPU cost: ${cost:.2f}")
             if not click.confirm("Proceed?"):
                 return {"processed": 0, "skipped": len(episodes), "failed": 0}
