@@ -253,9 +253,8 @@ async def api_ingest(req: IngestRequest):
     async def _run():
         global _ingest_running, _ingest_last_result, _ingest_progress
         try:
-            # Isolate ingestion in a subprocess: pyannote + Whisper can
-            # spike memory well past the server's working set, and an
-            # in-process OOM kills the API with it.
+            # Isolate ingestion in a subprocess so a crash there can't
+            # take the API down with it.
             cmd = [sys.executable, "-m", "pep_oracle.ingest_worker"]
             if req.force:
                 cmd.append("--force")
@@ -265,7 +264,7 @@ async def api_ingest(req: IngestRequest):
                 cmd.extend(["--episode", str(n)])
 
             # MALLOC_ARENA_MAX=2 caps glibc's per-thread malloc arenas —
-            # pyannote/torch allocate from many threads and the default
+            # chromadb + numpy allocate from many threads and the default
             # (8 × cores) wastes hundreds of MB to fragmentation.
             env = {**os.environ, "MALLOC_ARENA_MAX": "2"}
             proc = await asyncio.create_subprocess_exec(

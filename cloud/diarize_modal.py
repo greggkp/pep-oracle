@@ -38,6 +38,7 @@ def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
     import urllib.request
     from pathlib import Path
 
+    import torch
     from pyannote.audio import Pipeline
 
     hf_token = os.environ["HF_TOKEN"]
@@ -45,7 +46,7 @@ def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
         "pyannote/speaker-diarization-3.1",
         token=hf_token,
     )
-    pipeline.to(__import__("torch").device("cuda"))
+    pipeline.to(torch.device("cuda"))
 
     with tempfile.TemporaryDirectory() as td:
         audio_path = Path(td) / "audio.mp3"
