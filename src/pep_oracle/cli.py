@@ -51,14 +51,15 @@ def episodes(limit: int) -> None:
 @click.option("--force", is_flag=True, help="Re-process already ingested episodes.")
 @click.option("--episode", "episode_id", type=str, help="Ingest a specific episode by number or GUID.")
 @click.option("--diarize", is_flag=True, help="Run speaker diarization on Modal GPU (requires MODAL_TOKEN_ID/SECRET).")
-def ingest(force: bool, episode_id: str | None, diarize: bool) -> None:
+@click.option("--new-only", is_flag=True, help="Only ingest episodes newer than the latest already ingested (skips historical gaps).")
+def ingest(force: bool, episode_id: str | None, diarize: bool, new_only: bool) -> None:
     """Fetch and process episodes."""
     from pep_oracle.ingest import ingest_all, ingest_episode
 
     if episode_id:
         ingest_episode(episode_id, force=force, diarize=diarize)
     else:
-        ingest_all(force=force, diarize=diarize)
+        ingest_all(force=force, diarize=diarize, new_only=new_only)
 
 
 @cli.command()

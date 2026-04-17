@@ -202,6 +202,47 @@ def test_ingest_all_filters_by_episode_numbers(mock_embed, mock_transcript, mock
 @patch("pep_oracle.ingest.fetch_episodes")
 @patch("pep_oracle.ingest.get_transcript", return_value=(FAKE_SEGMENTS, "whisper_cached"))
 @patch("pep_oracle.ingest.embed_texts", side_effect=_fake_embed)
+def test_ingest_all_new_only_skips_historical_gaps(mock_embed, mock_transcript, mock_fetch):
+    """new_only should only process episodes with pub_date > latest ingested, ignoring older gaps."""
+    collection = _fresh_collection()
+    # Episodes 1, 2, 3, 4 (pub_dates Jan 1-4). Say ep 2 is already ingested.
+    # new_only should process only episodes 3 and 4 (newer than ep 2), skipping gap at ep 1.
+    mock_fetch.return_value = [_make_episode(1), _make_episode(2), _make_episode(3), _make_episode(4)]
+
+    with (
+        patch("pep_oracle.ingest.get_client"),
+        patch("pep_oracle.ingest.get_collection", return_value=collection),
+        patch("pep_oracle.ingest.get_ingested_guids", return_value={"guid-2"}),
+    ):
+        result = ingest_all(confirm_cost=False, new_only=True)
+
+    assert result["processed"] == 2
+    guids = get_ingested_guids(collection)
+    assert guids == {"guid-3", "guid-4"}
+
+
+@patch("pep_oracle.ingest.fetch_episodes")
+@patch("pep_oracle.ingest.get_transcript", return_value=(FAKE_SEGMENTS, "whisper_cached"))
+@patch("pep_oracle.ingest.embed_texts", side_effect=_fake_embed)
+def test_ingest_all_new_only_no_baseline_skips(mock_embed, mock_transcript, mock_fetch):
+    """new_only with nothing ingested yet should do nothing (no baseline to compare against)."""
+    collection = _fresh_collection()
+    mock_fetch.return_value = [_make_episode(1), _make_episode(2)]
+
+    with (
+        patch("pep_oracle.ingest.get_client"),
+        patch("pep_oracle.ingest.get_collection", return_value=collection),
+        patch("pep_oracle.ingest.get_ingested_guids", return_value=set()),
+    ):
+        result = ingest_all(confirm_cost=False, new_only=True)
+
+    assert result["processed"] == 0
+    assert mock_transcript.call_count == 0
+
+
+@patch("pep_oracle.ingest.fetch_episodes")
+@patch("pep_oracle.ingest.get_transcript", return_value=(FAKE_SEGMENTS, "whisper_cached"))
+@patch("pep_oracle.ingest.embed_texts", side_effect=_fake_embed)
 def test_ingest_all_calls_progress_callback(mock_embed, mock_transcript, mock_fetch):
     """progress_callback should be called with episode and step info."""
     collection = _fresh_collection()

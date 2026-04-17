@@ -74,7 +74,7 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
     return True, topic_entry
 
 
-def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: list[int] | None = None, diarize: bool = False, progress_callback=None) -> dict:
+def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: list[int] | None = None, diarize: bool = False, new_only: bool = False, progress_callback=None) -> dict:
     """Ingest all episodes. Returns summary stats."""
     episodes = fetch_episodes()
     logger.info("Fetched %d episodes from RSS feed", len(episodes))
@@ -115,6 +115,24 @@ def ingest_all(force: bool = False, confirm_cost: bool = True, episode_numbers: 
                 latest_ingested.episode_number if latest_ingested else "?",
                 latest_ingested.pub_date.isoformat() if latest_ingested else "?",
                 latest_ingested.guid if latest_ingested else "?",
+            )
+
+    if new_only and not force:
+        latest_ingested = max(
+            (ep for ep in episodes if ep.guid in ingested_guids),
+            key=lambda ep: ep.pub_date,
+            default=None,
+        )
+        if latest_ingested is None:
+            logger.info("--new-only: no episodes ingested yet; skipping.")
+            to_process = []
+        else:
+            before = len(to_process)
+            to_process = [ep for ep in to_process if ep.pub_date > latest_ingested.pub_date]
+            logger.info(
+                "--new-only: keeping episodes newer than Ep %s (%s): %d → %d",
+                latest_ingested.episode_number, latest_ingested.pub_date.isoformat(),
+                before, len(to_process),
             )
 
     if episode_numbers:
