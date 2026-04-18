@@ -31,7 +31,7 @@ model_cache = modal.Volume.from_name("pep-oracle-whisper-cache", create_if_missi
 
 @app.function(
     image=image,
-    gpu="L4",
+    gpu="A100",
     volumes={"/models": model_cache},
     timeout=1800,
 )

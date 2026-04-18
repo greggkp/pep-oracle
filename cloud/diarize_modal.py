@@ -29,7 +29,7 @@ model_cache = modal.Volume.from_name("pep-oracle-pyannote-cache", create_if_miss
 
 @app.function(
     image=image,
-    gpu="L4",
+    gpu="A100",
     secrets=[hf_secret],
     volumes={"/cache/hf": model_cache},
     timeout=1800,
