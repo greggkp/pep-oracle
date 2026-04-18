@@ -64,7 +64,7 @@ def transcribe(audio_url: str) -> list[dict]:
         )
 
         model = WhisperModel(
-            "large-v3",
+            "large-v3-turbo",
             device="cuda",
             compute_type="float16",
             download_root="/models",
