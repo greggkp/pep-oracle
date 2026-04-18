@@ -15,7 +15,7 @@ from pep_oracle.transcripts.manager import get_transcript
 
 logger = logging.getLogger(__name__)
 
-WHISPER_COST_PER_MINUTE = 0.001  # Modal L4 ~$0.06/hr of audio
+WHISPER_COST_PER_MINUTE = 0.001  # Modal A100 + large-v3-turbo: speed gain ~offsets GPU tier bump
 
 
 def estimate_whisper_cost(episodes: list[Episode]) -> float:

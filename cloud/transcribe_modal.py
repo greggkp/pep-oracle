@@ -36,7 +36,7 @@ model_cache = modal.Volume.from_name("pep-oracle-whisper-cache", create_if_missi
     timeout=1800,
 )
 def transcribe(audio_url: str) -> list[dict]:
-    """Download audio from a URL and run faster-whisper large-v3 on GPU.
+    """Download audio from a URL and run faster-whisper large-v3-turbo on GPU.
 
     Returns a list of {"text": str, "start_time": float, "end_time": float}
     dicts in chronological order.
