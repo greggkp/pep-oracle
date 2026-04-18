@@ -218,7 +218,6 @@ def ask(
     top_k: int = 10,
     model: str = QUERY_MODEL,
     anthropic_client: anthropic.Anthropic | None = None,
-    openai_client=None,
     history: list[dict] | None = None,
 ) -> str:
     if anthropic_client is None:
@@ -232,7 +231,7 @@ def ask(
     )
 
     # Embed the search query (may be rewritten by pre-processor)
-    query_embedding = embed_texts([filters["search_query"]], client=openai_client)[0]
+    query_embedding = embed_texts([filters["search_query"]])[0]
 
     # Retrieve relevant chunks with filters
     client = get_client()
