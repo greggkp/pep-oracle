@@ -41,10 +41,10 @@ uv run pep-oracle-server                     # starts FastAPI on 0.0.0.0:8000
 Two pipelines, both orchestrated through `cli.py`. Web UI via `server.py` (FastAPI) serving `src/pep_oracle/web/index.html`.
 
 **Ingestion** (`ingest.py` orchestrates):
-`feed.py` (RSS parse) → `transcripts/manager.py` (transcription via Modal GPU, `cloud/transcribe_modal.py`, with caching) → optional `transcripts/diarize.py` (diarization via Modal GPU, `cloud/diarize_modal.py`) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (OpenAI batched) → `store.py` (ChromaDB upsert). Web API ingestion runs in a subprocess (`ingest_worker.py`) to isolate ingest failures from the server process.
+`feed.py` (RSS parse) → `transcripts/manager.py` (transcription via Modal GPU, `cloud/transcribe_modal.py`, with caching) → optional `transcripts/diarize.py` (diarization via Modal GPU, `cloud/diarize_modal.py`) → `chunking.py` (time-window chunks with overlap) → `embeddings.py` (local fastembed / bge-large) → `store.py` (ChromaDB upsert). Web API ingestion runs in a subprocess (`ingest_worker.py`) to isolate ingest failures from the server process.
 
 **Query** (`query.py` orchestrates):
-Pre-process question via Claude Haiku (extract date/episode/speaker filters + recency intent) → embed search query (OpenAI) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking + optional speaker filtering) → trim chunks to target speaker's portions if speaker filter active (`_trim_to_speaker`) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown. Compare queries ("Chas vs Dave on X") run dual retrieval (one per speaker, `top_k/2` each) with labeled context sections.
+Pre-process question via Claude Haiku (extract date/episode/speaker filters + recency intent) → embed search query (local fastembed) → retrieve top-k chunks from ChromaDB (with filters + optional recency re-ranking + optional speaker filtering) → trim chunks to target speaker's portions if speaker filter active (`_trim_to_speaker`) → build prompt with transcript excerpts sorted newest-first → send to Claude → render with rich Markdown. Compare queries ("Chas vs Dave on X") run dual retrieval (one per speaker, `top_k/2` each) with labeled context sections.
 
 **Topic chips** (`topics.py`):
 Topics are extracted deterministically from episode show notes at ingestion time: `parse_description_topics()` extracts timestamp labels → `clean_episode_topics()` strips segment prefixes (Correspondence, Not Normal, Stats Nug, Policy Time), extracts parenthetical subtopics, cleans Unleashed entries, and strips Cont. suffixes → `_ingest_one()` returns the topic entry; callers (`ingest_all`, `ingest_episode`) batch entries and call `save_topics()` once → persisted to `~/.pep-oracle/topics.json`. `/topics` endpoint reads from file — no API call. Frontend renders chips grouped by episode with inline episode numbers ("Cuba · Ep 253"), "More..." button loads older episodes.
@@ -55,7 +55,7 @@ Topics are extracted deterministically from episode show notes at ingestion time
 - **Data stored at `~/.pep-oracle/`** (cache/transcripts, cache/diarization, chroma), not in the project directory. Override with `PEP_ORACLE_DATA_DIR`. (`cache/audio/` is no longer written — both Modal functions fetch audio directly from `episode.audio_url`. The directory is left alone if it exists from a prior install; `rm -rf` at will.)
 - **Incremental ingestion**: episodes tracked by GUID in ChromaDB metadata; already-ingested episodes are skipped unless `--force`.
 - **Cloud transcription**: Transcription runs on a Modal L4 GPU (`cloud/transcribe_modal.py`) using `faster-whisper large-v3`. Modal fetches audio from the RSS enclosure URL — no local audio download. Model weights (~3 GB) persist in a `modal.Volume` (`pep-oracle-whisper-cache`) so cold starts only reseed on first deploy. Cost ~$0.07–0.13 per 2-hour episode; wall-clock ~5–10 min. Deploy with `modal deploy cloud/transcribe_modal.py`. Fail-fast on Modal errors (no fallback). Cache format at `~/.pep-oracle/cache/transcripts/{guid}.whisper.json` is unchanged from the OpenAI-era so pre-existing caches still load.
-- **Embedding batches of 20** to stay within OpenAI's 40k TPM rate limit on lower-tier plans.
+- **Local embeddings**: `embeddings.py` loads `BAAI/bge-large-en-v1.5` via `fastembed` as a lazy singleton. First use downloads ≈1.3 GB of ONNX weights to `~/.cache/fastembed/`; subsequent loads are ≈5s (cold process) or free (warm). Output is 1024-dim; any migration that changes the embedding model must drop-and-recreate the Chroma collection to match.
 - **Episode number regex** handles both English `(Ep NNN)` and Spanish `(Episodio NNN)` title formats.
 - **`pydub` is a vestigial dependency** — listed in `pyproject.toml` but never imported.
 - **`rich` is an unlisted dependency** — used in `cli.py` for Markdown rendering but not declared in `pyproject.toml` (pulled in transitively).
@@ -69,9 +69,10 @@ Topics are extracted deterministically from episode show notes at ingestion time
 ## Environment
 
 Required in `.env` (loaded via python-dotenv):
-- `OPENAI_API_KEY` — for embeddings (`text-embedding-3-small`)
 - `ANTHROPIC_API_KEY` — for Claude query responses
 - `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` — Modal credentials for cloud transcription and diarization
+
+No `OPENAI_API_KEY` — embeddings are now generated locally via `fastembed`.
 
 Optional:
 - `PEP_ORACLE_DATA_DIR` — override default `~/.pep-oracle/` data directory
