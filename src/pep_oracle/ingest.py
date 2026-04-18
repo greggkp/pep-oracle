@@ -1,4 +1,6 @@
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import click
 
@@ -13,7 +15,7 @@ from pep_oracle.transcripts.manager import get_transcript
 
 logger = logging.getLogger(__name__)
 
-WHISPER_COST_PER_MINUTE = 0.001  # Modal L4 ~$0.06/hr of audio
+WHISPER_COST_PER_MINUTE = 0.001  # Modal A100 + large-v3-turbo: speed gain ~offsets GPU tier bump
 
 
 def estimate_whisper_cost(episodes: list[Episode]) -> float:
@@ -22,6 +24,44 @@ def estimate_whisper_cost(episodes: list[Episode]) -> float:
         for ep in episodes
     )
     return total_minutes * WHISPER_COST_PER_MINUTE
+
+
+def _run_transcribe_and_diarize(
+    episode: Episode,
+    diarize_enabled: bool,
+    progress_callback,
+) -> tuple[list, str, list | None, float, float]:
+    """Run Modal transcription and (optionally) Modal diarization concurrently.
+
+    Returns (segments, source, speaker_segments_or_None, transcribe_elapsed, diarize_elapsed).
+    If diarize_enabled is False, speaker_segments is None and diarize_elapsed is 0.0.
+    """
+    from pep_oracle.transcripts.diarize import get_speaker_segments
+
+    def _time(fn, *a, **k):
+        s = time.monotonic()
+        r = fn(*a, **k)
+        return r, time.monotonic() - s
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        t_future = pool.submit(_time, get_transcript, episode, progress_callback=progress_callback)
+        d_future = None
+        if diarize_enabled:
+            d_future = pool.submit(
+                _time,
+                get_speaker_segments,
+                episode.audio_url,
+                episode.guid,
+                progress_callback=progress_callback,
+            )
+
+        (segments, source), t_elapsed = t_future.result()
+        if d_future:
+            speaker_segments, d_elapsed = d_future.result()
+        else:
+            speaker_segments, d_elapsed = None, 0.0
+
+    return segments, source, speaker_segments, t_elapsed, d_elapsed
 
 
 def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> bool:
@@ -33,18 +73,20 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
 
     if progress_callback:
         progress_callback("transcribing")
-    segments, source = get_transcript(
-        episode, progress_callback=progress_callback,
+
+    segments, source, speaker_segments, t_elapsed, d_elapsed = _run_transcribe_and_diarize(
+        episode, diarize, progress_callback,
+    )
+    logger.info(
+        "transcribe_elapsed=%.1fs diarize_elapsed=%.1fs (concurrent, critical path=%.1fs)",
+        t_elapsed, d_elapsed, max(t_elapsed, d_elapsed),
     )
     click.echo(f"  Transcript: {source} ({len(segments)} segments)")
 
     if diarize:
-        from pep_oracle.transcripts.diarize import diarize_transcript
+        from pep_oracle.transcripts.diarize import apply_diarization
 
-        segments = diarize_transcript(
-            segments, episode.audio_url, episode.guid,
-            progress_callback=progress_callback,
-        )
+        segments = apply_diarization(segments, speaker_segments, profile_path=None)
 
     chunks = chunk_transcript(segments, episode)
     if not chunks:
@@ -54,8 +96,11 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
     if progress_callback:
         progress_callback(f"embedding {len(chunks)} excerpts")
     click.echo(f"  Embedding {len(chunks)} excerpts...", nl=False)
+    e_start = time.monotonic()
     embeddings = embed_texts([c.text for c in chunks])
+    e_elapsed = time.monotonic() - e_start
     click.echo(" done")
+    logger.info("embed_elapsed=%.1fs (chunks=%d)", e_elapsed, len(chunks))
     if progress_callback:
         progress_callback(f"storing {len(chunks)} excerpts")
     add_chunks(collection, chunks, embeddings)

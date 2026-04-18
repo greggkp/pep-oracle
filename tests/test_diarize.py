@@ -218,3 +218,28 @@ def test_diarize_audio_no_num_speakers(monkeypatch):
 
     diarize_module.diarize_audio("https://example.com/ep.mp3")
     assert received["num_speakers"] is None
+
+
+def test_get_speaker_segments_uses_cache(tmp_path, monkeypatch):
+    """If a diarization cache file exists, get_speaker_segments returns it without calling Modal."""
+    from pep_oracle.transcripts.diarize import (
+        SpeakerSegment, get_speaker_segments, _save_cache,
+    )
+    from pep_oracle import config
+
+    monkeypatch.setattr(config, "DIARIZATION_CACHE_DIR", tmp_path)
+    # Also patch the name imported into diarize.py at import time
+    from pep_oracle.transcripts import diarize as diarize_mod
+    monkeypatch.setattr(diarize_mod, "DIARIZATION_CACHE_DIR", tmp_path)
+
+    cached = [SpeakerSegment(speaker="S1", start=0.0, end=10.0)]
+    _save_cache(cached, tmp_path / "guid-x.json")
+
+    def _boom(*a, **k):
+        raise AssertionError("diarize_audio should not be called on cache hit")
+
+    monkeypatch.setattr(diarize_mod, "diarize_audio", _boom)
+
+    result = get_speaker_segments(audio_url="https://x", episode_guid="guid-x")
+    assert len(result) == 1
+    assert result[0].speaker == "S1"

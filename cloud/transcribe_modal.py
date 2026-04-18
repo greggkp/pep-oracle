@@ -31,12 +31,12 @@ model_cache = modal.Volume.from_name("pep-oracle-whisper-cache", create_if_missi
 
 @app.function(
     image=image,
-    gpu="L4",
+    gpu="A100",
     volumes={"/models": model_cache},
     timeout=1800,
 )
 def transcribe(audio_url: str) -> list[dict]:
-    """Download audio from a URL and run faster-whisper large-v3 on GPU.
+    """Download audio from a URL and run faster-whisper large-v3-turbo on GPU.
 
     Returns a list of {"text": str, "start_time": float, "end_time": float}
     dicts in chronological order.
@@ -64,7 +64,7 @@ def transcribe(audio_url: str) -> list[dict]:
         )
 
         model = WhisperModel(
-            "large-v3",
+            "large-v3-turbo",
             device="cuda",
             compute_type="float16",
             download_root="/models",
