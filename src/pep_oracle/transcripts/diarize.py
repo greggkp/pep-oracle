@@ -177,6 +177,52 @@ def _match_speakers_to_profiles(
     return name_map
 
 
+def get_speaker_segments(
+    audio_url: str,
+    episode_guid: str,
+    num_speakers: int | None = None,
+    progress_callback=None,
+) -> list[SpeakerSegment]:
+    """Fetch speaker segments (from cache or via Modal).
+
+    Safe to call concurrently with get_transcript — writes only to its own
+    per-episode cache file.
+    """
+    ensure_dirs()
+    cache_path = DIARIZATION_CACHE_DIR / f"{episode_guid}.json"
+    if cache_path.exists():
+        click.echo("  Diarization: cached")
+        return _load_cached(cache_path)
+
+    if progress_callback:
+        progress_callback("diarizing speakers")
+    click.echo("  Diarizing speakers...", nl=False)
+    speaker_segments = diarize_audio(audio_url, num_speakers=num_speakers)
+    _save_cache(speaker_segments, cache_path)
+    unique = len(set(s.speaker for s in speaker_segments))
+    click.echo(f" {unique} speakers, {len(speaker_segments)} segments")
+    return speaker_segments
+
+
+def apply_diarization(
+    transcript_segments: list[TranscriptSegment],
+    speaker_segments: list[SpeakerSegment],
+    profile_path: Path | None = None,
+) -> list[TranscriptSegment]:
+    """Align transcript segments with speaker turns and map to real names.
+
+    No Modal calls; operates on already-fetched data.
+    """
+    aligned = align_speakers(transcript_segments, speaker_segments)
+    named = map_speaker_names(aligned, speaker_segments, profile_path)
+
+    profiles = load_speaker_profiles(profile_path)
+    if not profiles:
+        click.echo("  Warning: No speaker profiles found. Using generic labels.")
+        click.echo("  Run 'pep-oracle identify-speakers --episode <N>' to set up profiles.")
+    return named
+
+
 def diarize_transcript(
     transcript_segments: list[TranscriptSegment],
     audio_url: str,
@@ -185,39 +231,19 @@ def diarize_transcript(
     profile_path: Path | None = None,
     progress_callback=None,
 ) -> list[TranscriptSegment]:
-    """Full diarization pipeline: diarize audio, align with transcript, map names.
+    """Full diarization pipeline: fetch speaker segments, align, map names.
 
-    Uses cached diarization results if available.
+    Thin wrapper over get_speaker_segments + apply_diarization, kept for
+    backward compatibility. New code should call the two halves separately
+    so the Modal call can be parallelized with transcription.
     """
-    ensure_dirs()
-
-    # Check cache
-    cache_path = DIARIZATION_CACHE_DIR / f"{episode_guid}.json"
-    if cache_path.exists():
-        click.echo("  Diarization: cached")
-        speaker_segments = _load_cached(cache_path)
-    else:
-        if progress_callback:
-            progress_callback("diarizing speakers")
-        click.echo("  Diarizing speakers...", nl=False)
-        speaker_segments = diarize_audio(audio_url, num_speakers=num_speakers)
-        _save_cache(speaker_segments, cache_path)
-        unique = len(set(s.speaker for s in speaker_segments))
-        click.echo(f" {unique} speakers, {len(speaker_segments)} segments")
-
-    # Align speakers with transcript
-    aligned = align_speakers(transcript_segments, speaker_segments)
-
-    # Map to real names
-    named = map_speaker_names(aligned, speaker_segments, profile_path)
-
-    # Warn if no profiles
-    profiles = load_speaker_profiles(profile_path)
-    if not profiles:
-        click.echo("  Warning: No speaker profiles found. Using generic labels.")
-        click.echo("  Run 'pep-oracle identify-speakers --episode <N>' to set up profiles.")
-
-    return named
+    speaker_segments = get_speaker_segments(
+        audio_url=audio_url,
+        episode_guid=episode_guid,
+        num_speakers=num_speakers,
+        progress_callback=progress_callback,
+    )
+    return apply_diarization(transcript_segments, speaker_segments, profile_path)
 
 
 def _save_cache(segments: list[SpeakerSegment], path: Path) -> None:
