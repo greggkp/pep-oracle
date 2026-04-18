@@ -19,7 +19,6 @@ CHROMA_DIR = DATA_DIR / "chroma"
 TOPICS_PATH = DATA_DIR / "topics.json"
 SPEAKER_PROFILES_PATH = DATA_DIR / "speaker_profiles.json"
 
-EMBEDDING_MODEL = "text-embedding-3-small"
 CHROMA_COLLECTION = "pep_oracle"
 QUERY_MODEL = "claude-sonnet-4-20250514"
 

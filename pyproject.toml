@@ -13,11 +13,11 @@ dependencies = [
     "chromadb",
     "feedparser",
     "modal>=1.4,<2",
-    "openai",
     "audioop-lts;python_version>='3.13'",
     "pydub",
     "python-dotenv",
     "requests",
+    "fastembed>=0.4",
 ]
 
 [project.optional-dependencies]
