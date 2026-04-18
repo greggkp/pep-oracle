@@ -259,3 +259,46 @@ def test_ingest_all_calls_progress_callback(mock_embed, mock_transcript, mock_fe
     assert result["processed"] == 1
     assert any("Ep 1" in c for c in calls)
     assert any("embedding" in c.lower() or "storing" in c.lower() for c in calls)
+
+
+import time
+
+from pep_oracle.transcripts.diarize import SpeakerSegment
+
+
+@patch("pep_oracle.ingest.fetch_episodes")
+@patch("pep_oracle.ingest.embed_texts", side_effect=_fake_embed)
+def test_ingest_runs_transcribe_and_diarize_concurrently(mock_embed, mock_fetch):
+    """When diarize=True, transcribe and diarize should run concurrently,
+    not sequentially. Wall-clock should be ~max(t1, t2), not t1 + t2."""
+    collection = _fresh_collection()
+    mock_fetch.return_value = [_make_episode(1)]
+
+    slow_segments = FAKE_SEGMENTS
+    slow_speakers = [SpeakerSegment(speaker="S1", start=0.0, end=20.0)]
+
+    def slow_transcript(ep, progress_callback=None):
+        time.sleep(0.3)
+        return slow_segments, "whisper"
+
+    def slow_speaker_segments(audio_url, episode_guid, num_speakers=None, progress_callback=None):
+        time.sleep(0.3)
+        return slow_speakers
+
+    with (
+        patch("pep_oracle.ingest.get_client"),
+        patch("pep_oracle.ingest.get_collection", return_value=collection),
+        patch("pep_oracle.ingest.get_ingested_guids", return_value=set()),
+        patch("pep_oracle.ingest.get_transcript", side_effect=slow_transcript),
+        patch(
+            "pep_oracle.transcripts.diarize.get_speaker_segments",
+            side_effect=slow_speaker_segments,
+        ),
+    ):
+        start = time.monotonic()
+        result = ingest_all(confirm_cost=False, diarize=True)
+        elapsed = time.monotonic() - start
+
+    assert result["processed"] == 1
+    # Sequential would be ~0.6s; parallel should be ~0.3s. Allow 0.5s as the cap.
+    assert elapsed < 0.5, f"expected parallel execution (<0.5s), got {elapsed:.2f}s"
