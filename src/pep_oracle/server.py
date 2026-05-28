@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -96,6 +97,84 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="pep-oracle", lifespan=lifespan)
+
+
+class _BearerAuthASGIWrapper:
+    """ASGI middleware that gates an inner ASGI app on a static bearer token.
+
+    Rejects with HTTP 401 if the Authorization header is missing, malformed,
+    or doesn't match the expected token. Uses ``secrets.compare_digest`` for
+    constant-time comparison.
+    """
+
+    def __init__(self, inner_app, expected_token: str):
+        self._inner = inner_app
+        self._expected = expected_token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._inner(scope, receive, send)
+            return
+
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        auth = headers.get("authorization", "")
+        token: str | None = None
+        if auth.startswith("Bearer "):
+            token = auth[len("Bearer "):]
+
+        if token is None or not secrets.compare_digest(token, self._expected):
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"www-authenticate", b'Bearer realm="pep-oracle-mcp"'),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b'{"detail":"unauthorized"}'})
+            return
+
+        await self._inner(scope, receive, send)
+
+
+def mount_mcp_if_configured(app: FastAPI) -> bool:
+    """Mount the FastMCP server under /mcp if PEP_ORACLE_MCP_TOKEN is set.
+
+    Returns True if the mount happened, False if it was skipped (token unset
+    or empty). Reads the env var at call time so tests can monkeypatch it
+    and call this on a fresh FastAPI instance.
+    """
+    token = os.environ.get("PEP_ORACLE_MCP_TOKEN", "").strip()
+    if not token:
+        logger.warning("PEP_ORACLE_MCP_TOKEN not set — MCP endpoint disabled")
+        return False
+
+    from pep_oracle.mcp_server import mcp
+
+    # Move the SDK's internal route from /mcp to / so that mounting the
+    # sub-app at /mcp gives the final URL /mcp (not /mcp/mcp).
+    mcp.settings.streamable_http_path = "/"
+    mcp_asgi = mcp.streamable_http_app()
+    session_manager = mcp.session_manager
+
+    # The StreamableHTTPSessionManager must be entered as an async context for
+    # the lifetime of the app, otherwise its task group is never started and
+    # incoming requests fail with "Task group is not initialized." We chain
+    # it into the FastAPI router's lifespan_context here so it runs alongside
+    # whatever lifespan was passed to FastAPI(..., lifespan=...).
+    previous_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def _combined_lifespan(app_: FastAPI):
+        async with session_manager.run():
+            async with previous_lifespan(app_):
+                yield
+
+    app.router.lifespan_context = _combined_lifespan
+
+    app.mount("/mcp", _BearerAuthASGIWrapper(mcp_asgi, token))
+    logger.info("MCP mounted at /mcp")
+    return True
 
 
 def _get_fresh_collection():
@@ -334,6 +413,9 @@ async def api_reload():
 @app.get("/")
 async def root():
     return FileResponse(WEB_DIR / "index.html")
+
+
+mount_mcp_if_configured(app)
 
 
 def main():

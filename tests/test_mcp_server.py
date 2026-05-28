@@ -205,3 +205,111 @@ def test_search_pep_default_top_k_is_5(patched):
     _seed_chunks(patched, count=8)
     results = mcp_server.search_pep("query")
     assert len(results) == 5
+
+
+# --- (e) /mcp mount + bearer-token auth ---
+
+
+def _build_app_with_token(monkeypatch, token: str | None):
+    """Build a fresh FastAPI app with mount_mcp_if_configured applied.
+
+    The MCP SDK's session_manager is created lazily on the first call to
+    streamable_http_app(). Reset it here so each test gets a fresh manager
+    (the SDK refuses to .run() a manager twice).
+    """
+    from fastapi import FastAPI
+
+    from pep_oracle import mcp_server
+    from pep_oracle.server import mount_mcp_if_configured
+
+    # Reset the FastMCP session manager so each test's mount gets a fresh one.
+    mcp_server.mcp._session_manager = None
+
+    if token is None:
+        monkeypatch.delenv("PEP_ORACLE_MCP_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("PEP_ORACLE_MCP_TOKEN", token)
+
+    app = FastAPI()
+    mounted = mount_mcp_if_configured(app)
+    return app, mounted
+
+
+def test_mount_skipped_when_token_unset(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, None)
+    assert mounted is False
+    with TestClient(app) as client:
+        # Any /mcp path should 404 since nothing is mounted.
+        resp = client.post("/mcp")
+        assert resp.status_code == 404
+        resp = client.get("/mcp/")
+        assert resp.status_code == 404
+
+
+def test_mount_skipped_when_token_empty(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, "   ")
+    assert mounted is False
+    with TestClient(app) as client:
+        resp = client.post("/mcp")
+        assert resp.status_code == 404
+
+
+def test_mcp_401_when_no_authorization_header(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, "secret-token")
+    assert mounted is True
+    with TestClient(app) as client:
+        resp = client.post("/mcp")
+        assert resp.status_code == 401
+        resp = client.get("/mcp/anything")
+        assert resp.status_code == 401
+
+
+def test_mcp_401_when_wrong_token(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, "secret-token")
+    assert mounted is True
+    with TestClient(app) as client:
+        resp = client.post("/mcp", headers={"Authorization": "Bearer wrongtoken"})
+        assert resp.status_code == 401
+
+
+def test_mcp_401_when_malformed_authorization(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, "secret-token")
+    assert mounted is True
+    with TestClient(app) as client:
+        # Not "Bearer <token>"
+        resp = client.post("/mcp", headers={"Authorization": "secret-token"})
+        assert resp.status_code == 401
+        resp = client.post("/mcp", headers={"Authorization": "Basic secret-token"})
+        assert resp.status_code == 401
+
+
+def test_mcp_correct_token_passes_auth(monkeypatch):
+    """When the right bearer token is sent, the request gets past the auth
+    gate and into the mounted MCP ASGI app. We don't drive the full MCP
+    protocol — we just confirm the response is something other than 401."""
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, "secret-token")
+    assert mounted is True
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp",
+            headers={
+                "Authorization": "Bearer secret-token",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        )
+        # Anything but 401 means our auth gate let it through.
+        assert resp.status_code != 401
