@@ -49,6 +49,9 @@ Pre-process question via Claude Haiku (extract date/episode/speaker filters + re
 **Topic chips** (`topics.py`):
 Topics are extracted deterministically from episode show notes at ingestion time: `parse_description_topics()` extracts timestamp labels → `clean_episode_topics()` strips segment prefixes (Correspondence, Not Normal, Stats Nug, Policy Time), extracts parenthetical subtopics, cleans Unleashed entries, and strips Cont. suffixes → `_ingest_one()` returns the topic entry; callers (`ingest_all`, `ingest_episode`) batch entries and call `save_topics()` once → persisted to `~/.pep-oracle/topics.json`. `/topics` endpoint reads from file — no API call. Frontend renders chips grouped by episode with inline episode numbers ("Cuba · Ep 253"), "More..." button loads older episodes.
 
+**MCP server** (`mcp_server.py`):
+Exposes a single tool `search_pep(query, top_k=5)` over the official `mcp` Python SDK's Streamable HTTP transport. The tool reuses `embeddings.py` + `store.py` retrieval primitives (no Haiku pre-processor, no internal Claude call) and returns citation dicts (episode number, title, date, timestamp, speakers, excerpt). Mounted at `/mcp` by `server.py:mount_mcp_if_configured()`, gated by a static bearer token from env var `PEP_ORACLE_MCP_TOKEN`. Mount is skipped (logged at WARN) when the env var is unset/empty, so production stays opt-in.
+
 ## Key design decisions
 
 - **Data transfer between machines**: Use `pep-oracle export` / `import` to move ingested episodes. Never copy ChromaDB files directly — ChromaDB must handle its own writes via upsert to avoid corruption. Export produces a JSON file with chunks, embeddings, and metadata.
@@ -65,6 +68,7 @@ Topics are extracted deterministically from episode show notes at ingestion time
 - **Speaker metadata**: Diarized chunks store boolean `has_speaker_chas`, `has_speaker_dave` etc. fields in ChromaDB metadata (replacing the old `speaker_list` comma string). These enable ChromaDB `where` clause filtering by speaker. The `speakers` field (JSON string of turn boundaries) is kept for hybrid trim at query time.
 - **Cloud diarization**: Speaker diarization runs on a Modal A100 GPU (`cloud/diarize_modal.py`). Modal downloads the audio from the RSS enclosure URL directly — no local audio needed for diarization. Pyannote weights persist in a `modal.Volume` (`pep-oracle-pyannote-cache`, mounted at `/cache/hf` via `HF_HOME`) so cold starts only reseed on first deploy. Diarization takes ~2–3 min per 2-hour episode and runs concurrently with transcription. Deploy with `modal deploy cloud/diarize_modal.py` after changes. See `cloud/README.md` for one-time setup.
 - **RSS feed timeout**: `feed.py` uses `requests.get()` with a 15s timeout for HTTP URLs. The server's `/status` endpoint catches feed failures gracefully so the web UI still loads.
+- **`search_pep` tool description is load-bearing**: the long description string on `mcp_server.SEARCH_PEP_DESCRIPTION` drives whether MCP-capable clients (iOS Claude, Claude.ai) auto-invoke the tool. Tweaking the wording changes how often Claude reaches for it for a given question. If you need to retune scope (broader/narrower than US politics), edit the string deliberately and re-test with both a positive case (politics question) and a negative case (unrelated question, e.g. recipe) to verify call frequency hasn't shifted unintentionally.
 
 ## Environment
 
@@ -77,6 +81,7 @@ No `OPENAI_API_KEY` — embeddings are now generated locally via `fastembed`.
 Optional:
 - `PEP_ORACLE_DATA_DIR` — override default `~/.pep-oracle/` data directory
 - `PEP_ORACLE_HOST` / `PEP_ORACLE_PORT` — server bind address (default `0.0.0.0:8000`)
+- `PEP_ORACLE_MCP_TOKEN` — static bearer token to enable the `/mcp` endpoint; unset/empty disables it
 
 No host-side ffmpeg required — both Modal images apt-install their own.
 
