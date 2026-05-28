@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-server = ["fastapi", "uvicorn[standard]"]
+server = ["fastapi", "uvicorn[standard]", "mcp>=1.0"]
 
 [project.scripts]
 pep-oracle = "pep_oracle.cli:cli"
