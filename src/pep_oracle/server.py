@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from pep_oracle import oauth
 from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
 from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
@@ -100,69 +101,108 @@ app = FastAPI(title="pep-oracle", lifespan=lifespan)
 
 
 class _BearerAuthASGIWrapper:
-    """ASGI middleware that gates an inner ASGI app on a static bearer token.
+    """ASGI middleware gating an inner app on a JWT bearer token.
 
-    Rejects with HTTP 401 if the Authorization header is missing, malformed,
-    or doesn't match the expected token. Uses ``secrets.compare_digest`` for
-    constant-time comparison.
+    401 on missing/malformed Authorization or any
+    :func:`oauth.verify_access_token` failure (sig/iss/aud/exp).
     """
 
-    def __init__(self, inner_app, expected_token: str):
+    def __init__(self, inner_app, signing_key: str, issuer: str):
         self._inner = inner_app
-        self._expected = expected_token
+        self._signing_key = signing_key
+        self._issuer = issuer
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self._inner(scope, receive, send)
             return
-
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-        auth = headers.get("authorization", "")
-        token: str | None = None
-        scheme, _, rest = auth.partition(" ")
-        if scheme.lower() == "bearer" and rest:
-            token = rest
-
-        if token is None or not secrets.compare_digest(token, self._expected):
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"www-authenticate", b'Bearer realm="pep-oracle-mcp"'),
-                ],
-            })
-            await send({"type": "http.response.body", "body": b'{"detail":"unauthorized"}'})
+        scheme, _, rest = headers.get("authorization", "").partition(" ")
+        token = rest if scheme.lower() == "bearer" and rest else None
+        if token is None:
+            await self._reject(send)
             return
-
+        try:
+            oauth.verify_access_token(self._signing_key, token, self._issuer)
+        except oauth.InvalidToken:
+            await self._reject(send)
+            return
         await self._inner(scope, receive, send)
+
+    @staticmethod
+    async def _reject(send) -> None:
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"www-authenticate", b'Bearer realm="pep-oracle-mcp"'),
+            ],
+        })
+        await send({"type": "http.response.body", "body": b'{"detail":"unauthorized"}'})
+
+
+def _resolve_signing_key() -> str:
+    """Env ``PEP_ORACLE_OAUTH_SIGNING_KEY`` → ``$DATA_DIR/oauth_signing_key``
+    → newly generated key written to that path with 0600 perms."""
+    env_key = os.environ.get("PEP_ORACLE_OAUTH_SIGNING_KEY", "").strip()
+    if env_key:
+        return env_key
+    data_dir = Path(os.environ.get("PEP_ORACLE_DATA_DIR") or (Path.home() / ".pep-oracle")).expanduser()
+    key_path = data_dir / "oauth_signing_key"
+    if key_path.exists():
+        existing = key_path.read_text().strip()
+        if existing:
+            return existing
+    data_dir.mkdir(parents=True, exist_ok=True)
+    new_key = secrets.token_urlsafe(32)
+    fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, new_key.encode("ascii"))
+    finally:
+        os.close(fd)
+    logger.info("Generated new OAuth signing key at %s (mode 0600)", key_path)
+    return new_key
 
 
 def mount_mcp_if_configured(app: FastAPI) -> bool:
-    """Mount the FastMCP server under /mcp if PEP_ORACLE_MCP_TOKEN is set.
-
-    Returns True if the mount happened, False if it was skipped (token unset
-    or empty). Reads the env var at call time so tests can monkeypatch it
-    and call this on a fresh FastAPI instance.
-    """
-    token = os.environ.get("PEP_ORACLE_MCP_TOKEN", "").strip()
-    if not token:
-        logger.warning("PEP_ORACLE_MCP_TOKEN not set — MCP endpoint disabled")
+    """Mount /mcp + register OAuth routes. Requires PEP_ORACLE_PUBLIC_URL and
+    PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH=1 (deployment-safety guard: confirms
+    /oauth/authorize sits behind an upstream authenticator). Signing key
+    comes from :func:`_resolve_signing_key`. Returns True iff mounted."""
+    public_url = os.environ.get("PEP_ORACLE_PUBLIC_URL", "").strip()
+    if not public_url:
+        logger.warning(
+            "PEP_ORACLE_PUBLIC_URL not set — MCP endpoint disabled. Set to the "
+            "public tunnel hostname claude.ai will fetch (e.g. https://pep-oracle.iicapn.com)."
+        )
         return False
+
+    if os.environ.get("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "") != "1":
+        logger.error(
+            "PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH != '1' — refusing to mount /mcp. "
+            "/oauth/authorize has no app-layer auth and MUST sit behind an upstream "
+            "authenticator (e.g. Cloudflare Access on /oauth/authorize). See the "
+            "Cloudflare Access setup section in /home/gregg/.claude/plans/mcp-oauth-dcr.md. "
+            "Set the var to '1' once that upstream guard is in place."
+        )
+        return False
+
+    signing_key = _resolve_signing_key()
+    data_dir = Path(os.environ.get("PEP_ORACLE_DATA_DIR") or (Path.home() / ".pep-oracle")).expanduser()
+    oauth.register_oauth_routes(app, signing_key, public_url, str(data_dir / "oauth.db"))
+    logger.info("OAuth provider routes registered")
 
     from pep_oracle.mcp_server import mcp
 
-    # Move the SDK's internal route from /mcp to / so that mounting the
-    # sub-app at /mcp gives the final URL /mcp (not /mcp/mcp).
+    # Remap SDK's /mcp → / so mount at /mcp gives final URL /mcp (not /mcp/mcp).
     mcp.settings.streamable_http_path = "/"
     mcp_asgi = mcp.streamable_http_app()
     session_manager = mcp.session_manager
 
-    # The StreamableHTTPSessionManager must be entered as an async context for
-    # the lifetime of the app, otherwise its task group is never started and
-    # incoming requests fail with "Task group is not initialized." We chain
-    # it into the FastAPI router's lifespan_context here so it runs alongside
-    # whatever lifespan was passed to FastAPI(..., lifespan=...).
+    # StreamableHTTPSessionManager must be entered as an async context for the
+    # app's lifetime or its task group never starts ("Task group is not
+    # initialized."). Chain into the FastAPI router lifespan.
     previous_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
@@ -172,8 +212,7 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
                 yield
 
     app.router.lifespan_context = _combined_lifespan
-
-    app.mount("/mcp", _BearerAuthASGIWrapper(mcp_asgi, token))
+    app.mount("/mcp", _BearerAuthASGIWrapper(mcp_asgi, signing_key, public_url.rstrip("/")))
     logger.info("MCP mounted at /mcp")
     return True
 
