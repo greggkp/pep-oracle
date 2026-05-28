@@ -49,8 +49,8 @@ Pre-process question via Claude Haiku (extract date/episode/speaker filters + re
 **Topic chips** (`topics.py`):
 Topics are extracted deterministically from episode show notes at ingestion time: `parse_description_topics()` extracts timestamp labels → `clean_episode_topics()` strips segment prefixes (Correspondence, Not Normal, Stats Nug, Policy Time), extracts parenthetical subtopics, cleans Unleashed entries, and strips Cont. suffixes → `_ingest_one()` returns the topic entry; callers (`ingest_all`, `ingest_episode`) batch entries and call `save_topics()` once → persisted to `~/.pep-oracle/topics.json`. `/topics` endpoint reads from file — no API call. Frontend renders chips grouped by episode with inline episode numbers ("Cuba · Ep 253"), "More..." button loads older episodes.
 
-**MCP server** (`mcp_server.py`):
-Exposes a single tool `search_pep(query, top_k=5)` over the official `mcp` Python SDK's Streamable HTTP transport. The tool reuses `embeddings.py` + `store.py` retrieval primitives (no Haiku pre-processor, no internal Claude call) and returns citation dicts (episode number, title, date, timestamp, speakers, excerpt). Mounted at `/mcp` by `server.py:mount_mcp_if_configured()`, gated by a static bearer token from env var `PEP_ORACLE_MCP_TOKEN`. Mount is skipped (logged at WARN) when the env var is unset/empty, so production stays opt-in.
+**MCP server** (`mcp_server.py` + `oauth.py`):
+Exposes a single tool `search_pep(query, top_k=5)` over the official `mcp` Python SDK's Streamable HTTP transport. The tool reuses `embeddings.py` + `store.py` retrieval primitives (no Haiku pre-processor, no internal Claude call) and returns citation dicts (episode number, title, date, timestamp, speakers, excerpt). Mounted at `/mcp` by `server.py:mount_mcp_if_configured()`, gated by JWT bearer verification against an in-app OAuth 2.1 + DCR provider (`oauth.py`, SQLite store at `~/.pep-oracle/oauth.db`, HS256 access tokens, 60s auth codes, 30d rotating refresh tokens with family revocation on reuse). Discovery doc at `/.well-known/oauth-authorization-server`; routes under `/oauth/{register,authorize,token,revoke}`. Mount requires `PEP_ORACLE_PUBLIC_URL` and `PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH=1` — refuses to start otherwise so `/oauth/authorize` can't accidentally be exposed open.
 
 ## Key design decisions
 
@@ -69,6 +69,7 @@ Exposes a single tool `search_pep(query, top_k=5)` over the official `mcp` Pytho
 - **Cloud diarization**: Speaker diarization runs on a Modal A100 GPU (`cloud/diarize_modal.py`). Modal downloads the audio from the RSS enclosure URL directly — no local audio needed for diarization. Pyannote weights persist in a `modal.Volume` (`pep-oracle-pyannote-cache`, mounted at `/cache/hf` via `HF_HOME`) so cold starts only reseed on first deploy. Diarization takes ~2–3 min per 2-hour episode and runs concurrently with transcription. Deploy with `modal deploy cloud/diarize_modal.py` after changes. See `cloud/README.md` for one-time setup.
 - **RSS feed timeout**: `feed.py` uses `requests.get()` with a 15s timeout for HTTP URLs. The server's `/status` endpoint catches feed failures gracefully so the web UI still loads.
 - **`search_pep` tool description is load-bearing**: the long description string on `mcp_server.SEARCH_PEP_DESCRIPTION` drives whether MCP-capable clients (iOS Claude, Claude.ai) auto-invoke the tool. Tweaking the wording changes how often Claude reaches for it for a given question. If you need to retune scope (broader/narrower than US politics), edit the string deliberately and re-test with both a positive case (politics question) and a negative case (unrelated question, e.g. recipe) to verify call frequency hasn't shifted unintentionally.
+- **`/oauth/authorize` is gated at the edge, not in app**: the handler auto-approves any well-formed request, so the deployment MUST sit behind an upstream authenticator that restricts who can reach the route. The recommended setup is a Cloudflare Access Self-hosted app scoped to the path `/oauth/authorize` (One-time PIN policy is enough for a single-user box). `/oauth/register`, `/oauth/token`, `/.well-known/...`, and `/mcp` must stay open at the edge — they're server-to-server or PKCE/JWT-protected. The `PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH=1` env var is a fail-closed switch confirming the operator wired up the upstream gate; the app refuses to mount OAuth routes without it.
 
 ## Environment
 
@@ -81,7 +82,9 @@ No `OPENAI_API_KEY` — embeddings are now generated locally via `fastembed`.
 Optional:
 - `PEP_ORACLE_DATA_DIR` — override default `~/.pep-oracle/` data directory
 - `PEP_ORACLE_HOST` / `PEP_ORACLE_PORT` — server bind address (default `0.0.0.0:8000`)
-- `PEP_ORACLE_MCP_TOKEN` — static bearer token to enable the `/mcp` endpoint; unset/empty disables it
+- `PEP_ORACLE_PUBLIC_URL` — public issuer URL used in the OAuth discovery doc; must match the tunnel hostname (e.g. `https://pep-oracle.iicapn.com`). Required to enable `/mcp`.
+- `PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH` — must be the literal string `1` to mount `/oauth/*` and `/mcp`. Asserts that an upstream gate (e.g. Cloudflare Access) protects `/oauth/authorize`. Any other value (including absent) → mount skipped with ERROR log.
+- `PEP_ORACLE_OAUTH_SIGNING_KEY` — HS256 signing key for access-token JWTs. If unset, falls back to `~/.pep-oracle/oauth_signing_key` (file mode 0600); if that file doesn't exist, one is auto-generated on first start.
 
 No host-side ffmpeg required — both Modal images apt-install their own.
 
