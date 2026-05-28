@@ -426,3 +426,179 @@ def test_register_oauth_routes_idempotent_schema(tmp_path):
 def test_token_unsupported_grant_type(client):
     r = client.post("/oauth/token", data={"grant_type": "client_credentials"})
     assert r.status_code == 400
+
+
+# --- DCR redirect_uri structural validation ------------------------------
+
+
+def _register_raw(client: TestClient, redirect_uris: list[str]):
+    return client.post(
+        "/oauth/register",
+        json={"client_name": "Test", "redirect_uris": redirect_uris},
+    )
+
+
+def test_dcr_rejects_http_non_loopback(client):
+    r = _register_raw(client, ["http://example.com/cb"])
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_redirect_uri"
+
+
+def test_dcr_accepts_https(client):
+    r = _register_raw(client, ["https://example.com/cb"])
+    assert r.status_code in (200, 201), r.text
+
+
+def test_dcr_accepts_http_localhost(client):
+    r = _register_raw(client, ["http://localhost:3000/cb"])
+    assert r.status_code in (200, 201), r.text
+    r2 = _register_raw(client, ["http://127.0.0.1:8080/cb"])
+    assert r2.status_code in (200, 201), r2.text
+
+
+def test_dcr_rejects_uri_with_fragment(client):
+    r = _register_raw(client, ["https://example.com/cb#frag"])
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_redirect_uri"
+
+
+def test_dcr_rejects_uri_with_userinfo(client):
+    r = _register_raw(client, ["https://user:pw@example.com/cb"])
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_redirect_uri"
+
+
+def test_dcr_rejects_relative_uri(client):
+    r = _register_raw(client, ["/cb"])
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_redirect_uri"
+
+
+def test_dcr_rejects_non_http_scheme(client):
+    r = _register_raw(client, ["javascript:alert(1)"])
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_redirect_uri"
+
+
+# --- Refresh-token family revocation on reuse ----------------------------
+
+
+def _bootstrap_refresh(client: TestClient) -> tuple[str, str]:
+    """Register a client, run an authcode flow, return (client_id, refresh_token)."""
+    client_id = _register(client)
+    verifier, challenge = _pkce_pair()
+    r = _authorize(client, client_id, challenge)
+    code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+    tok = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/cb",
+            "client_id": client_id,
+            "code_verifier": verifier,
+        },
+    ).json()
+    return client_id, tok["refresh_token"]
+
+
+def _rotate(client: TestClient, client_id: str, refresh: str) -> dict:
+    r = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": client_id,
+        },
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_refresh_reuse_revokes_family(client):
+    client_id, refresh1 = _bootstrap_refresh(client)
+
+    tok2 = _rotate(client, client_id, refresh1)
+    refresh2 = tok2["refresh_token"]
+    tok3 = _rotate(client, client_id, refresh2)
+    refresh3 = tok3["refresh_token"]
+
+    # Reuse refresh1 — should fail AND revoke the whole family.
+    r_reuse = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh1,
+            "client_id": client_id,
+        },
+    )
+    assert r_reuse.status_code == 400
+    assert r_reuse.json()["error"] == "invalid_grant"
+
+    # refresh2 was already rotated (revoked) — using it now is also reuse, 400.
+    r2 = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh2,
+            "client_id": client_id,
+        },
+    )
+    assert r2.status_code == 400
+    assert r2.json()["error"] == "invalid_grant"
+
+    # refresh3 was the current live one — family revocation kills it too.
+    r3 = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh3,
+            "client_id": client_id,
+        },
+    )
+    assert r3.status_code == 400
+    assert r3.json()["error"] == "invalid_grant"
+
+
+def test_authcode_grant_creates_new_family(client):
+    # Family A: register + authcode flow, then start a chain.
+    client_id_a, refresh_a1 = _bootstrap_refresh(client)
+    tok_a2 = _rotate(client, client_id_a, refresh_a1)
+    refresh_a2 = tok_a2["refresh_token"]
+
+    # Family B: independent client + authcode flow.
+    client_id_b, refresh_b1 = _bootstrap_refresh(client)
+
+    # Kill family A via reuse of refresh_a1.
+    r_reuse = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_a1,
+            "client_id": client_id_a,
+        },
+    )
+    assert r_reuse.status_code == 400
+
+    # Family A live token (refresh_a2) is now dead.
+    r_a2 = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_a2,
+            "client_id": client_id_a,
+        },
+    )
+    assert r_a2.status_code == 400
+
+    # Family B is untouched — its refresh still rotates successfully.
+    r_b = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_b1,
+            "client_id": client_id_b,
+        },
+    )
+    assert r_b.status_code == 200, r_b.text
+    assert r_b.json()["refresh_token"] != refresh_b1

@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import jwt
 from fastapi import FastAPI, Form, Request
@@ -80,10 +80,22 @@ class _Store:
         if db_path == ":memory:":
             self._shared = _connect(db_path)
             self._shared.executescript(_SCHEMA)
+            try:
+                self._shared.execute(
+                    "ALTER TABLE refresh_tokens ADD COLUMN family_id TEXT NOT NULL DEFAULT ''"
+                )
+            except sqlite3.OperationalError:
+                pass
         else:
             conn = _connect(db_path)
             try:
                 conn.executescript(_SCHEMA)
+                try:
+                    conn.execute(
+                        "ALTER TABLE refresh_tokens ADD COLUMN family_id TEXT NOT NULL DEFAULT ''"
+                    )
+                except sqlite3.OperationalError:
+                    pass
             finally:
                 conn.close()
 
@@ -114,6 +126,33 @@ def _pop_auth_code(code: str) -> Optional[dict[str, Any]]:
 def _pkce_s256(code_verifier: str) -> str:
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _validate_redirect_uri(uri: str) -> Optional[str]:
+    """Structural validation per OAuth 2.1 / RFC 8252.
+
+    Returns an error message string on failure, None on success.
+    Pure / no side effects.
+    """
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return f"redirect_uri is not parseable: {uri}"
+    if not parsed.netloc:
+        return f"redirect_uri must be absolute: {uri}"
+    if parsed.fragment:
+        return f"redirect_uri must not contain a fragment: {uri}"
+    if parsed.username is not None:
+        return f"redirect_uri must not contain userinfo: {uri}"
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        return None
+    if scheme == "http":
+        host = (parsed.hostname or "").lower()
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return None
+        return f"redirect_uri http scheme requires loopback host: {uri}"
+    return f"redirect_uri scheme must be https or http-loopback: {uri}"
 
 
 def mint_access_token(
@@ -156,14 +195,14 @@ def verify_access_token(
         raise InvalidToken("invalid token") from e
 
 
-def _persist_refresh(store: _Store, token: str, client_id: str) -> None:
+def _persist_refresh(store: _Store, token: str, client_id: str, family_id: str) -> None:
     now = int(time.time())
     conn = store.conn()
     try:
         conn.execute(
-            "INSERT INTO refresh_tokens (token, client_id, issued_at, expires_at, revoked) "
-            "VALUES (?, ?, ?, ?, 0)",
-            (token, client_id, now, now + REFRESH_TTL_SECONDS),
+            "INSERT INTO refresh_tokens (token, client_id, issued_at, expires_at, revoked, family_id) "
+            "VALUES (?, ?, ?, ?, 0, ?)",
+            (token, client_id, now, now + REFRESH_TTL_SECONDS, family_id),
         )
     finally:
         store.close(conn)
@@ -182,6 +221,16 @@ def _revoke_refresh(store: _Store, token: str) -> None:
     conn = store.conn()
     try:
         conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE token = ?", (token,))
+    finally:
+        store.close(conn)
+
+
+def _revoke_family(store: _Store, family_id: str) -> None:
+    conn = store.conn()
+    try:
+        conn.execute(
+            "UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?", (family_id,)
+        )
     finally:
         store.close(conn)
 
@@ -219,11 +268,17 @@ def _err(status: int, error: str, description: str = "") -> JSONResponse:
 
 
 def _issue_token_pair(
-    store: _Store, signing_key: str, issuer: str, client_id: str
+    store: _Store,
+    signing_key: str,
+    issuer: str,
+    client_id: str,
+    family_id: Optional[str] = None,
 ) -> dict[str, Any]:
     access = mint_access_token(signing_key, client_id, issuer=issuer)
     refresh = secrets.token_urlsafe(32)
-    _persist_refresh(store, refresh, client_id)
+    if family_id is None:
+        family_id = secrets.token_urlsafe(16)
+    _persist_refresh(store, refresh, client_id, family_id)
     return {
         "access_token": access,
         "token_type": "Bearer",
@@ -275,6 +330,11 @@ def register_oauth_routes(
         ):
             logger.warning("DCR rejected: missing/invalid redirect_uris")
             return _err(400, "invalid_redirect_uri", "redirect_uris must be a non-empty list of strings")
+        for u in redirect_uris:
+            err = _validate_redirect_uri(u)
+            if err is not None:
+                logger.warning("DCR rejected: %s", err)
+                return _err(400, "invalid_redirect_uri", err)
 
         gtypes = body.get("grant_types", ["authorization_code", "refresh_token"])
         rtypes = body.get("response_types", ["code"])
@@ -384,7 +444,16 @@ def register_oauth_routes(
                 logger.warning("refresh: unknown token for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "unknown refresh_token")
             if row["revoked"]:
-                logger.warning("refresh: token revoked for client_id=%s", client_id)
+                # RFC 9700 §4.13.2 / OAuth 2.1 §6.1: reuse of a previously rotated
+                # refresh token indicates a possible compromise — revoke the
+                # entire token family before returning the error.
+                family_id = row["family_id"]
+                _revoke_family(store, family_id)
+                logger.warning(
+                    "Refresh token reuse detected — revoking family family_id=%s client_id=%s",
+                    family_id,
+                    client_id,
+                )
                 return _err(400, "invalid_grant", "refresh_token revoked")
             if row["expires_at"] <= int(time.time()):
                 logger.warning("refresh: token expired for client_id=%s", client_id)
@@ -394,7 +463,11 @@ def register_oauth_routes(
                 return _err(400, "invalid_grant", "client_id mismatch")
             _revoke_refresh(store, refresh_token)
             logger.info("refresh: rotated refresh_token for client_id=%s", client_id)
-            return JSONResponse(_issue_token_pair(store, signing_key, issuer, client_id))
+            return JSONResponse(
+                _issue_token_pair(
+                    store, signing_key, issuer, client_id, family_id=row["family_id"]
+                )
+            )
 
         return _err(400, "unsupported_grant_type")
 
