@@ -295,13 +295,24 @@ def test_mcp_401_when_malformed_authorization(monkeypatch):
 
 def test_mcp_correct_token_passes_auth(monkeypatch):
     """When the right bearer token is sent, the request gets past the auth
-    gate and into the mounted MCP ASGI app. We don't drive the full MCP
-    protocol — we just confirm the response is something other than 401."""
+    gate and into the mounted MCP ASGI app. We exercise both branches on the
+    same mounted app instance so this test catches wrapper-removal regressions."""
     from fastapi.testclient import TestClient
 
     app, mounted = _build_app_with_token(monkeypatch, "secret-token")
     assert mounted is True
     with TestClient(app) as client:
+        resp = client.post(
+            "/mcp",
+            headers={
+                "Authorization": "Bearer wrong-token",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        )
+        assert resp.status_code == 401
+
         resp = client.post(
             "/mcp",
             headers={
@@ -312,4 +323,22 @@ def test_mcp_correct_token_passes_auth(monkeypatch):
             json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
         )
         # Anything but 401 means our auth gate let it through.
+        assert resp.status_code != 401
+
+
+def test_mcp_case_insensitive_bearer_scheme(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app_with_token(monkeypatch, "secret-token")
+    assert mounted is True
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp",
+            headers={
+                "Authorization": "bearer secret-token",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        )
         assert resp.status_code != 401

@@ -119,8 +119,9 @@ class _BearerAuthASGIWrapper:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
         token: str | None = None
-        if auth.startswith("Bearer "):
-            token = auth[len("Bearer "):]
+        scheme, _, rest = auth.partition(" ")
+        if scheme.lower() == "bearer" and rest:
+            token = rest
 
         if token is None or not secrets.compare_digest(token, self._expected):
             await send({
