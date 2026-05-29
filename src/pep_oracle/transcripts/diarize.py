@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,26 +94,72 @@ def save_speaker_profiles(
     path.write_text(json.dumps(data, indent=2))
 
 
+# Chas hosts every episode; Dr Dave (David Smith) co-hosts most but not all.
+_DAVE_IN_TITLE = re.compile(r"\bdav(e|id)\b", re.IGNORECASE)
+
+
+def host_roster_from_title(title: str) -> list[str]:
+    """Derive the ordered host roster for an episode from its title.
+
+    Chas is always the primary host. Dr Dave only counts when the title names
+    him — otherwise a guest co-host must not be mislabeled as "Dave". The order
+    is the priority for speaking-time assignment (roster[0] -> most-talking
+    voice). Speakers beyond the roster become Guests.
+    """
+    roster = ["Chas"]
+    if _DAVE_IN_TITLE.search(title or ""):
+        roster.append("Dave")
+    return roster
+
+
+def assign_names_by_speaking_time(
+    label_to_time: dict[str, float],
+    names: list[str],
+) -> dict[str, str]:
+    """Map raw diarization labels to ``names`` in descending speaking-time order.
+
+    The loudest (most-talking) label gets names[0], next gets names[1], etc.
+    Labels beyond the roster become "Guest", "Guest 2", ... This is the show's
+    long-standing heuristic; it is correct for the common 2-host episode but can
+    misattribute when a guest out-talks a named host (real fix: voice embeddings).
+    """
+    ordered = sorted(label_to_time, key=lambda s: label_to_time.get(s, 0.0), reverse=True)
+    name_map: dict[str, str] = {}
+    guest_count = 0
+    for i, spk in enumerate(ordered):
+        if i < len(names):
+            name_map[spk] = names[i]
+        else:
+            guest_count += 1
+            name_map[spk] = "Guest" if guest_count == 1 else f"Guest {guest_count}"
+    return name_map
+
+
 def map_speaker_names(
     segments: list[TranscriptSegment],
     speaker_segments: list[SpeakerSegment],
     profile_path: Path | None = None,
+    roster: list[str] | None = None,
 ) -> list[TranscriptSegment]:
-    """Map pyannote's generic labels to real names using voice profiles.
+    """Map pyannote's generic labels to real names.
 
-    If no profiles exist, speakers are labeled "Speaker 1", "Speaker 2", etc.
+    Precedence: a saved voice-profile set (manual `identify-speakers`) wins; if
+    absent, an episode `roster` (from the title) drives speaking-time assignment;
+    if neither is available, speakers fall back to "Speaker 1", "Speaker 2", ...
     """
     profiles = load_speaker_profiles(profile_path)
 
-    if not profiles:
-        # No profiles — use numbered labels
-        unique_speakers = sorted(set(s.speaker for s in speaker_segments))
-        name_map = {
-            spk: f"Speaker {i + 1}"
-            for i, spk in enumerate(unique_speakers)
-        }
+    if profiles:
+        name_map = assign_names_by_speaking_time(
+            _speaking_times(speaker_segments), sorted(profiles.keys())
+        )
+    elif roster:
+        name_map = assign_names_by_speaking_time(
+            _speaking_times(speaker_segments), list(roster)
+        )
     else:
-        name_map = _match_speakers_to_profiles(speaker_segments, profiles)
+        unique_speakers = sorted(set(s.speaker for s in speaker_segments))
+        name_map = {spk: f"Speaker {i + 1}" for i, spk in enumerate(unique_speakers)}
 
     result = []
     for ts in segments:
@@ -126,55 +173,11 @@ def map_speaker_names(
     return result
 
 
-def _match_speakers_to_profiles(
-    speaker_segments: list[SpeakerSegment],
-    profiles: dict[str, list[float]],
-) -> dict[str, str]:
-    """Match pyannote speaker labels to profile names using embeddings.
-
-    Uses cosine similarity between the pyannote speaker embeddings (extracted
-    during identify-speakers) and the stored profile embeddings.
-
-    Falls back to generic labels for unmatched speakers.
-    """
-    try:
-        import numpy as np
-    except ImportError:
-        # numpy not available — fall back to numbered labels
-        unique_speakers = sorted(set(s.speaker for s in speaker_segments))
-        return {spk: f"Speaker {i + 1}" for i, spk in enumerate(unique_speakers)}
-
-    # For now, use a simple heuristic: if we have exactly 2 speakers and
-    # 2 profiles, match by speaking time (the host who talks more is usually
-    # identifiable). Full embedding-based matching requires extracting
-    # per-speaker embeddings from the diarization pipeline, which we do
-    # during identify-speakers. Here we load the cached mapping if available.
-    unique_speakers = sorted(set(s.speaker for s in speaker_segments))
-    profile_names = sorted(profiles.keys())
-
-    # If speaker count matches profile count, match by order (speaking time)
-    # This is a simplification — identify-speakers creates proper mappings
-    speaker_times: dict[str, float] = {}
+def _speaking_times(speaker_segments: list[SpeakerSegment]) -> dict[str, float]:
+    times: dict[str, float] = {}
     for ss in speaker_segments:
-        speaker_times[ss.speaker] = speaker_times.get(ss.speaker, 0.0) + (ss.end - ss.start)
-
-    sorted_by_time = sorted(unique_speakers, key=lambda s: speaker_times.get(s, 0.0), reverse=True)
-
-    name_map = {}
-    used_profiles = set()
-    for spk in sorted_by_time:
-        matched = False
-        for pname in profile_names:
-            if pname not in used_profiles:
-                name_map[spk] = pname
-                used_profiles.add(pname)
-                matched = True
-                break
-        if not matched:
-            guest_num = sum(1 for v in name_map.values() if v.startswith("Guest")) + 1
-            name_map[spk] = f"Guest {guest_num}" if guest_num > 1 else "Guest"
-
-    return name_map
+        times[ss.speaker] = times.get(ss.speaker, 0.0) + (ss.end - ss.start)
+    return times
 
 
 def get_speaker_segments(
@@ -208,17 +211,19 @@ def apply_diarization(
     transcript_segments: list[TranscriptSegment],
     speaker_segments: list[SpeakerSegment],
     profile_path: Path | None = None,
+    roster: list[str] | None = None,
 ) -> list[TranscriptSegment]:
     """Align transcript segments with speaker turns and map to real names.
 
-    No Modal calls; operates on already-fetched data.
+    No Modal calls; operates on already-fetched data. Pass `roster` (from
+    `host_roster_from_title`) so speakers map to host/guest names without a
+    manually-created profiles file.
     """
     aligned = align_speakers(transcript_segments, speaker_segments)
-    named = map_speaker_names(aligned, speaker_segments, profile_path)
+    named = map_speaker_names(aligned, speaker_segments, profile_path, roster)
 
-    profiles = load_speaker_profiles(profile_path)
-    if not profiles:
-        click.echo("  Warning: No speaker profiles found. Using generic labels.")
+    if not load_speaker_profiles(profile_path) and not roster:
+        click.echo("  Warning: No speaker profiles or roster. Using generic labels.")
         click.echo("  Run 'pep-oracle identify-speakers --episode <N>' to set up profiles.")
     return named
 

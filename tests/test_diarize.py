@@ -6,12 +6,85 @@ from pep_oracle.models import TranscriptSegment
 from pep_oracle.transcripts.diarize import (
     SpeakerSegment,
     align_speakers,
+    host_roster_from_title,
     load_speaker_profiles,
     map_speaker_names,
     save_speaker_profiles,
     _save_cache,
     _load_cached,
 )
+
+
+def _nonexistent_profile_path():
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        return Path(f.name + ".nonexistent")
+
+
+# --- title-aware host roster ---
+
+
+def test_host_roster_chas_and_dave():
+    assert host_roster_from_title(
+        "I'LL HAVE WHAT XI'S HAVING! PEP with Chas & Dr Dave (Ep 262, 22 May)"
+    ) == ["Chas", "Dave"]
+
+
+def test_host_roster_david_variant():
+    assert host_roster_from_title("PEP with Chas and Dr David Smith (Ep 1)") == ["Chas", "Dave"]
+
+
+def test_host_roster_guest_no_dave():
+    # Guest co-hosts must NOT pull in 'Dave'.
+    assert host_roster_from_title("PEP with Chas and Melina Wicks (14 July)") == ["Chas"]
+    assert host_roster_from_title("N.S.ACKED! PEP with Chas & Elle Hardy (Ep 210)") == ["Chas"]
+
+
+def test_map_speaker_names_roster_assigns_by_speaking_time():
+    # SPEAKER_01 talks far more than SPEAKER_00, so it must become the first
+    # roster name (Chas); the other becomes Dave.
+    segments = [
+        TranscriptSegment(text="a", start_time=0.0, end_time=2.0, speaker="SPEAKER_00"),
+        TranscriptSegment(text="b", start_time=2.0, end_time=12.0, speaker="SPEAKER_01"),
+    ]
+    speaker_segments = [
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=2.0),    # 2s
+        SpeakerSegment(speaker="SPEAKER_01", start=2.0, end=12.0),   # 10s
+    ]
+    result = map_speaker_names(
+        segments, speaker_segments,
+        profile_path=_nonexistent_profile_path(), roster=["Chas", "Dave"],
+    )
+    assert result[1].speaker == "Chas"  # most speaking time
+    assert result[0].speaker == "Dave"
+
+
+def test_map_speaker_names_roster_chas_only_makes_guest_not_dave():
+    # Dave absent from roster -> second speaker is a Guest, never 'Dave'.
+    segments = [
+        TranscriptSegment(text="a", start_time=0.0, end_time=10.0, speaker="SPEAKER_00"),
+        TranscriptSegment(text="b", start_time=10.0, end_time=12.0, speaker="SPEAKER_01"),
+    ]
+    speaker_segments = [
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=10.0),   # 10s
+        SpeakerSegment(speaker="SPEAKER_01", start=10.0, end=12.0),  # 2s
+    ]
+    result = map_speaker_names(
+        segments, speaker_segments,
+        profile_path=_nonexistent_profile_path(), roster=["Chas"],
+    )
+    assert result[0].speaker == "Chas"
+    assert result[1].speaker == "Guest"
+
+
+def test_map_speaker_names_no_roster_still_generic():
+    # Without roster or profiles, behavior is unchanged (generic labels).
+    segments = [
+        TranscriptSegment(text="a", start_time=0.0, end_time=5.0, speaker="SPEAKER_00"),
+    ]
+    speaker_segments = [SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0)]
+    result = map_speaker_names(segments, speaker_segments, profile_path=_nonexistent_profile_path())
+    assert result[0].speaker == "Speaker 1"
 
 
 def test_align_speakers_basic():

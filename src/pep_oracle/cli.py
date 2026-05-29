@@ -165,6 +165,23 @@ def identify_speakers(episode_id: str) -> None:
     click.echo(f"Profiles stored at: {SPEAKER_PROFILES_PATH}")
 
 
+@cli.command(name="remap-speakers")
+def remap_speakers_cmd() -> None:
+    """Relabel diarized chunks from generic 'Speaker N' to host/guest names.
+
+    In-place metadata migration; reuses existing embeddings (no re-embed).
+    Idempotent — already-mapped episodes are skipped.
+    """
+    from pep_oracle.remap_speakers import remap_collection
+    from pep_oracle.store import get_client, get_collection
+
+    collection = get_collection(get_client())
+    summary = remap_collection(collection)
+    for info in sorted(summary.values(), key=lambda x: x["title"]):
+        click.echo(f"  {info['title'][:55]}: {info['name_map']} ({info['chunks']} chunks)")
+    click.echo(f"Remapped {len(summary)} episode(s).")
+
+
 @cli.command(name="export")
 @click.argument("output", type=click.Path())
 @click.option("--episode", "episode_nums", type=int, multiple=True, help="Episode number(s) to export (default: all).")

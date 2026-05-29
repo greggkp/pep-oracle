@@ -98,7 +98,7 @@ No host-side ffmpeg required — both Modal images apt-install their own.
 
 Tests use fixtures in `tests/fixtures/` (RSS XML). External APIs are mocked, including Modal — `pep_oracle.transcripts.whisper.modal` / `pep_oracle.transcripts.diarize.modal` are monkeypatched with a fake whose `Function.from_name(...).remote(...)` returns fixture dicts. ChromaDB tests use ephemeral in-memory clients. Web UI tests (`test_web_*.py`) use Playwright.
 
-Tests marked `@pytest.mark.live` hit real APIs/data and are excluded by default (`pytest -m live` to include). They exist because unit tests mock the long-lived server + real corpus where integration bugs actually live: `test_web_live.py` (UI vs DB), `test_smoke_live.py` (hits the running server — `/ask` answers aren't dead-ends, `/episodes` is current, `/mcp` rejects no-token and accepts a minted JWT without 421; override target via `PEP_ORACLE_SMOKE_URL`), `test_data_integrity_live.py` (asserts diarized episodes expose mapped `has_speaker_chas`/`has_speaker_dave`, not raw `speaker_N`). The data-integrity tests currently FAIL — diarization speaker-name mapping is broken corpus-wide (all episodes carry raw `speaker_N` labels, no Chas/Dave); they go green once episodes are remapped/re-ingested.
+Tests marked `@pytest.mark.live` hit real APIs/data and are excluded by default (`pytest -m live` to include). They exist because unit tests mock the long-lived server + real corpus where integration bugs actually live: `test_web_live.py` (UI vs DB), `test_smoke_live.py` (hits the running server — `/ask` answers aren't dead-ends, `/episodes` is current, `/mcp` rejects no-token and accepts a minted JWT without 421; override target via `PEP_ORACLE_SMOKE_URL`), `test_data_integrity_live.py` (asserts diarized episodes expose mapped `has_speaker_chas`/`has_speaker_dave`, not raw `speaker_N`).
 
 **ChromaDB test isolation**: `chromadb.Client()` (ephemeral) shares state via `SharedSystemClient` cache within a process. Tests that ingest data into a collection must delete it in teardown (`client.delete_collection("pep_oracle")`) or subsequent test files will see stale data.
 
@@ -106,7 +106,8 @@ Tests marked `@pytest.mark.live` hit real APIs/data and are excluded by default 
 
 ## Future enhancements
 
-- **Improve diarization accuracy**: pyannote segment alignment with Whisper segments can misattribute short segments near turn boundaries; speaker name mapping by speaking time is fragile. Investigate embedding-based speaker matching and tighter alignment heuristics.
+- **Speaker-name mapping**: `diarize.host_roster_from_title()` derives the roster (Chas always; Dave only if the title names him) and `assign_names_by_speaking_time` maps loudest→Chas, next→Dave, rest→Guest — no manual `identify-speakers`/profiles file needed (profiles still override if present). Existing data is remediated in place by `pep-oracle remap-speakers` (metadata-only, reuses embeddings since they derive from `chunk.text`).
+- **Fix diarization over-segmentation**: pyannote runs with `num_speakers=None` and over-clusters (16–30 voices/episode for a 2–3 person show), so `has_speaker_chas/dave` cover only the two largest clusters; the rest are false `Guest N`. Constrain via `max_speakers≈3` (`diarize_modal.py` already accepts `num_speakers`) and re-diarize. This, not name-mapping, is now the main speaker-attribution limitation. Also: speaking-time assignment can swap Chas/Dave when a guest out-talks a host; embedding-based matching is the real fix.
 - **Speaker-aware chunk boundaries**: Split chunks at speaker turns instead of only at time windows + pauses, so each chunk is dominated by a single speaker. Currently mitigated by the hybrid trim (filtering speaker turns within 4-min chunks at query time).
 
 ## Hooks
