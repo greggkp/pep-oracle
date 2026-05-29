@@ -31,8 +31,7 @@ def patched(monkeypatch):
     monkeypatch.setattr(
         mcp_server, "embed_texts", lambda texts: [fixed_embedding for _ in texts]
     )
-    monkeypatch.setattr(mcp_server, "get_client", lambda: object())
-    monkeypatch.setattr(mcp_server, "get_collection", lambda client: col)
+    monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: col)
     return col
 
 

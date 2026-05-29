@@ -17,7 +17,13 @@ from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
 from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.query import ask as do_ask
-from pep_oracle.store import get_client, get_collection, get_ingested_guids, get_ingestion_stats
+from pep_oracle.store import (
+    get_client,
+    get_collection,
+    get_fresh_collection,
+    get_ingested_guids,
+    get_ingestion_stats,
+)
 from pep_oracle.topics import bootstrap_topics, load_topics
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
@@ -231,18 +237,8 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
 
 
 def _get_fresh_collection():
-    """Return a ChromaDB collection that reflects current on-disk state.
-
-    ChromaDB's PersistentClient caches the system by path.  When the CLI
-    ingests episodes in a separate process, the server's cached client
-    doesn't see the new data.  Clearing the system cache and creating a
-    new client forces a fresh read from disk.
-    """
-    from chromadb.api.shared_system_client import SharedSystemClient
-
-    SharedSystemClient.clear_system_cache()
-    client = get_client()
-    return get_collection(client)
+    """Thin alias for store.get_fresh_collection (kept for local call sites)."""
+    return get_fresh_collection()
 
 
 @app.get("/health")

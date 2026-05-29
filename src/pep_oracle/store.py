@@ -20,6 +20,20 @@ def get_collection(client: chromadb.ClientAPI) -> chromadb.Collection:
     )
 
 
+def get_fresh_collection() -> chromadb.Collection:
+    """Return a persistent collection reflecting current on-disk state.
+
+    ChromaDB's PersistentClient caches the system by path, so a long-lived
+    process (the API server) won't see writes made by a separate ingest
+    process. Clearing the shared system cache forces a fresh read from disk.
+    Any long-running reader of episode data must use this, not get_client().
+    """
+    from chromadb.api.shared_system_client import SharedSystemClient
+
+    SharedSystemClient.clear_system_cache()
+    return get_collection(get_client())
+
+
 def add_chunks(
     collection: chromadb.Collection,
     chunks: list[Chunk],

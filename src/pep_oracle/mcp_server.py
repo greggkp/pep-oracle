@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.query import format_timestamp
-from pep_oracle.store import get_client, get_collection, query as store_query
+from pep_oracle.store import get_fresh_collection, query as store_query
 
 # NOTE: This string is load-bearing AND front-loaded on purpose. MCP clients
 # (iOS Claude, Claude.ai) defer tools — they see only the tool *name* and a
@@ -77,7 +77,8 @@ def format_citation(result: dict) -> dict:
 @mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
 def search_pep(query: str, top_k: int = 5) -> list[dict]:
     embedding = embed_texts([query])[0]
-    client = get_client()
-    collection = get_collection(client)
+    # Fresh collection: the API server is long-lived but episodes are written
+    # by a separate ingest process, so a cached client would serve stale data.
+    collection = get_fresh_collection()
     results = store_query(collection, embedding, top_k=top_k)
     return [format_citation(r) for r in results]
