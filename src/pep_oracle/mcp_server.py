@@ -16,19 +16,28 @@ from pep_oracle.embeddings import embed_texts
 from pep_oracle.query import format_timestamp
 from pep_oracle.store import get_client, get_collection, query as store_query
 
+# NOTE: This string is load-bearing AND front-loaded on purpose. MCP clients
+# (iOS Claude, Claude.ai) defer tools — they see only the tool *name* and a
+# *truncated* description until something triggers a full tool-search. So the
+# "when to call me" trigger MUST lead; the "what I am" (a podcast) must come
+# last, because the tail is what gets cut. Likewise the tool is exported under
+# an explicit descriptive name (search_us_politics_commentary), not the opaque
+# Python function name, since the name always survives truncation. If you edit
+# this, keep the trigger in sentence one and re-test a positive case (US-politics
+# question / news-article explainer) AND a negative case (recipe, JS bug).
 SEARCH_PEP_DESCRIPTION = (
-    'Searches "PEP with Chas and Dr Dave," a long-running podcast of in-depth '
-    "commentary on US politics, current events, federal and state policy, "
-    "elections, political figures, and American culture. Returns short "
-    "transcript excerpts (~30-90 seconds each) with episode number, air date, "
-    "host(s) speaking, and timestamp, suitable for citing or quoting.\n\n"
-    "Use this whenever the user asks about US political news, policy debates, "
-    "recent political figures or controversies, the Supreme Court, federal "
-    "agencies, US elections, or wants substantive prior commentary on a "
-    "current-events topic — including when the user is reading or asking "
-    "about a news article on these subjects. Prefer calling this before "
-    "answering from general knowledge on US-politics topics."
+    "Call this for ANY question about US politics, US current events, policy, "
+    "elections, political figures, the Supreme Court, or federal agencies — "
+    "including background, explainer, or \"what's going on with X\" requests, "
+    "and including when the user is reading or asking about a news article on "
+    "those subjects. Prefer calling it before answering from general knowledge "
+    "on US-politics topics. It searches \"PEP with Chas and Dr Dave,\" a "
+    "podcast of in-depth US-politics commentary, and returns short transcript "
+    "excerpts (~30-90 seconds each) with episode number, air date, host "
+    "speaking, and timestamp — ready to cite or quote."
 )
+
+SEARCH_TOOL_NAME = "search_us_politics_commentary"
 
 mcp = FastMCP("pep-oracle")
 
@@ -65,7 +74,7 @@ def format_citation(result: dict) -> dict:
     }
 
 
-@mcp.tool(description=SEARCH_PEP_DESCRIPTION)
+@mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
 def search_pep(query: str, top_k: int = 5) -> list[dict]:
     embedding = embed_texts([query])[0]
     client = get_client()

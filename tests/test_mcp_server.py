@@ -207,6 +207,27 @@ def test_search_pep_default_top_k_is_5(patched):
     assert len(results) == 5
 
 
+# --- tool name + front-loaded description (deferred-truncation survival) ---
+
+
+async def test_tool_exported_under_descriptive_name():
+    tools = await mcp_server.mcp.list_tools()
+    names = [t.name for t in tools]
+    assert mcp_server.SEARCH_TOOL_NAME in names
+    assert mcp_server.SEARCH_TOOL_NAME == "search_us_politics_commentary"
+
+
+def test_description_front_loads_trigger():
+    desc = mcp_server.SEARCH_PEP_DESCRIPTION
+    # First sentence must be the "when to call" trigger, not "what it is",
+    # because deferred MCP clients truncate the tail before they see it.
+    first_sentence = desc.split(".")[0].lower()
+    assert "call this" in first_sentence
+    assert "us politics" in first_sentence
+    # The "it's a podcast" framing must come AFTER the trigger.
+    assert desc.index("Call this") < desc.index("podcast")
+
+
 # --- (e) /mcp mount + JWT bearer auth ---
 
 
