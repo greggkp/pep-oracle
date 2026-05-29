@@ -310,6 +310,24 @@ def test_mount_skipped_when_trust_flag_not_one(monkeypatch, tmp_path):
             assert resp.status_code == 404
 
 
+def test_mount_extends_transport_security_allowed_hosts(monkeypatch, tmp_path):
+    """mount_mcp_if_configured must add the public hostname to the FastMCP
+    SDK's TransportSecurity allowed_hosts/allowed_origins. Default rejects
+    non-localhost Host headers (DNS rebinding defense), which would 421 every
+    real request once the server is behind a tunnel."""
+    from pep_oracle.mcp_server import mcp as global_mcp
+
+    app, mounted = _build_app(
+        monkeypatch, public_url="https://pep-oracle.iicapn.com", tmp_path=tmp_path
+    )
+    assert mounted is True
+    ts = global_mcp.settings.transport_security
+    assert "pep-oracle.iicapn.com" in ts.allowed_hosts
+    assert "https://pep-oracle.iicapn.com" in ts.allowed_origins
+    # Localhost defaults still present (don't break dev / tests)
+    assert any("localhost" in h for h in ts.allowed_hosts)
+
+
 def test_mcp_401_when_no_authorization_header(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 

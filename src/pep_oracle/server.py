@@ -6,6 +6,7 @@ import secrets
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -197,6 +198,18 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
 
     # Remap SDK's /mcp → / so mount at /mcp gives final URL /mcp (not /mcp/mcp).
     mcp.settings.streamable_http_path = "/"
+    # SDK's TransportSecurity defaults reject non-localhost Host headers (DNS
+    # rebinding defense). Extend allowed_hosts/allowed_origins with the public
+    # hostname; the JWT bearer check is the real auth, and CF Access fronts
+    # the only browser-driven OAuth path. Keep localhost defaults for dev.
+    parsed = urlparse(public_url)
+    if parsed.hostname:
+        ts = mcp.settings.transport_security
+        if parsed.hostname not in ts.allowed_hosts:
+            ts.allowed_hosts = [*ts.allowed_hosts, parsed.hostname]
+        public_origin = f"{parsed.scheme}://{parsed.hostname}"
+        if public_origin not in ts.allowed_origins:
+            ts.allowed_origins = [*ts.allowed_origins, public_origin]
     mcp_asgi = mcp.streamable_http_app()
     session_manager = mcp.session_manager
 
