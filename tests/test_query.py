@@ -1,6 +1,73 @@
 from unittest.mock import MagicMock, patch
 
-from pep_oracle.query import _trim_to_speaker, build_context, format_timestamp, preprocess_query
+from pep_oracle.models import Chunk
+from pep_oracle.query import (
+    _retrieve_relaxing_filters,
+    _trim_to_speaker,
+    build_context,
+    format_timestamp,
+    preprocess_query,
+)
+from pep_oracle.store import add_chunks, get_client
+
+
+_relax_counter = 0
+
+
+def _collection_with_unmapped_speaker(date="2026-05-01", episode_number=260):
+    """In-memory collection holding one chunk whose only speaker label is the
+    raw diarization tag 'speaker_5' — i.e. the Chas/Dave name mapping failed,
+    exactly the production state that produced 'No relevant content found'."""
+    global _relax_counter
+    _relax_counter += 1
+    client = get_client(persistent=False)
+    col = client.get_or_create_collection(
+        name=f"test_relax_{_relax_counter}", metadata={"hnsw:space": "cosine"}
+    )
+    chunk = Chunk(
+        chunk_id="e1_0", episode_guid="e1",
+        text="Trump behaviour cycle discussion",
+        episode_title="Ep X", episode_date=date,
+        start_time=0.0, end_time=10.0, episode_number=episode_number,
+        speaker_text="[speaker_5] Trump behaviour cycle discussion",
+        speaker_turns=[{"speaker": "speaker_5", "start": 0.0, "end": 10.0}],
+    )
+    add_chunks(col, [chunk], [[1.0] + [0.0] * 9])
+    return col
+
+
+def test_retrieve_relaxes_unmapped_speaker_filter():
+    """speaker='Chas' matches no has_speaker_chas key on the chunk, so the
+    filter must be dropped and the chunk still returned (eff_speaker None)."""
+    col = _collection_with_unmapped_speaker()
+    results, eff = _retrieve_relaxing_filters(
+        col, [1.0] + [0.0] * 9, top_k=5, episode_numbers=[],
+        after_date=None, before_date=None, recency_weight=0.0, speaker="Chas",
+    )
+    assert len(results) == 1
+    assert eff is None
+
+
+def test_retrieve_relaxes_date_floor():
+    """An after_date past every chunk's date must be dropped rather than
+    dead-ending (the chunk is 2025, floor is 2026)."""
+    col = _collection_with_unmapped_speaker(date="2025-01-01")
+    results, eff = _retrieve_relaxing_filters(
+        col, [1.0] + [0.0] * 9, top_k=5, episode_numbers=[],
+        after_date="2026-01-01", before_date=None, recency_weight=0.0, speaker=None,
+    )
+    assert len(results) == 1
+
+
+def test_retrieve_never_relaxes_explicit_episode_filter():
+    """An explicit episode_numbers filter is honored even when it yields
+    nothing — we must not answer ep 999 from ep 260."""
+    col = _collection_with_unmapped_speaker(episode_number=260)
+    results, eff = _retrieve_relaxing_filters(
+        col, [1.0] + [0.0] * 9, top_k=5, episode_numbers=[999],
+        after_date=None, before_date=None, recency_weight=0.0, speaker="Chas",
+    )
+    assert results == []
 
 
 def test_format_timestamp():
@@ -135,7 +202,7 @@ def test_preprocess_query_parses_episode_number():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("what did they say about Iran in episode 248?", anthropic_client=mock_client)
 
     assert result["episode_numbers"] == [248]
@@ -154,7 +221,7 @@ def test_preprocess_query_parses_date_range():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("will the war in Iran end soon?", anthropic_client=mock_client)
 
     assert result["after_date"] == "2026-03-01"
@@ -171,7 +238,7 @@ def test_preprocess_query_handles_bad_json():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("some question", anthropic_client=mock_client)
 
     assert result["episode_numbers"] == []
@@ -192,7 +259,7 @@ def test_preprocess_query_no_filters():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("who is Dr Dave?", anthropic_client=mock_client)
 
     assert result["episode_numbers"] == []
@@ -212,7 +279,7 @@ def test_preprocess_query_handles_markdown_code_fences():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("will the war in Iran end soon?", anthropic_client=mock_client)
 
     assert result["after_date"] == "2026-02-03"
@@ -231,7 +298,7 @@ def test_preprocess_query_prefer_recent():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("latest on Iran?", anthropic_client=mock_client)
 
     assert result["prefer_recent"] is True
@@ -249,7 +316,7 @@ def test_preprocess_query_prefer_recent_default_false():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("what about Iran in ep 248?", anthropic_client=mock_client)
 
     assert result["prefer_recent"] is False
@@ -271,8 +338,7 @@ def test_ask_passes_history_to_claude():
         "episode_numbers": [], "after_date": None, "before_date": None,
         "search_query": "EU response tariffs", "prefer_recent": False,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
-         patch("pep_oracle.query.get_client"), \
-         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.get_fresh_collection"), \
          patch("pep_oracle.query.store_query", return_value=[{
             "episode_title": "Ep 255", "episode_number": 255,
             "episode_date": "2026-03-20", "start_time": 100.0,
@@ -313,7 +379,7 @@ def test_preprocess_query_receives_conversation_context():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query(
             "What about the EU response?",
             anthropic_client=mock_client,
@@ -345,7 +411,7 @@ def test_preprocess_query_resolves_pronouns_from_history():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query(
             "what does he think about tariffs?",
             anthropic_client=mock_client,
@@ -370,8 +436,7 @@ def test_ask_without_history_sends_single_message():
         "episode_numbers": [], "after_date": None, "before_date": None,
         "search_query": "tariffs", "prefer_recent": False,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
-         patch("pep_oracle.query.get_client"), \
-         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.get_fresh_collection"), \
          patch("pep_oracle.query.store_query", return_value=[{
             "episode_title": "Ep 255", "episode_number": 255,
             "episode_date": "2026-03-20", "start_time": 100.0,
@@ -399,7 +464,7 @@ def test_preprocess_query_detects_single_speaker():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("what did Chas say about tariffs?", anthropic_client=mock_client)
 
     assert result["speaker"] == "Chas"
@@ -419,7 +484,7 @@ def test_preprocess_query_detects_compare():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("Chas vs Dave on immigration", anthropic_client=mock_client)
 
     assert result["speaker"] is None
@@ -438,7 +503,7 @@ def test_preprocess_query_no_speaker_defaults():
     with patch("pep_oracle.query.get_ingestion_stats", return_value={
         "earliest_date": "2024-01-01", "latest_date": "2026-04-01",
         "earliest_episode": 200, "latest_episode": 253,
-    }), patch("pep_oracle.query.get_client"), patch("pep_oracle.query.get_collection"):
+    }), patch("pep_oracle.query.get_fresh_collection"):
         result = preprocess_query("what about tariffs?", anthropic_client=mock_client)
 
     assert result["speaker"] is None
@@ -504,8 +569,7 @@ def test_ask_single_speaker_passes_filter():
         "search_query": "tariffs", "prefer_recent": False,
         "speaker": "Chas", "compare_speakers": False,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
-         patch("pep_oracle.query.get_client"), \
-         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.get_fresh_collection"), \
          patch("pep_oracle.query.store_query", return_value=[{
             "episode_title": "Ep 255", "episode_number": 255,
             "episode_date": "2026-03-20", "start_time": 100.0,
@@ -556,8 +620,7 @@ def test_ask_compare_speakers_dual_retrieval():
         "search_query": "immigration", "prefer_recent": False,
         "speaker": None, "compare_speakers": True,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
-         patch("pep_oracle.query.get_client"), \
-         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.get_fresh_collection"), \
          patch("pep_oracle.query.store_query", side_effect=mock_store):
         from pep_oracle.query import ask
         result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
@@ -581,8 +644,7 @@ def test_ask_compare_speakers_no_results():
         "search_query": "immigration", "prefer_recent": False,
         "speaker": None, "compare_speakers": True,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
-         patch("pep_oracle.query.get_client"), \
-         patch("pep_oracle.query.get_collection"), \
+         patch("pep_oracle.query.get_fresh_collection"), \
          patch("pep_oracle.query.store_query", return_value=[]):
         from pep_oracle.query import ask
         result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)

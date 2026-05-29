@@ -5,8 +5,7 @@ import anthropic
 from pep_oracle.config import QUERY_MODEL
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.store import (
-    get_client,
-    get_collection,
+    get_fresh_collection,
     get_ingestion_stats,
     query as store_query,
 )
@@ -140,8 +139,7 @@ def preprocess_query(
 
     today = date.today()
     # Get ingestion stats for context
-    client = get_client()
-    collection = get_collection(client)
+    collection = get_fresh_collection()
     stats = get_ingestion_stats(collection)
 
     earliest_date = stats["earliest_date"] or "unknown"
@@ -213,6 +211,50 @@ def preprocess_query(
     }
 
 
+def _retrieve_relaxing_filters(
+    collection,
+    embedding: list[float],
+    *,
+    top_k: int,
+    episode_numbers: list[int],
+    after_date: str | None,
+    before_date: str | None,
+    recency_weight: float,
+    speaker: str | None,
+) -> tuple[list[dict], str | None]:
+    """Retrieve chunks, relaxing fragile filters if they eliminate every hit.
+
+    Speaker filtering is dropped first: diarized speaker-name mapping is fragile
+    and some episodes carry only raw 'speaker_N' labels, so a has_speaker_chas
+    clause can match nothing even when the topic is clearly present. The date
+    floor is dropped next. An explicit episode_numbers filter is never relaxed —
+    "what did they say in ep 248" must not silently answer from other episodes.
+
+    Returns (results, effective_speaker); effective_speaker is None once the
+    speaker filter has been dropped, so the caller skips speaker-trimming.
+    """
+    def run(spk: str | None, after: str | None, before: str | None) -> list[dict]:
+        return store_query(
+            collection, embedding, top_k=top_k,
+            episode_numbers=episode_numbers or None,
+            after_date=after, before_date=before,
+            recency_weight=recency_weight, speaker=spk,
+        )
+
+    results = run(speaker, after_date, before_date)
+    if results:
+        return results, speaker
+    if speaker:
+        results = run(None, after_date, before_date)
+        if results:
+            return results, None
+    if after_date or before_date:
+        results = run(None, None, None)
+        if results:
+            return results, None
+    return [], speaker
+
+
 def ask(
     question: str,
     top_k: int = 10,
@@ -234,8 +276,7 @@ def ask(
     query_embedding = embed_texts([filters["search_query"]])[0]
 
     # Retrieve relevant chunks with filters
-    client = get_client()
-    collection = get_collection(client)
+    collection = get_fresh_collection()
     recency_weight = 0.3 if filters.get("prefer_recent") else 0.0
     speaker = filters.get("speaker")
     compare = filters.get("compare_speakers", False)
@@ -265,9 +306,9 @@ def ask(
         if not chas_results and not dave_results:
             return "No relevant content found. Have you ingested any episodes yet?"
     else:
-        results = store_query(
+        results, eff_speaker = _retrieve_relaxing_filters(
             collection, query_embedding, top_k=top_k,
-            episode_numbers=filters["episode_numbers"] or None,
+            episode_numbers=filters["episode_numbers"],
             after_date=filters["after_date"],
             before_date=filters["before_date"],
             recency_weight=recency_weight,
@@ -275,7 +316,7 @@ def ask(
         )
         if not results:
             return "No relevant content found. Have you ingested any episodes yet?"
-        context = build_context(results, speaker=speaker)
+        context = build_context(results, speaker=eff_speaker)
 
     # Build prompt and call Claude
     user_message = f"TRANSCRIPT EXCERPTS:\n\n{context}\n\nQUESTION: {question}"
