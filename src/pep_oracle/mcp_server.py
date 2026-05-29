@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.query import format_timestamp
-from pep_oracle.store import get_fresh_collection, query as store_query
+from pep_oracle.store import get_fresh_collection, get_ingestion_stats, query as store_query
 
 # NOTE: This string is load-bearing AND front-loaded on purpose. MCP clients
 # (iOS Claude, Claude.ai) defer tools — they see only the tool *name* and a
@@ -34,7 +34,10 @@ SEARCH_PEP_DESCRIPTION = (
     "on US-politics topics. It searches \"PEP with Chas and Dr Dave,\" a "
     "podcast of in-depth US-politics commentary, and returns short transcript "
     "excerpts (~30-90 seconds each) with episode number, air date, host "
-    "speaking, and timestamp — ready to cite or quote."
+    "speaking, and timestamp — ready to cite or quote. Each call also returns a "
+    "'corpus' summary with the newest indexed episode number and date; use it "
+    "to answer questions about the latest/newest episode, since 'results' are "
+    "ranked by relevance, not recency, and may omit the newest episode."
 )
 
 SEARCH_TOOL_NAME = "search_us_politics_commentary"
@@ -75,10 +78,20 @@ def format_citation(result: dict) -> dict:
 
 
 @mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
-def search_pep(query: str, top_k: int = 5) -> list[dict]:
+def search_pep(query: str, top_k: int = 5) -> dict:
     embedding = embed_texts([query])[0]
     # Fresh collection: the API server is long-lived but episodes are written
     # by a separate ingest process, so a cached client would serve stale data.
     collection = get_fresh_collection()
     results = store_query(collection, embedding, top_k=top_k)
-    return [format_citation(r) for r in results]
+    stats = get_ingestion_stats(collection)
+    # Corpus summary lets the caller answer "latest episode" questions: results
+    # are ranked by relevance, not recency, so the newest episode may be absent.
+    return {
+        "corpus": {
+            "newest_episode": stats["latest_episode"],
+            "newest_episode_date": stats["latest_date"],
+            "oldest_episode": stats["earliest_episode"],
+        },
+        "results": [format_citation(r) for r in results],
+    }

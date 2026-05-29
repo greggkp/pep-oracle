@@ -160,16 +160,18 @@ def test_format_citation_episode_number_none_when_missing():
 
 def test_search_pep_respects_top_k(patched):
     _seed_chunks(patched, count=10)
-    results = mcp_server.search_pep("anything", top_k=3)
-    assert len(results) == 3
+    out = mcp_server.search_pep("anything", top_k=3)
+    assert len(out["results"]) == 3
 
 
-# --- (c) empty collection returns [] ---
+# --- (c) empty collection returns no results ---
 
 
 def test_search_pep_empty_collection(patched):
-    results = mcp_server.search_pep("nothing here", top_k=5)
-    assert results == []
+    out = mcp_server.search_pep("nothing here", top_k=5)
+    assert out["results"] == []
+    # Corpus summary is present but empty when nothing is indexed.
+    assert out["corpus"]["newest_episode"] is None
 
 
 # --- (d) fields present on result items ---
@@ -177,7 +179,8 @@ def test_search_pep_empty_collection(patched):
 
 def test_search_pep_result_fields(patched):
     _seed_chunks(patched, count=2, with_speakers=True)
-    results = mcp_server.search_pep("hello", top_k=2)
+    out = mcp_server.search_pep("hello", top_k=2)
+    results = out["results"]
     assert len(results) == 2
     expected_keys = {
         "episode_number",
@@ -202,8 +205,18 @@ def test_search_pep_result_fields(patched):
 
 def test_search_pep_default_top_k_is_5(patched):
     _seed_chunks(patched, count=8)
-    results = mcp_server.search_pep("query")
-    assert len(results) == 5
+    out = mcp_server.search_pep("query")
+    assert len(out["results"]) == 5
+
+
+# --- corpus summary lets the caller answer "latest episode" questions ---
+
+
+def test_search_pep_reports_newest_episode_in_corpus(patched):
+    _seed_chunks(patched, count=3)  # seeds episode 251, dated 2026-04-01
+    out = mcp_server.search_pep("anything", top_k=5)
+    assert out["corpus"]["newest_episode"] == 251
+    assert out["corpus"]["newest_episode_date"] == "2026-04-01"
 
 
 # --- tool name + front-loaded description (deferred-truncation survival) ---
