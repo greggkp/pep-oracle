@@ -20,8 +20,9 @@ RRF_K = 60  # Reciprocal Rank Fusion damping constant (standard default)
 # Fusion weight on the semantic ranker (BM25 gets 1 - this). Leaning semantic
 # means BM25 only sways results when semantic is mediocre — it rescues
 # distinctive-term queries without diluting topic queries semantic already nails.
-# 0.8 chosen by the eval harness (`pep-oracle eval-retrieval`): best recall@5
-# (0.73) and recall@10 (0.82) with no topic_paraphrase regression.
+# 0.8 chosen by the eval harness (`pep-oracle eval-retrieval`, n=29): best
+# recall@5/@10 with the full specific_term gain and no topic_paraphrase
+# regression. Lower weights dilute topic queries; higher loses recall@5.
 SEMANTIC_WEIGHT = 0.8
 
 # Per-collection cache keyed by name (constant in prod) + chunk count, so it

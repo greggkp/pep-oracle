@@ -29,6 +29,29 @@ CASES = [
     {"query": "Trump gave Iran 2 or 3 days to make a deal", "type": "number_paraphrase", "phrase": "two or three days"},
     # coined phrase — a known-hard, idiosyncratic target
     {"query": "Trump conflict handling pattern day 2 day 4", "type": "coined_phrase", "phrase": "day two of the cycle"},
+
+    # --- expanded set (phrases verified present in the corpus) ---
+    # specific_term (query carries the distinctive term)
+    {"query": "the Houthis in Yemen", "type": "specific_term", "phrase": "houthis"},
+    {"query": "Mike Waltz national security adviser", "type": "specific_term", "phrase": "mike waltz"},
+    {"query": "Alligator Alcatraz detention facility", "type": "specific_term", "phrase": "alligator alcatraz"},
+    {"query": "Kash Patel at the FBI", "type": "specific_term", "phrase": "kash patel"},
+    {"query": "the madman theory of negotiation", "type": "specific_term", "phrase": "madman theory"},
+    {"query": "the debt ceiling fight", "type": "specific_term", "phrase": "debt ceiling"},
+    {"query": "John Fetterman", "type": "specific_term", "phrase": "fetterman"},
+    {"query": "the No Kings protests", "type": "specific_term", "phrase": "no kings"},
+    # topic_paraphrase (concept described; distinctive phrase withheld)
+    {"query": "Yemeni rebels attacking Red Sea shipping", "type": "topic_paraphrase", "phrase": "houthis"},
+    {"query": "the immigration detention camp in the Florida Everglades", "type": "topic_paraphrase", "phrase": "alligator alcatraz"},
+    {"query": "mass nationwide street protests against Trump", "type": "topic_paraphrase", "phrase": "no kings"},
+    {"query": "Musk's government cost-cutting task force", "type": "topic_paraphrase", "phrase": "doge"},
+    {"query": "ending automatic citizenship for US-born children of immigrants", "type": "topic_paraphrase", "phrase": "birthright citizenship"},
+    {"query": "the new FBI director Trump appointed", "type": "topic_paraphrase", "phrase": "kash patel"},
+    {"query": "the Ukrainian president's tense White House meeting", "type": "topic_paraphrase", "phrase": "volodymyr zelensky"},
+    # multi_episode (broad recurring topic; recall any relevant episode)
+    {"query": "Iran's nuclear program", "type": "multi_episode", "phrase": "iran nuclear"},
+    {"query": "Putin and the war in Ukraine", "type": "multi_episode", "phrase": "vladimir putin"},
+    {"query": "birthright citizenship executive order", "type": "multi_episode", "phrase": "birthright citizenship"},
 ]
 
 
