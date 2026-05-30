@@ -41,8 +41,8 @@ def test_retrieve_relaxes_unmapped_speaker_filter():
     filter must be dropped and the chunk still returned (eff_speaker None)."""
     col = _collection_with_unmapped_speaker()
     results, eff = _retrieve_relaxing_filters(
-        col, [1.0] + [0.0] * 9, top_k=5, episode_numbers=[],
-        after_date=None, before_date=None, recency_weight=0.0, speaker="Chas",
+        col, "topic", [1.0] + [0.0] * 9, top_k=5, episode_numbers=[],
+        after_date=None, before_date=None, speaker="Chas",
     )
     assert len(results) == 1
     assert eff is None
@@ -53,8 +53,8 @@ def test_retrieve_relaxes_date_floor():
     dead-ending (the chunk is 2025, floor is 2026)."""
     col = _collection_with_unmapped_speaker(date="2025-01-01")
     results, eff = _retrieve_relaxing_filters(
-        col, [1.0] + [0.0] * 9, top_k=5, episode_numbers=[],
-        after_date="2026-01-01", before_date=None, recency_weight=0.0, speaker=None,
+        col, "topic", [1.0] + [0.0] * 9, top_k=5, episode_numbers=[],
+        after_date="2026-01-01", before_date=None, speaker=None,
     )
     assert len(results) == 1
 
@@ -64,8 +64,8 @@ def test_retrieve_never_relaxes_explicit_episode_filter():
     nothing — we must not answer ep 999 from ep 260."""
     col = _collection_with_unmapped_speaker(episode_number=260)
     results, eff = _retrieve_relaxing_filters(
-        col, [1.0] + [0.0] * 9, top_k=5, episode_numbers=[999],
-        after_date=None, before_date=None, recency_weight=0.0, speaker="Chas",
+        col, "topic", [1.0] + [0.0] * 9, top_k=5, episode_numbers=[999],
+        after_date=None, before_date=None, speaker="Chas",
     )
     assert results == []
 
@@ -339,7 +339,7 @@ def test_ask_passes_history_to_claude():
         "search_query": "EU response tariffs", "prefer_recent": False,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
          patch("pep_oracle.query.get_fresh_collection"), \
-         patch("pep_oracle.query.store_query", return_value=[{
+         patch("pep_oracle.query.hybrid_search", return_value=[{
             "episode_title": "Ep 255", "episode_number": 255,
             "episode_date": "2026-03-20", "start_time": 100.0,
             "end_time": 200.0, "text": "The EU responded to tariffs...",
@@ -437,7 +437,7 @@ def test_ask_without_history_sends_single_message():
         "search_query": "tariffs", "prefer_recent": False,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
          patch("pep_oracle.query.get_fresh_collection"), \
-         patch("pep_oracle.query.store_query", return_value=[{
+         patch("pep_oracle.query.hybrid_search", return_value=[{
             "episode_title": "Ep 255", "episode_number": 255,
             "episode_date": "2026-03-20", "start_time": 100.0,
             "end_time": 200.0, "text": "Tariff discussion...",
@@ -570,7 +570,7 @@ def test_ask_single_speaker_passes_filter():
         "speaker": "Chas", "compare_speakers": False,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
          patch("pep_oracle.query.get_fresh_collection"), \
-         patch("pep_oracle.query.store_query", return_value=[{
+         patch("pep_oracle.query.hybrid_search", return_value=[{
             "episode_title": "Ep 255", "episode_number": 255,
             "episode_date": "2026-03-20", "start_time": 100.0,
             "end_time": 200.0, "text": "Tariff discussion...",
@@ -594,7 +594,7 @@ def test_ask_compare_speakers_dual_retrieval():
     )
 
     call_count = {"n": 0}
-    def mock_store(collection, embedding, **kwargs):
+    def mock_store(collection, query_text, embedding, **kwargs):
         call_count["n"] += 1
         speaker = kwargs.get("speaker")
         if speaker == "Chas":
@@ -621,7 +621,7 @@ def test_ask_compare_speakers_dual_retrieval():
         "speaker": None, "compare_speakers": True,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
          patch("pep_oracle.query.get_fresh_collection"), \
-         patch("pep_oracle.query.store_query", side_effect=mock_store):
+         patch("pep_oracle.query.hybrid_search", side_effect=mock_store):
         from pep_oracle.query import ask
         result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
 
@@ -645,7 +645,7 @@ def test_ask_compare_speakers_no_results():
         "speaker": None, "compare_speakers": True,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
          patch("pep_oracle.query.get_fresh_collection"), \
-         patch("pep_oracle.query.store_query", return_value=[]):
+         patch("pep_oracle.query.hybrid_search", return_value=[]):
         from pep_oracle.query import ask
         result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
 
@@ -705,7 +705,7 @@ def _ask_with_intent(intent):
         "compare_speakers": False, "temporal_intent": intent,
     }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
          patch("pep_oracle.query.get_fresh_collection"), \
-         patch("pep_oracle.query.store_query", return_value=_temporal_chunks()):
+         patch("pep_oracle.query.hybrid_search", return_value=_temporal_chunks()):
         from pep_oracle.query import ask
         ask("a question", anthropic_client=mock_anthropic)
     return mock_anthropic.messages.create.call_args.kwargs["messages"][-1]["content"]

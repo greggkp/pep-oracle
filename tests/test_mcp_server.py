@@ -220,16 +220,16 @@ def test_search_pep_reports_newest_episode_in_corpus(patched):
 
 
 def test_search_pep_episode_number_scopes_results(patched, monkeypatch):
-    # episode_number must be forwarded to store.query as an episode filter so the
-    # caller can scope "in the latest episode..." questions.
+    # episode_number must be forwarded to hybrid_search as an episode filter so
+    # the caller can scope "in the latest episode..." questions.
     captured = {}
-    real_query = mcp_server.store_query
+    real_query = mcp_server.hybrid_search
 
-    def _spy(collection, embedding, **kwargs):
+    def _spy(collection, query_text, embedding, **kwargs):
         captured.update(kwargs)
-        return real_query(collection, embedding, **kwargs)
+        return real_query(collection, query_text, embedding, **kwargs)
 
-    monkeypatch.setattr(mcp_server, "store_query", _spy)
+    monkeypatch.setattr(mcp_server, "hybrid_search", _spy)
     _seed_chunks(patched, count=3)  # episode 251
     mcp_server.search_pep("anything", top_k=5, episode_number=251)
     assert captured["episode_numbers"] == [251]
@@ -249,14 +249,14 @@ def _dated_candidates():
 
 
 def test_search_pep_evolution_intent_orders_chronologically(patched, monkeypatch):
-    monkeypatch.setattr(mcp_server, "store_query", lambda *a, **k: _dated_candidates())
+    monkeypatch.setattr(mcp_server, "hybrid_search", lambda *a, **k: _dated_candidates())
     out = mcp_server.search_pep("x", top_k=5, intent="evolution")
     excerpts = [r["excerpt"] for r in out["results"]]
     assert excerpts.index("oldest") < excerpts.index("newest")  # oldest-first
 
 
 def test_search_pep_default_intent_is_newest_first(patched, monkeypatch):
-    monkeypatch.setattr(mcp_server, "store_query", lambda *a, **k: _dated_candidates())
+    monkeypatch.setattr(mcp_server, "hybrid_search", lambda *a, **k: _dated_candidates())
     out = mcp_server.search_pep("x", top_k=5)  # intent=None
     excerpts = [r["excerpt"] for r in out["results"]]
     assert excerpts.index("newest") < excerpts.index("oldest")
@@ -264,7 +264,7 @@ def test_search_pep_default_intent_is_newest_first(patched, monkeypatch):
 
 def test_search_pep_forwards_date_filters(patched, monkeypatch):
     captured = {}
-    monkeypatch.setattr(mcp_server, "store_query",
+    monkeypatch.setattr(mcp_server, "hybrid_search",
                         lambda *a, **k: captured.update(k) or [])
     mcp_server.search_pep("x", top_k=5, after_date="2026-01-01", before_date="2026-06-01")
     assert captured["after_date"] == "2026-01-01"

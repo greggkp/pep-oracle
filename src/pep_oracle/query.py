@@ -6,11 +6,8 @@ import anthropic
 from pep_oracle import temporal
 from pep_oracle.config import QUERY_MODEL
 from pep_oracle.embeddings import embed_texts
-from pep_oracle.store import (
-    get_fresh_collection,
-    get_ingestion_stats,
-    query as store_query,
-)
+from pep_oracle.hybrid import hybrid_search
+from pep_oracle.store import get_fresh_collection, get_ingestion_stats
 from pep_oracle.temporal import VALID_INTENTS
 
 PREPROCESS_MODEL = "claude-haiku-4-5-20251001"
@@ -248,16 +245,17 @@ def preprocess_query(
 
 def _retrieve_relaxing_filters(
     collection,
+    query_text: str,
     embedding: list[float],
     *,
     top_k: int,
     episode_numbers: list[int],
     after_date: str | None,
     before_date: str | None,
-    recency_weight: float,
     speaker: str | None,
 ) -> tuple[list[dict], str | None]:
-    """Retrieve chunks, relaxing fragile filters if they eliminate every hit.
+    """Retrieve chunks (hybrid semantic+lexical), relaxing fragile filters if
+    they eliminate every hit.
 
     Speaker filtering is dropped first: diarized speaker-name mapping is fragile
     and some episodes carry only raw 'speaker_N' labels, so a has_speaker_chas
@@ -269,11 +267,10 @@ def _retrieve_relaxing_filters(
     speaker filter has been dropped, so the caller skips speaker-trimming.
     """
     def run(spk: str | None, after: str | None, before: str | None) -> list[dict]:
-        return store_query(
-            collection, embedding, top_k=top_k,
+        return hybrid_search(
+            collection, query_text, embedding, top_k=top_k,
             episode_numbers=episode_numbers or None,
-            after_date=after, before_date=before,
-            recency_weight=recency_weight, speaker=spk,
+            after_date=after, before_date=before, speaker=spk,
         )
 
     results = run(speaker, after_date, before_date)
@@ -316,18 +313,19 @@ def ask(
     compare = filters.get("compare_speakers", False)
     intent = filters.get("temporal_intent", "timeless")
 
+    search_query = filters["search_query"]
     if compare:
         # Dual retrieval: half for Chas, half for Dave
         half_k = max(top_k // 2, 1)
-        chas_results = store_query(
-            collection, query_embedding, top_k=half_k,
+        chas_results = hybrid_search(
+            collection, search_query, query_embedding, top_k=half_k,
             episode_numbers=filters["episode_numbers"] or None,
             after_date=filters["after_date"],
             before_date=filters["before_date"],
             speaker="Chas",
         )
-        dave_results = store_query(
-            collection, query_embedding, top_k=half_k,
+        dave_results = hybrid_search(
+            collection, search_query, query_embedding, top_k=half_k,
             episode_numbers=filters["episode_numbers"] or None,
             after_date=filters["after_date"],
             before_date=filters["before_date"],
@@ -339,15 +337,15 @@ def ask(
         if not chas_results and not dave_results:
             return "No relevant content found. Have you ingested any episodes yet?"
     else:
-        # Fetch a larger candidate pool by pure relevance, then let the temporal
-        # layer select + order the final top_k by intent (recency only for
-        # 'current'; chronological for evolution/prediction).
+        # Fetch a larger candidate pool via hybrid (semantic+BM25) retrieval, then
+        # let the temporal layer select + order the final top_k by intent (recency
+        # only for 'current'; chronological for evolution/prediction).
         candidates, eff_speaker = _retrieve_relaxing_filters(
-            collection, query_embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
+            collection, search_query, query_embedding,
+            top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
             episode_numbers=filters["episode_numbers"],
             after_date=filters["after_date"],
             before_date=filters["before_date"],
-            recency_weight=0.0,
             speaker=speaker,
         )
         if not candidates:

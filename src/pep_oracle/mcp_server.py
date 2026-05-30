@@ -15,8 +15,9 @@ from mcp.server.fastmcp import FastMCP
 
 from pep_oracle import temporal
 from pep_oracle.embeddings import embed_texts
+from pep_oracle.hybrid import hybrid_search
 from pep_oracle.query import format_timestamp
-from pep_oracle.store import get_fresh_collection, get_ingestion_stats, query as store_query
+from pep_oracle.store import get_fresh_collection, get_ingestion_stats
 
 # NOTE: This string is load-bearing AND front-loaded on purpose. MCP clients
 # (iOS Claude, Claude.ai) defer tools — they see only the tool *name* and a
@@ -99,10 +100,10 @@ def search_pep(
     # Fresh collection: the API server is long-lived but episodes are written
     # by a separate ingest process, so a cached client would serve stale data.
     collection = get_fresh_collection()
-    # Pull a candidate pool by relevance, then let the shared temporal layer
-    # select + order the final top_k for the caller-supplied intent.
-    candidates = store_query(
-        collection, embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
+    # Pull a candidate pool via hybrid (semantic+BM25) retrieval, then let the
+    # shared temporal layer select + order the final top_k for the caller intent.
+    candidates = hybrid_search(
+        collection, query, embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
         episode_numbers=[episode_number] if episode_number else None,
         after_date=after_date, before_date=before_date,
     )
