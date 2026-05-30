@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ DEFAULT_MAX_SPEAKERS = None
 # real second host/guest; below it we treat it as Lachie/fragments and skip it.
 SUBSTANTIVE_SPEAKER_SHARE = 0.15
 
+# Cosine-distance ceiling for matching a cluster to a reference voice. The spike
+# measured same-host ≤0.026 and different-voice ≥0.85, so 0.5 is a wide margin.
+VOICE_MATCH_MAX_DISTANCE = 0.5
+
 
 @dataclass
 class SpeakerSegment:
@@ -32,15 +37,50 @@ class SpeakerSegment:
     end: float
 
 
+@dataclass
+class DiarizationData:
+    """Diarization output: turn segments plus, when available, per-cluster
+    centroid voice embeddings keyed by raw label
+    ({label: {"embedding", "seconds", "intro_seconds"}}). ``clusters`` is None
+    for legacy caches produced before embeddings were captured."""
+    segments: list[SpeakerSegment]
+    clusters: dict[str, dict] | None = None
+
+
+def cos_dist(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 1.0
+    return 1.0 - dot / (na * nb)
+
+
 def diarize_audio(
     audio_url: str,
     num_speakers: int | None = None,
     max_speakers: int | None = None,
-) -> list[SpeakerSegment]:
-    """Run pyannote diarization on a Modal GPU. Returns parsed speaker segments."""
+) -> DiarizationData:
+    """Run pyannote diarization on a Modal GPU; returns segments + cluster embeddings."""
     f = modal.Function.from_name("pep-oracle-diarize", "diarize")
     raw = f.remote(audio_url, num_speakers, max_speakers)
-    return [SpeakerSegment(**r) for r in raw]
+    return _parse_diarization(raw)
+
+
+def _parse_diarization(raw) -> DiarizationData:
+    """Parse the Modal return shape. Accepts the legacy bare-segment list too."""
+    if isinstance(raw, list):
+        return DiarizationData(segments=[SpeakerSegment(**r) for r in raw])
+    segments = [SpeakerSegment(**r) for r in raw["segments"]]
+    clusters = {
+        c["speaker"]: {
+            "embedding": c["embedding"],
+            "seconds": c["seconds"],
+            "intro_seconds": c["intro_seconds"],
+        }
+        for c in raw.get("clusters", [])
+    }
+    return DiarizationData(segments=segments, clusters=clusters or None)
 
 
 def align_speakers(
@@ -160,24 +200,61 @@ def assign_substantive_speakers(
     return name_map
 
 
+def assign_by_voice(
+    clusters: dict[str, dict],
+    references: dict[str, list[float]],
+    total_seconds: float,
+    max_distance: float = VOICE_MATCH_MAX_DISTANCE,
+    substantive_share: float = SUBSTANTIVE_SPEAKER_SHARE,
+) -> dict[str, str | None]:
+    """Map clusters to reference voices by cosine distance.
+
+    Each cluster -> nearest reference (Chas/Dave) when within ``max_distance``;
+    this collapses pyannote's over-split fragments of a host back into that host.
+    A non-matching cluster becomes a "Guest" if it is substantive (>= share of
+    speaking time), else None (skipped — Lachie / music / fragments).
+    """
+    name_map: dict[str, str | None] = {}
+    guest_count = 0
+    ordered = sorted(clusters.items(), key=lambda kv: kv[1].get("seconds", 0.0), reverse=True)
+    for label, info in ordered:
+        emb = info.get("embedding")
+        best_name, best_dist = None, float("inf")
+        if emb:
+            for name, ref in references.items():
+                d = cos_dist(emb, ref)
+                if d < best_dist:
+                    best_dist, best_name = d, name
+        share = info.get("seconds", 0.0) / total_seconds if total_seconds else 0.0
+        if best_name is not None and best_dist <= max_distance:
+            name_map[label] = best_name
+        elif share >= substantive_share:
+            guest_count += 1
+            name_map[label] = "Guest" if guest_count == 1 else f"Guest {guest_count}"
+        else:
+            name_map[label] = None
+    return name_map
+
+
 def map_speaker_names(
     segments: list[TranscriptSegment],
     speaker_segments: list[SpeakerSegment],
     profile_path: Path | None = None,
     roster: list[str] | None = None,
+    clusters: dict[str, dict] | None = None,
 ) -> list[TranscriptSegment]:
     """Map pyannote's generic labels to real names.
 
-    Precedence: a saved voice-profile set (manual `identify-speakers`) wins; if
-    absent, an episode `roster` (from the title) drives speaking-time assignment;
-    if neither is available, speakers fall back to "Speaker 1", "Speaker 2", ...
+    Precedence: reference voice embeddings (built by `build-references`) matched
+    against the diarization cluster embeddings win when both are available; else
+    an episode `roster` (from the title) drives substantive-speaking-time
+    assignment; else speakers fall back to "Speaker 1", "Speaker 2", ...
     """
-    profiles = load_speaker_profiles(profile_path)
+    references = {n: e for n, e in load_speaker_profiles(profile_path).items() if e}
 
-    if profiles:
-        name_map = assign_substantive_speakers(
-            _speaking_times(speaker_segments), sorted(profiles.keys())
-        )
+    if references and clusters:
+        total = sum(_speaking_times(speaker_segments).values())
+        name_map = assign_by_voice(clusters, references, total)
     elif roster:
         name_map = assign_substantive_speakers(
             _speaking_times(speaker_segments), list(roster)
@@ -223,16 +300,24 @@ def get_speaker_segments(
     cache_path = DIARIZATION_CACHE_DIR / f"{episode_guid}.json"
     if cache_path.exists():
         click.echo("  Diarization: cached")
-        return _load_cached(cache_path)
+        return _load_cached(cache_path).segments
 
     if progress_callback:
         progress_callback("diarizing speakers")
     click.echo("  Diarizing speakers...", nl=False)
-    speaker_segments = diarize_audio(audio_url, num_speakers=num_speakers, max_speakers=max_speakers)
-    _save_cache(speaker_segments, cache_path)
-    unique = len(set(s.speaker for s in speaker_segments))
-    click.echo(f" {unique} speakers, {len(speaker_segments)} segments")
-    return speaker_segments
+    data = diarize_audio(audio_url, num_speakers=num_speakers, max_speakers=max_speakers)
+    _save_cache(data, cache_path)
+    click.echo(f" {len(data.clusters or {})} clusters, {len(data.segments)} segments")
+    return data.segments
+
+
+def load_cluster_info(episode_guid: str) -> dict | None:
+    """Return cached per-cluster voice info for an episode, or None if the cache
+    is absent or predates embedding capture."""
+    cache_path = DIARIZATION_CACHE_DIR / f"{episode_guid}.json"
+    if not cache_path.exists():
+        return None
+    return _load_cached(cache_path).clusters
 
 
 def apply_diarization(
@@ -240,19 +325,21 @@ def apply_diarization(
     speaker_segments: list[SpeakerSegment],
     profile_path: Path | None = None,
     roster: list[str] | None = None,
+    clusters: dict[str, dict] | None = None,
 ) -> list[TranscriptSegment]:
     """Align transcript segments with speaker turns and map to real names.
 
-    No Modal calls; operates on already-fetched data. Pass `roster` (from
-    `host_roster_from_title`) so speakers map to host/guest names without a
-    manually-created profiles file.
+    No Modal calls; operates on already-fetched data. Pass `clusters` (from
+    `load_cluster_info`) for voice-embedding matching, and `roster` (from
+    `host_roster_from_title`) as the speaking-time fallback.
     """
     aligned = align_speakers(transcript_segments, speaker_segments)
-    named = map_speaker_names(aligned, speaker_segments, profile_path, roster)
+    named = map_speaker_names(aligned, speaker_segments, profile_path, roster, clusters)
 
-    if not load_speaker_profiles(profile_path) and not roster:
-        click.echo("  Warning: No speaker profiles or roster. Using generic labels.")
-        click.echo("  Run 'pep-oracle identify-speakers --episode <N>' to set up profiles.")
+    references = {n: e for n, e in load_speaker_profiles(profile_path).items() if e}
+    if not (references and clusters) and not roster:
+        click.echo("  Warning: no voice references or roster; using generic labels.")
+        click.echo("  Run 'pep-oracle build-references' to set up voice profiles.")
     return named
 
 
@@ -276,20 +363,17 @@ def diarize_transcript(
         num_speakers=num_speakers,
         progress_callback=progress_callback,
     )
-    return apply_diarization(transcript_segments, speaker_segments, profile_path)
+    clusters = load_cluster_info(episode_guid)
+    return apply_diarization(transcript_segments, speaker_segments, profile_path, clusters=clusters)
 
 
-def _save_cache(segments: list[SpeakerSegment], path: Path) -> None:
-    data = [
-        {"speaker": s.speaker, "start": s.start, "end": s.end}
-        for s in segments
-    ]
-    path.write_text(json.dumps(data))
+def _save_cache(data: DiarizationData, path: Path) -> None:
+    payload = {
+        "segments": [{"speaker": s.speaker, "start": s.start, "end": s.end} for s in data.segments],
+        "clusters": [{"speaker": label, **info} for label, info in (data.clusters or {}).items()],
+    }
+    path.write_text(json.dumps(payload))
 
 
-def _load_cached(path: Path) -> list[SpeakerSegment]:
-    data = json.loads(path.read_text())
-    return [
-        SpeakerSegment(speaker=d["speaker"], start=d["start"], end=d["end"])
-        for d in data
-    ]
+def _load_cached(path: Path) -> DiarizationData:
+    return _parse_diarization(json.loads(path.read_text()))

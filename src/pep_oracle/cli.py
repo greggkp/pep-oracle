@@ -76,93 +76,27 @@ def ask(question: str, top_k: int) -> None:
     Console().print(Markdown(answer))
 
 
-@cli.command(name="identify-speakers")
-@click.option("--episode", "episode_id", type=str, required=True, help="Episode number or GUID to use for speaker identification.")
-def identify_speakers(episode_id: str) -> None:
-    """Identify and label speakers for diarization (one-time setup)."""
-    from pep_oracle.transcripts.diarize import (
-        diarize_audio,
-        save_speaker_profiles,
-        load_speaker_profiles,
-        SpeakerSegment,
-        _load_cached,
-        _save_cache,
+@cli.command(name="build-references")
+def build_references_cmd() -> None:
+    """Auto-derive Chas/Dave voice references from diarized episodes (no manual
+    labeling). Chas = the intro speaker; Dave = the 2nd voice on Dr-Dave episodes.
+    Requires episodes diarized with embeddings (re-diarize first if needed)."""
+    from pep_oracle.config import SPEAKER_PROFILES_PATH
+    from pep_oracle.references import build_references, diarized_episodes_from_collection
+    from pep_oracle.store import get_client, get_collection
+    from pep_oracle.transcripts.diarize import save_speaker_profiles
+
+    episodes = diarized_episodes_from_collection(get_collection(get_client()))
+    refs = build_references(episodes)
+    if not refs:
+        raise click.ClickException(
+            "No diarized episodes with cluster embeddings found. Re-diarize first."
+        )
+    save_speaker_profiles(refs)
+    click.echo(
+        f"Built references for {list(refs)} from {len(episodes)} episode(s) "
+        f"-> {SPEAKER_PROFILES_PATH}"
     )
-    from pep_oracle.config import DIARIZATION_CACHE_DIR, SPEAKER_PROFILES_PATH, ensure_dirs
-
-    ensure_dirs()
-    episodes = fetch_episodes()
-
-    # Find the episode
-    match = None
-    try:
-        num = int(episode_id)
-        match = next((ep for ep in episodes if ep.episode_number == num), None)
-    except ValueError:
-        pass
-    if not match:
-        match = next((ep for ep in episodes if ep.guid == episode_id), None)
-    if not match:
-        raise click.ClickException(f"No episode found matching: {episode_id}")
-
-    click.echo(f"Using episode: {match.title}")
-
-    # Diarize (Modal downloads from the URL directly)
-    cache_path = DIARIZATION_CACHE_DIR / f"{match.guid}.json"
-    if cache_path.exists():
-        click.echo("Using cached diarization...")
-        speaker_segments = _load_cached(cache_path)
-    else:
-        click.echo("Diarizing audio on Modal...")
-        speaker_segments = diarize_audio(match.audio_url)
-        _save_cache(speaker_segments, cache_path)
-
-    # Find unique speakers and their total speaking time
-    speaker_times: dict[str, float] = {}
-    for ss in speaker_segments:
-        speaker_times[ss.speaker] = speaker_times.get(ss.speaker, 0.0) + (ss.end - ss.start)
-
-    sorted_speakers = sorted(speaker_times.items(), key=lambda x: x[1], reverse=True)
-    click.echo(f"\nDetected {len(sorted_speakers)} speakers:")
-    for spk, time in sorted_speakers:
-        minutes = time / 60
-        click.echo(f"  {spk}: {minutes:.1f} minutes")
-
-    # Interactive labeling
-    click.echo("\nLabel each speaker (Chas, Dave, Guest, or skip):")
-    existing_profiles = load_speaker_profiles()
-    profiles: dict[str, list[float]] = dict(existing_profiles)
-
-    known_names = ["Chas", "Dave", "Guest"]
-    for spk, time in sorted_speakers:
-        minutes = time / 60
-
-        # Find a representative segment for this speaker (longest one)
-        rep = max(
-            (ss for ss in speaker_segments if ss.speaker == spk),
-            key=lambda ss: ss.end - ss.start,
-        )
-        start_m, start_s = divmod(int(rep.start), 60)
-        end_m, end_s = divmod(int(rep.end), 60)
-
-        click.echo(f"\n  {spk} ({minutes:.1f} min total, sample at {start_m}:{start_s:02d}-{end_m}:{end_s:02d})")
-        label = click.prompt(
-            "  Who is this?",
-            type=click.Choice(known_names + ["skip"], case_sensitive=False),
-            default="skip",
-        )
-
-        if label == "skip":
-            continue
-
-        # Store a placeholder embedding — the actual embedding-based matching
-        # uses pyannote's internal speaker embeddings. For now we use the
-        # speaker label ordering as the matching mechanism.
-        profiles[label] = []  # placeholder
-
-    save_speaker_profiles(profiles)
-    click.echo(f"\nSaved profiles for: {', '.join(profiles.keys())}")
-    click.echo(f"Profiles stored at: {SPEAKER_PROFILES_PATH}")
 
 
 @cli.command(name="remap-speakers")

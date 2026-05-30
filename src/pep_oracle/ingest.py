@@ -84,10 +84,17 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
     click.echo(f"  Transcript: {source} ({len(segments)} segments)")
 
     if diarize:
-        from pep_oracle.transcripts.diarize import apply_diarization, host_roster_from_title
+        from pep_oracle.transcripts.diarize import (
+            apply_diarization,
+            host_roster_from_title,
+            load_cluster_info,
+        )
 
         roster = host_roster_from_title(episode.title)
-        segments = apply_diarization(segments, speaker_segments, profile_path=None, roster=roster)
+        clusters = load_cluster_info(episode.guid)
+        segments = apply_diarization(
+            segments, speaker_segments, profile_path=None, roster=roster, clusters=clusters
+        )
 
     chunks = chunk_transcript(segments, episode)
     if not chunks:

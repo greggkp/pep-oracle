@@ -21,6 +21,7 @@ from pep_oracle.transcripts.diarize import (
     apply_diarization,
     get_speaker_segments,
     host_roster_from_title,
+    load_cluster_info,
 )
 from pep_oracle.transcripts.manager import get_transcript
 
@@ -54,8 +55,9 @@ def reprocess_episode(collection, episode) -> dict:
     stored embeddings. Returns a small summary dict."""
     segments, _ = get_transcript(episode)  # cached
     speaker_segments = get_speaker_segments(episode.audio_url, episode.guid)  # cached
+    clusters = load_cluster_info(episode.guid)
     roster = host_roster_from_title(episode.title)
-    named = apply_diarization(segments, speaker_segments, roster=roster)
+    named = apply_diarization(segments, speaker_segments, roster=roster, clusters=clusters)
     chunks = chunk_transcript(named, episode)
 
     existing = collection.get(where={"episode_guid": episode.guid}, include=["embeddings"])

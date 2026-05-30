@@ -166,55 +166,27 @@ def test_map_speaker_names_no_profiles():
     assert result[1].speaker == "Speaker 2"
 
 
-def test_map_speaker_names_with_profiles():
+def test_map_speaker_names_ignores_placeholder_profiles(tmp_path):
+    # Profiles with empty (placeholder) embeddings are NOT usable references;
+    # mapping falls back to the roster path rather than to those names.
+    profile_path = tmp_path / "profiles.json"
+    profile_path.write_text(json.dumps({"speakers": {
+        "Chas": {"embedding": []}, "Dave": {"embedding": []},
+    }}))
     segments = [
-        TranscriptSegment(text="Hello", start_time=0.0, end_time=5.0, speaker="SPEAKER_00"),
-        TranscriptSegment(text="Hi", start_time=5.0, end_time=10.0, speaker="SPEAKER_01"),
+        TranscriptSegment(text="Hello", start_time=0.0, end_time=8.0, speaker="SPEAKER_00"),
+        TranscriptSegment(text="Hi", start_time=8.0, end_time=12.0, speaker="SPEAKER_01"),
     ]
     speaker_segments = [
-        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0),
-        SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=10.0),
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=8.0),
+        SpeakerSegment(speaker="SPEAKER_01", start=8.0, end=12.0),
     ]
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump({
-            "speakers": {
-                "Chas": {"embedding": []},
-                "Dave": {"embedding": []},
-            }
-        }, f)
-        profile_path = Path(f.name)
-
-    result = map_speaker_names(segments, speaker_segments, profile_path=profile_path)
-    # With 2 speakers and 2 profiles, should match by speaking time
-    names = {result[0].speaker, result[1].speaker}
-    assert names == {"Chas", "Dave"}
-    profile_path.unlink()
-
-
-def test_map_speaker_names_with_guest():
-    segments = [
-        TranscriptSegment(text="Hello", start_time=0.0, end_time=5.0, speaker="SPEAKER_00"),
-        TranscriptSegment(text="Hi", start_time=5.0, end_time=10.0, speaker="SPEAKER_01"),
-        TranscriptSegment(text="Hey", start_time=10.0, end_time=15.0, speaker="SPEAKER_02"),
-    ]
-    speaker_segments = [
-        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0),
-        SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=10.0),
-        SpeakerSegment(speaker="SPEAKER_02", start=10.0, end=15.0),
-    ]
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump({
-            "speakers": {
-                "Chas": {"embedding": []},
-                "Dave": {"embedding": []},
-            }
-        }, f)
-        profile_path = Path(f.name)
-
-    result = map_speaker_names(segments, speaker_segments, profile_path=profile_path)
-    names = [r.speaker for r in result]
-    assert "Guest" in names
-    profile_path.unlink()
+    # No clusters + empty refs -> roster path (substantive speaking time).
+    result = map_speaker_names(
+        segments, speaker_segments, profile_path=profile_path, roster=["Chas", "Dave"],
+    )
+    assert result[0].speaker == "Chas"
+    assert result[1].speaker == "Dave"
 
 
 def test_speaker_profiles_roundtrip():
@@ -227,18 +199,33 @@ def test_speaker_profiles_roundtrip():
 
 
 def test_diarization_cache_roundtrip():
+    from pep_oracle.transcripts.diarize import DiarizationData
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "test.json"
-        segments = [
-            SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0),
-            SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=10.0),
-        ]
-        _save_cache(segments, path)
+        data = DiarizationData(
+            segments=[
+                SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0),
+                SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=10.0),
+            ],
+            clusters={"SPEAKER_00": {"embedding": [0.1, 0.2], "seconds": 5.0, "intro_seconds": 5.0}},
+        )
+        _save_cache(data, path)
         loaded = _load_cached(path)
-        assert len(loaded) == 2
-        assert loaded[0].speaker == "SPEAKER_00"
-        assert loaded[0].start == 0.0
-        assert loaded[1].speaker == "SPEAKER_01"
+        assert len(loaded.segments) == 2
+        assert loaded.segments[0].speaker == "SPEAKER_00"
+        assert loaded.clusters["SPEAKER_00"]["embedding"] == [0.1, 0.2]
+
+
+def test_diarization_cache_back_compat_bare_list():
+    # Old caches were a bare segment list (no clusters).
+    import json as _json
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.json"
+        path.write_text(_json.dumps([{"speaker": "SPEAKER_00", "start": 0.0, "end": 5.0}]))
+        loaded = _load_cached(path)
+        assert len(loaded.segments) == 1
+        assert loaded.clusters is None
 
 
 def test_map_speaker_names_preserves_none():
@@ -282,11 +269,83 @@ def test_diarize_audio_calls_modal(monkeypatch):
     result = diarize_module.diarize_audio("https://example.com/ep.mp3", num_speakers=2)
 
     assert calls == [("https://example.com/ep.mp3", 2, None)]
-    assert len(result) == 2
-    assert result[0].speaker == "SPEAKER_00"
-    assert result[0].start == 0.0
-    assert result[0].end == 5.5
-    assert result[1].speaker == "SPEAKER_01"
+    assert len(result.segments) == 2
+    assert result.segments[0].speaker == "SPEAKER_00"
+    assert result.segments[0].start == 0.0
+    assert result.segments[0].end == 5.5
+    assert result.segments[1].speaker == "SPEAKER_01"
+
+
+def test_diarize_audio_parses_clusters(monkeypatch):
+    """The new Modal return shape (segments + clusters) is parsed into DiarizationData."""
+    from pep_oracle.transcripts import diarize as diarize_module
+
+    class FakeRemote:
+        def remote(self, audio_url, num_speakers, max_speakers):
+            return {
+                "segments": [{"speaker": "SPEAKER_00", "start": 0.0, "end": 5.0}],
+                "clusters": [
+                    {"speaker": "SPEAKER_00", "seconds": 5.0, "intro_seconds": 5.0,
+                     "embedding": [0.1, 0.2, 0.3]},
+                ],
+            }
+
+    class FakeModal:
+        class Function:
+            @staticmethod
+            def from_name(a, b):
+                return FakeRemote()
+
+    monkeypatch.setattr(diarize_module, "modal", FakeModal)
+    result = diarize_module.diarize_audio("https://x/ep.mp3")
+    assert result.segments[0].speaker == "SPEAKER_00"
+    assert result.clusters["SPEAKER_00"]["embedding"] == [0.1, 0.2, 0.3]
+    assert result.clusters["SPEAKER_00"]["intro_seconds"] == 5.0
+
+
+def test_assign_by_voice_collapses_fragments_and_excludes_guest():
+    from pep_oracle.transcripts.diarize import assign_by_voice
+
+    references = {"Chas": [1.0, 0.0, 0.0], "Dave": [0.0, 1.0, 0.0]}
+    clusters = {
+        "S0": {"embedding": [1.0, 0.0, 0.0], "seconds": 100.0},   # Chas
+        "S1": {"embedding": [0.9, 0.1, 0.0], "seconds": 30.0},    # Chas fragment -> Chas
+        "S2": {"embedding": [0.0, 1.0, 0.0], "seconds": 50.0},    # Dave
+        "S3": {"embedding": [0.0, 0.0, 1.0], "seconds": 35.0},    # guest (substantive) -> Guest
+        "S4": {"embedding": [0.0, 0.0, 1.0], "seconds": 1.0},     # tiny outlier -> skip
+    }
+    total = sum(c["seconds"] for c in clusters.values())
+    name_map = assign_by_voice(clusters, references, total)
+    assert name_map["S0"] == "Chas"
+    assert name_map["S1"] == "Chas"   # over-split fragment collapsed into Chas
+    assert name_map["S2"] == "Dave"
+    assert name_map["S3"] == "Guest"  # far from both hosts but substantive
+    assert name_map["S4"] is None     # far + tiny -> skipped
+
+
+def test_map_speaker_names_uses_voice_references(tmp_path):
+    import json as _json
+    from pep_oracle.transcripts.diarize import map_speaker_names
+
+    profile_path = tmp_path / "profiles.json"
+    profile_path.write_text(_json.dumps({"speakers": {
+        "Chas": {"embedding": [1.0, 0.0]}, "Dave": {"embedding": [0.0, 1.0]},
+    }}))
+    segments = [
+        TranscriptSegment(text="hi", start_time=0.0, end_time=5.0, speaker="SPEAKER_00"),
+        TranscriptSegment(text="yo", start_time=5.0, end_time=8.0, speaker="SPEAKER_01"),
+    ]
+    speaker_segments = [
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0),
+        SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=8.0),
+    ]
+    clusters = {
+        "SPEAKER_00": {"embedding": [1.0, 0.05], "seconds": 5.0},   # Chas
+        "SPEAKER_01": {"embedding": [0.05, 1.0], "seconds": 3.0},   # Dave
+    }
+    result = map_speaker_names(segments, speaker_segments, profile_path=profile_path, clusters=clusters)
+    assert result[0].speaker == "Chas"
+    assert result[1].speaker == "Dave"
 
 
 def test_diarize_audio_no_num_speakers(monkeypatch):
@@ -324,7 +383,9 @@ def test_get_speaker_segments_diarizes_uncapped_by_default(tmp_path, monkeypatch
 
     def _fake_diarize_audio(audio_url, num_speakers=None, max_speakers=None):
         captured["max_speakers"] = max_speakers
-        return [diarize_mod.SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0)]
+        return diarize_mod.DiarizationData(
+            segments=[diarize_mod.SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0)]
+        )
 
     monkeypatch.setattr(diarize_mod, "diarize_audio", _fake_diarize_audio)
     diarize_mod.get_speaker_segments(audio_url="https://x", episode_guid="g-cap")
@@ -335,7 +396,7 @@ def test_get_speaker_segments_diarizes_uncapped_by_default(tmp_path, monkeypatch
 def test_get_speaker_segments_uses_cache(tmp_path, monkeypatch):
     """If a diarization cache file exists, get_speaker_segments returns it without calling Modal."""
     from pep_oracle.transcripts.diarize import (
-        SpeakerSegment, get_speaker_segments, _save_cache,
+        DiarizationData, SpeakerSegment, get_speaker_segments, _save_cache,
     )
     from pep_oracle import config
 
@@ -344,7 +405,7 @@ def test_get_speaker_segments_uses_cache(tmp_path, monkeypatch):
     from pep_oracle.transcripts import diarize as diarize_mod
     monkeypatch.setattr(diarize_mod, "DIARIZATION_CACHE_DIR", tmp_path)
 
-    cached = [SpeakerSegment(speaker="S1", start=0.0, end=10.0)]
+    cached = DiarizationData(segments=[SpeakerSegment(speaker="S1", start=0.0, end=10.0)])
     _save_cache(cached, tmp_path / "guid-x.json")
 
     def _boom(*a, **k):
