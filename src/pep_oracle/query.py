@@ -1,7 +1,9 @@
 import json
+from datetime import date
 
 import anthropic
 
+from pep_oracle import temporal
 from pep_oracle.config import QUERY_MODEL
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.store import (
@@ -9,8 +11,20 @@ from pep_oracle.store import (
     get_ingestion_stats,
     query as store_query,
 )
+from pep_oracle.temporal import VALID_INTENTS
 
 PREPROCESS_MODEL = "claude-haiku-4-5-20251001"
+
+# Per-intent steer appended to the prompt so the model reads the excerpts in the
+# right temporal frame. timeless/historical need none.
+_INTENT_GUIDANCE = {
+    "current": "These excerpts are ordered newest-first. Lead with the most "
+               "recent take and flag where earlier statements have been superseded. ",
+    "evolution": "These excerpts are ordered oldest-first. Trace how the "
+                 "discussion changed over time, citing each episode's date in order. ",
+    "prediction": "These excerpts are ordered oldest-first. Identify what was "
+                  "predicted and whether later episodes confirmed or revised it. ",
+}
 
 SYSTEM_PROMPT = """\
 You are a helpful assistant that answers questions about the podcast \
@@ -43,12 +57,22 @@ Return a JSON object with these fields:
 - "prefer_recent": true if the user wants the LATEST/most recent information, false otherwise
 - "speaker": "Chas" or "Dave" if the question targets a specific speaker, null otherwise
 - "compare_speakers": true if the question asks to compare what Chas said vs Dave (or vice versa), false otherwise
+- "temporal_intent": one of "current", "historical", "evolution", "prediction", "timeless" (see below)
 
-IMPORTANT: Set after_date for questions about current/recent/ongoing events. Words like \
-"soon", "will", "currently", "right now", "these days", "latest", "recent", present tense \
-questions about evolving situations — all imply the user wants RECENT episodes. \
-Use after_date = 60 days before today for these. Only leave after_date as null for \
-timeless/historical questions like "who is X?" or "when did they first discuss Y?".
+IMPORTANT: "temporal_intent" controls how time is used in ranking:
+- "current": the user wants the LATEST/now state of an evolving situation ("latest on X", \
+"what's happening with X now", present-tense "will X happen", "these days"). Recency is \
+handled by ranking, so do NOT set after_date for these.
+- "historical": about a specific PAST time ("what did they say about X back in June", "in 2025"). \
+Set after_date/before_date to that window.
+- "evolution": how the discussion or their view CHANGED over time ("how has their view on X \
+evolved", "trace the X discussion over time").
+- "prediction": what they PREDICTED and whether it panned out ("what did they predict about X", \
+"did their X call come true").
+- "timeless": time-independent background/identity ("who is Dr Dave"), or a specific-episode \
+lookup, or a plain topic question with no time signal.
+Use after_date/before_date ONLY for explicit time windows ("last month", "in June") — NOT for \
+"latest/recent" (use temporal_intent="current" instead).
 
 IMPORTANT: Strip speaker names from search_query. "What did Chas say about tariffs?" → \
 search_query should be "tariffs", NOT "Chas tariffs". The speaker field handles filtering.
@@ -58,16 +82,16 @@ in the question. For example, if the user previously asked about "Pete Hegseth" 
 and now asks "what does he think?", rewrite the search query to include "Pete Hegseth".
 
 Examples:
-- "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
-- "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran war ending", "prefer_recent": true, "speaker": null, "compare_speakers": false}}
-- "what did Chas say about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "tariffs", "prefer_recent": false, "speaker": "Chas", "compare_speakers": false}}
-- "does Dave think Trump will win?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Trump winning election", "prefer_recent": false, "speaker": "Dave", "compare_speakers": false}}
-- "Chas vs Dave on immigration" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "immigration", "prefer_recent": false, "speaker": null, "compare_speakers": true}}
-- "what are they saying about tariffs?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "tariffs trade policy", "prefer_recent": true, "speaker": null, "compare_speakers": false}}
-- "latest on Iran?" → {{"episode_numbers": [], "after_date": "{recent_date}", "before_date": null, "search_query": "Iran latest developments", "prefer_recent": true, "speaker": null, "compare_speakers": false}}
-- "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
-- "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
-- Conversation: User asked about Pete Hegseth. Question: "what does he think about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Pete Hegseth tariffs opinion", "prefer_recent": false, "speaker": null, "compare_speakers": false}}
+- "what did they say about Iran in episode 248?" → {{"episode_numbers": [248], "after_date": null, "before_date": null, "search_query": "Iran", "prefer_recent": false, "speaker": null, "compare_speakers": false, "temporal_intent": "timeless"}}
+- "will the war in Iran end soon?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran war ending", "prefer_recent": true, "speaker": null, "compare_speakers": false, "temporal_intent": "current"}}
+- "what did Chas say about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "tariffs", "prefer_recent": false, "speaker": "Chas", "compare_speakers": false, "temporal_intent": "timeless"}}
+- "latest on Iran?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran latest developments", "prefer_recent": true, "speaker": null, "compare_speakers": false, "temporal_intent": "current"}}
+- "how has their view on Trump's Iran policy changed?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Trump Iran policy", "prefer_recent": false, "speaker": null, "compare_speakers": false, "temporal_intent": "evolution"}}
+- "what did they predict would happen with the Iran war?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Iran war outcome", "prefer_recent": false, "speaker": null, "compare_speakers": false, "temporal_intent": "prediction"}}
+- "Chas vs Dave on immigration" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "immigration", "prefer_recent": false, "speaker": null, "compare_speakers": true, "temporal_intent": "timeless"}}
+- "what were the main topics last month?" → {{"episode_numbers": [], "after_date": "{last_month_start}", "before_date": "{last_month_end}", "search_query": "main topics discussed", "prefer_recent": false, "speaker": null, "compare_speakers": false, "temporal_intent": "historical"}}
+- "who is Dr Dave?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Dr Dave background who is", "prefer_recent": false, "speaker": null, "compare_speakers": false, "temporal_intent": "timeless"}}
+- Conversation: User asked about Pete Hegseth. Question: "what does he think about tariffs?" → {{"episode_numbers": [], "after_date": null, "before_date": null, "search_query": "Pete Hegseth tariffs opinion", "prefer_recent": false, "speaker": null, "compare_speakers": false, "temporal_intent": "timeless"}}
 
 Respond with ONLY the JSON object, no other text.
 
@@ -104,12 +128,17 @@ def _trim_to_speaker(text: str, speaker: str) -> str:
     return " ".join("".join(result).split())
 
 
-def build_context(results: list[dict], speaker: str | None = None) -> str:
-    # Sort by episode date descending so Claude sees recent info first
+def build_context(
+    results: list[dict],
+    speaker: str | None = None,
+    order: str = "newest_first",
+) -> str:
+    # newest_first: recent info first (default). chronological: oldest first, so
+    # the model can narrate evolution / prediction -> outcome in order.
     sorted_results = sorted(
         results,
         key=lambda r: r.get("episode_date", ""),
-        reverse=True,
+        reverse=(order != "chronological"),
     )
     sections = []
     for r in sorted_results:
@@ -198,8 +227,13 @@ def preprocess_query(
             "prefer_recent": False,
             "speaker": None,
             "compare_speakers": False,
+            "temporal_intent": "timeless",
         }
 
+    intent = parsed.get("temporal_intent")
+    if intent not in VALID_INTENTS:
+        # Derive from legacy signals if the model omitted/mis-set it.
+        intent = "current" if parsed.get("prefer_recent") else "timeless"
     return {
         "episode_numbers": parsed.get("episode_numbers", []),
         "after_date": parsed.get("after_date"),
@@ -208,6 +242,7 @@ def preprocess_query(
         "prefer_recent": parsed.get("prefer_recent", False),
         "speaker": parsed.get("speaker"),
         "compare_speakers": parsed.get("compare_speakers", False),
+        "temporal_intent": intent,
     }
 
 
@@ -277,9 +312,9 @@ def ask(
 
     # Retrieve relevant chunks with filters
     collection = get_fresh_collection()
-    recency_weight = 0.3 if filters.get("prefer_recent") else 0.0
     speaker = filters.get("speaker")
     compare = filters.get("compare_speakers", False)
+    intent = filters.get("temporal_intent", "timeless")
 
     if compare:
         # Dual retrieval: half for Chas, half for Dave
@@ -289,7 +324,6 @@ def ask(
             episode_numbers=filters["episode_numbers"] or None,
             after_date=filters["after_date"],
             before_date=filters["before_date"],
-            recency_weight=recency_weight,
             speaker="Chas",
         )
         dave_results = store_query(
@@ -297,7 +331,6 @@ def ask(
             episode_numbers=filters["episode_numbers"] or None,
             after_date=filters["after_date"],
             before_date=filters["before_date"],
-            recency_weight=recency_weight,
             speaker="Dave",
         )
         chas_context = build_context(chas_results, speaker="Chas")
@@ -306,20 +339,25 @@ def ask(
         if not chas_results and not dave_results:
             return "No relevant content found. Have you ingested any episodes yet?"
     else:
-        results, eff_speaker = _retrieve_relaxing_filters(
-            collection, query_embedding, top_k=top_k,
+        # Fetch a larger candidate pool by pure relevance, then let the temporal
+        # layer select + order the final top_k by intent (recency only for
+        # 'current'; chronological for evolution/prediction).
+        candidates, eff_speaker = _retrieve_relaxing_filters(
+            collection, query_embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
             episode_numbers=filters["episode_numbers"],
             after_date=filters["after_date"],
             before_date=filters["before_date"],
-            recency_weight=recency_weight,
+            recency_weight=0.0,
             speaker=speaker,
         )
-        if not results:
+        if not candidates:
             return "No relevant content found. Have you ingested any episodes yet?"
-        context = build_context(results, speaker=eff_speaker)
+        results, order = temporal.select_for_intent(candidates, intent, top_k, date.today())
+        context = build_context(results, speaker=eff_speaker, order=order)
 
     # Build prompt and call Claude
-    user_message = f"TRANSCRIPT EXCERPTS:\n\n{context}\n\nQUESTION: {question}"
+    guidance = _INTENT_GUIDANCE.get(intent, "")
+    user_message = f"TRANSCRIPT EXCERPTS:\n\n{context}\n\n{guidance}QUESTION: {question}"
     messages = list(history or []) + [{"role": "user", "content": user_message}]
     response = anthropic_client.messages.create(
         model=model,

@@ -9,9 +9,11 @@ MCP-capable clients (Claude.ai, Claude Code, etc.).
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from mcp.server.fastmcp import FastMCP
 
+from pep_oracle import temporal
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.query import format_timestamp
 from pep_oracle.store import get_fresh_collection, get_ingestion_stats, query as store_query
@@ -39,7 +41,12 @@ SEARCH_PEP_DESCRIPTION = (
     "are ranked by relevance, NOT recency, so for a question about the latest "
     "or a specific episode (e.g. \"in the latest episode, what did Chas say "
     "about X\") pass episode_number to scope the search to that episode — use "
-    "corpus.newest_episode for \"the latest episode\"."
+    "corpus.newest_episode for \"the latest episode\". For time-sensitive "
+    "questions pass intent: 'current' for the latest/now state of an evolving "
+    "topic, 'evolution' for how a view changed over time (results come back "
+    "oldest-first), 'prediction' for what they forecast and whether it held "
+    "(oldest-first); and pass after_date/before_date (YYYY-MM-DD) for an "
+    "explicit date range."
 )
 
 SEARCH_TOOL_NAME = "search_us_politics_commentary"
@@ -80,14 +87,29 @@ def format_citation(result: dict) -> dict:
 
 
 @mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
-def search_pep(query: str, top_k: int = 5, episode_number: int | None = None) -> dict:
+def search_pep(
+    query: str,
+    top_k: int = 5,
+    episode_number: int | None = None,
+    intent: str | None = None,
+    after_date: str | None = None,
+    before_date: str | None = None,
+) -> dict:
     embedding = embed_texts([query])[0]
     # Fresh collection: the API server is long-lived but episodes are written
     # by a separate ingest process, so a cached client would serve stale data.
     collection = get_fresh_collection()
-    results = store_query(
-        collection, embedding, top_k=top_k,
+    # Pull a candidate pool by relevance, then let the shared temporal layer
+    # select + order the final top_k for the caller-supplied intent.
+    candidates = store_query(
+        collection, embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
         episode_numbers=[episode_number] if episode_number else None,
+        after_date=after_date, before_date=before_date,
+    )
+    results, order = temporal.select_for_intent(candidates, intent, top_k, date.today())
+    results = sorted(
+        results, key=lambda r: r.get("episode_date", ""),
+        reverse=(order != temporal.CHRONOLOGICAL),
     )
     stats = get_ingestion_stats(collection)
     # Corpus summary lets the caller answer "latest episode" questions: results

@@ -238,6 +238,39 @@ def test_search_pep_episode_number_scopes_results(patched, monkeypatch):
     assert captured["episode_numbers"] is None
 
 
+def _dated_candidates():
+    base = {"speaker_text": None, "speakers": None, "start_time": 1.0, "end_time": 2.0}
+    return [
+        {**base, "text": "newest", "episode_title": "E263", "episode_number": 263,
+         "episode_date": "2026-05-29", "distance": 0.1},
+        {**base, "text": "oldest", "episode_title": "E215", "episode_number": 215,
+         "episode_date": "2025-06-01", "distance": 0.2},
+    ]
+
+
+def test_search_pep_evolution_intent_orders_chronologically(patched, monkeypatch):
+    monkeypatch.setattr(mcp_server, "store_query", lambda *a, **k: _dated_candidates())
+    out = mcp_server.search_pep("x", top_k=5, intent="evolution")
+    excerpts = [r["excerpt"] for r in out["results"]]
+    assert excerpts.index("oldest") < excerpts.index("newest")  # oldest-first
+
+
+def test_search_pep_default_intent_is_newest_first(patched, monkeypatch):
+    monkeypatch.setattr(mcp_server, "store_query", lambda *a, **k: _dated_candidates())
+    out = mcp_server.search_pep("x", top_k=5)  # intent=None
+    excerpts = [r["excerpt"] for r in out["results"]]
+    assert excerpts.index("newest") < excerpts.index("oldest")
+
+
+def test_search_pep_forwards_date_filters(patched, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(mcp_server, "store_query",
+                        lambda *a, **k: captured.update(k) or [])
+    mcp_server.search_pep("x", top_k=5, after_date="2026-01-01", before_date="2026-06-01")
+    assert captured["after_date"] == "2026-01-01"
+    assert captured["before_date"] == "2026-06-01"
+
+
 # --- tool name + front-loaded description (deferred-truncation survival) ---
 
 

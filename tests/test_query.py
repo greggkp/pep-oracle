@@ -683,3 +683,46 @@ def test_trim_to_speaker_single_speaker():
     result = _trim_to_speaker(text, "Chas")
     assert "All Chas here" in result
     assert "More Chas talk" in result
+
+
+def _temporal_chunks():
+    return [
+        {"episode_title": "Ep 263", "episode_number": 263, "episode_date": "2026-05-29",
+         "start_time": 10.0, "end_time": 20.0, "text": "newest take", "distance": 0.1},
+        {"episode_title": "Ep 215", "episode_number": 215, "episode_date": "2025-06-01",
+         "start_time": 10.0, "end_time": 20.0, "text": "oldest take", "distance": 0.2},
+    ]
+
+
+def _ask_with_intent(intent):
+    mock_anthropic = MagicMock()
+    resp = MagicMock()
+    resp.content = [MagicMock(text="answer")]
+    mock_anthropic.messages.create.return_value = resp
+    with patch("pep_oracle.query.preprocess_query", return_value={
+        "episode_numbers": [], "after_date": None, "before_date": None,
+        "search_query": "x", "prefer_recent": False, "speaker": None,
+        "compare_speakers": False, "temporal_intent": intent,
+    }), patch("pep_oracle.query.embed_texts", return_value=[[0.1] * 10]), \
+         patch("pep_oracle.query.get_fresh_collection"), \
+         patch("pep_oracle.query.store_query", return_value=_temporal_chunks()):
+        from pep_oracle.query import ask
+        ask("a question", anthropic_client=mock_anthropic)
+    return mock_anthropic.messages.create.call_args.kwargs["messages"][-1]["content"]
+
+
+def test_ask_evolution_orders_excerpts_chronologically():
+    msg = _ask_with_intent("evolution")
+    assert msg.index("oldest take") < msg.index("newest take")  # oldest-first
+    assert "oldest-first" in msg  # evolution guidance appended
+
+
+def test_ask_current_orders_newest_first():
+    msg = _ask_with_intent("current")
+    assert msg.index("newest take") < msg.index("oldest take")
+    assert "newest-first" in msg
+
+
+def test_ask_timeless_has_no_temporal_guidance():
+    msg = _ask_with_intent("timeless")
+    assert "oldest-first" not in msg and "newest-first" not in msg
