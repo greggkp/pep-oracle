@@ -76,6 +76,15 @@ def ask(question: str, top_k: int) -> None:
     Console().print(Markdown(answer))
 
 
+@cli.command(name="eval-retrieval")
+def eval_retrieval_cmd() -> None:
+    """Score retrieval quality (recall@k, MRR) on a labeled query set, comparing
+    semantic-only vs hybrid, against the live corpus."""
+    from pep_oracle.eval_retrieval import format_report, run_comparison
+
+    click.echo(format_report(run_comparison()))
+
+
 @cli.command(name="build-references")
 def build_references_cmd() -> None:
     """Auto-derive Chas/Dave voice references from diarized episodes (no manual
