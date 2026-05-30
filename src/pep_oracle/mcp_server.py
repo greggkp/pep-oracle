@@ -35,9 +35,11 @@ SEARCH_PEP_DESCRIPTION = (
     "podcast of in-depth US-politics commentary, and returns short transcript "
     "excerpts (~30-90 seconds each) with episode number, air date, host "
     "speaking, and timestamp — ready to cite or quote. Each call also returns a "
-    "'corpus' summary with the newest indexed episode number and date; use it "
-    "to answer questions about the latest/newest episode, since 'results' are "
-    "ranked by relevance, not recency, and may omit the newest episode."
+    "'corpus' summary with the newest indexed episode number and date. Results "
+    "are ranked by relevance, NOT recency, so for a question about the latest "
+    "or a specific episode (e.g. \"in the latest episode, what did Chas say "
+    "about X\") pass episode_number to scope the search to that episode — use "
+    "corpus.newest_episode for \"the latest episode\"."
 )
 
 SEARCH_TOOL_NAME = "search_us_politics_commentary"
@@ -78,12 +80,15 @@ def format_citation(result: dict) -> dict:
 
 
 @mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
-def search_pep(query: str, top_k: int = 5) -> dict:
+def search_pep(query: str, top_k: int = 5, episode_number: int | None = None) -> dict:
     embedding = embed_texts([query])[0]
     # Fresh collection: the API server is long-lived but episodes are written
     # by a separate ingest process, so a cached client would serve stale data.
     collection = get_fresh_collection()
-    results = store_query(collection, embedding, top_k=top_k)
+    results = store_query(
+        collection, embedding, top_k=top_k,
+        episode_numbers=[episode_number] if episode_number else None,
+    )
     stats = get_ingestion_stats(collection)
     # Corpus summary lets the caller answer "latest episode" questions: results
     # are ranked by relevance, not recency, so the newest episode may be absent.

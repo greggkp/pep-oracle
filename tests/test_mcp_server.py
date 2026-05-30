@@ -219,6 +219,25 @@ def test_search_pep_reports_newest_episode_in_corpus(patched):
     assert out["corpus"]["newest_episode_date"] == "2026-04-01"
 
 
+def test_search_pep_episode_number_scopes_results(patched, monkeypatch):
+    # episode_number must be forwarded to store.query as an episode filter so the
+    # caller can scope "in the latest episode..." questions.
+    captured = {}
+    real_query = mcp_server.store_query
+
+    def _spy(collection, embedding, **kwargs):
+        captured.update(kwargs)
+        return real_query(collection, embedding, **kwargs)
+
+    monkeypatch.setattr(mcp_server, "store_query", _spy)
+    _seed_chunks(patched, count=3)  # episode 251
+    mcp_server.search_pep("anything", top_k=5, episode_number=251)
+    assert captured["episode_numbers"] == [251]
+    # Default: no episode filter.
+    mcp_server.search_pep("anything", top_k=5)
+    assert captured["episode_numbers"] is None
+
+
 # --- tool name + front-loaded description (deferred-truncation survival) ---
 
 
