@@ -36,10 +36,12 @@ def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk():
     embeddings = [[0.0, 1.0], [1.0, 0.1], [0.9, 0.2]]
     add_chunks(col, chunks, embeddings)
 
-    results = hybrid_search(col, "byrd rule", [1.0, 0.0], top_k=3)
+    # Exercise the fusion MECHANISM with balanced weights (the production
+    # default leans semantic, validated separately by the eval harness): 'a' is
+    # orthogonal to the query embedding (semantic rank last) yet BM25 ranks it
+    # #1, so balanced RRF must surface it into the top 2.
+    results = hybrid_search(col, "byrd rule", [1.0, 0.0], top_k=3, semantic_weight=0.5)
     ids = [r["chunk_id"] for r in results]
-    # 'a' is orthogonal to the query embedding (semantic rank last) yet BM25
-    # ranks it #1, so RRF must surface it into the top 2.
     assert "a" in ids[:2]
 
 

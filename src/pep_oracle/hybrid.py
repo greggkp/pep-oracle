@@ -17,6 +17,12 @@ from pep_oracle.lexical import BM25, normalize_numbers
 from pep_oracle.store import SENTINEL_NO_TIME
 
 RRF_K = 60  # Reciprocal Rank Fusion damping constant (standard default)
+# Fusion weight on the semantic ranker (BM25 gets 1 - this). Leaning semantic
+# means BM25 only sways results when semantic is mediocre — it rescues
+# distinctive-term queries without diluting topic queries semantic already nails.
+# 0.8 chosen by the eval harness (`pep-oracle eval-retrieval`): best recall@5
+# (0.73) and recall@10 (0.82) with no topic_paraphrase regression.
+SEMANTIC_WEIGHT = 0.8
 
 # Per-collection cache keyed by name (constant in prod) + chunk count, so it
 # rebuilds when the ingest process adds/removes chunks. Known limitation: a
@@ -67,11 +73,13 @@ def _cos(a, b) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def _rrf(orders: list[list[int]], k: int = RRF_K) -> list[int]:
+def _rrf(orders: list[list[int]], weights: list[float] | None = None, k: int = RRF_K) -> list[int]:
+    if weights is None:
+        weights = [1.0] * len(orders)
     score: dict[int, float] = {}
-    for order in orders:
+    for order, w in zip(orders, weights):
         for rank, i in enumerate(order):
-            score[i] = score.get(i, 0.0) + 1.0 / (k + rank + 1)
+            score[i] = score.get(i, 0.0) + w / (k + rank + 1)
     return sorted(score, key=lambda i: score[i], reverse=True)
 
 
@@ -104,10 +112,12 @@ def hybrid_search(
     after_date: str | None = None,
     before_date: str | None = None,
     speaker: str | None = None,
+    semantic_weight: float = SEMANTIC_WEIGHT,
 ) -> list[dict]:
-    """Return up to ``top_k`` chunks ranked by RRF(semantic, BM25), in store.query
-    result shape. ``distance`` is a rank-based proxy (lower = better) so the
-    downstream temporal layer treats the fused rank as the relevance signal."""
+    """Return up to ``top_k`` chunks ranked by weighted RRF(semantic, BM25), in
+    store.query result shape. ``distance`` is a rank-based proxy (lower = better)
+    so the downstream temporal layer treats the fused rank as the relevance
+    signal."""
     c = _load_corpus(collection)
     ids, docs, embs, metas, bm25 = c["ids"], c["docs"], c["embeddings"], c["metas"], c["bm25"]
 
@@ -121,7 +131,7 @@ def hybrid_search(
     bm_scores = bm25.scores(normalize_numbers(query_text))
     bm_order = sorted(cand, key=lambda i: bm_scores[i], reverse=True)
 
-    fused = _rrf([sem_order, bm_order])
+    fused = _rrf([sem_order, bm_order], weights=[semantic_weight, 1.0 - semantic_weight])
     n = len(fused) or 1
     return [_to_result(ids[i], docs[i], metas[i], distance=rank / n)
             for rank, i in enumerate(fused[:top_k])]
