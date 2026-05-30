@@ -1,111 +1,93 @@
-"""One-off remediation: relabel diarized chunks whose speakers are generic
-``Speaker N`` labels to host/guest names, in place, without re-embedding.
+"""Re-process diarized episodes through the current speaker-mapping logic,
+in place, without re-embedding.
 
-Chunk embeddings derive from the transcript text, not the speaker labels
-(`ingest.py`), so we reuse the existing vectors and only rewrite
-`speaker_text` / `speaker_turns` (and, via `add_chunks`, the `has_speaker_*`
-metadata). Per episode we delete and re-add the chunks with corrected metadata
-and their original embeddings, which clears the stale `has_speaker_speaker_N`
-keys that a metadata merge would leave behind.
+Chunk embeddings derive from the transcript text, not the speaker labels, so we
+rebuild each episode's chunks from the cached transcript + cached diarization
+(re-diarizing only if the cache is missing) and reuse the stored embeddings,
+matched by deterministic chunk_id. This applies the substantive-speaker mapping
+(top clusters -> Chas/Dave/guest, tail -> skipped) to data that was ingested
+before the fix existed, and is the same routine you'd run after tuning the
+mapping. Idempotent.
 """
 
-import json
-import re
+import logging
+from datetime import datetime
 
-from pep_oracle.models import Chunk
-from pep_oracle.store import SENTINEL_NO_TIME, add_chunks, delete_episode
+from pep_oracle.chunking import chunk_transcript
+from pep_oracle.feed import fetch_episodes
+from pep_oracle.models import Episode
+from pep_oracle.store import add_chunks, delete_episode
 from pep_oracle.transcripts.diarize import (
-    assign_names_by_speaking_time,
+    apply_diarization,
+    get_speaker_segments,
     host_roster_from_title,
 )
+from pep_oracle.transcripts.manager import get_transcript
 
-_GENERIC_LABEL = re.compile(r"^Speaker \d+$")
-_LABEL_IN_TEXT = re.compile(r"\[([^\]]+)\]")
-
-
-def _parse_turns(raw) -> list[dict]:
-    if not raw:
-        return []
-    return json.loads(raw) if isinstance(raw, str) else raw
+logger = logging.getLogger(__name__)
 
 
-def speaking_times_from_turns(turn_lists: list[list[dict]]) -> dict[str, float]:
-    """Aggregate per-label speaking time across an episode's chunks.
-
-    Chunk overlap double-counts some regions, but that only affects absolute
-    durations, not the relative ranking used for assignment.
-    """
-    times: dict[str, float] = {}
-    for turns in turn_lists:
-        for t in turns:
-            spk = t.get("speaker")
-            if spk is None:
-                continue
-            times[spk] = times.get(spk, 0.0) + (t.get("end", 0.0) - t.get("start", 0.0))
-    return times
+def diarized_guids(collection) -> set[str]:
+    """GUIDs of episodes that carry diarization metadata in the collection."""
+    got = collection.get(include=["metadatas"])
+    return {m["episode_guid"] for m in got["metadatas"] if "speakers" in m}
 
 
-def relabel_speaker_text(text: str | None, name_map: dict[str, str]) -> str | None:
-    if text is None:
+def _episode_from_metadata(collection, guid: str) -> Episode | None:
+    """Reconstruct a minimal Episode from stored chunk metadata for episodes no
+    longer in the RSS feed window. Safe only because get_transcript /
+    get_speaker_segments resolve from per-guid caches (no audio_url needed)."""
+    got = collection.get(where={"episode_guid": guid}, include=["metadatas"], limit=1)
+    if not got["metadatas"]:
         return None
-    return _LABEL_IN_TEXT.sub(lambda m: f"[{name_map.get(m.group(1), m.group(1))}]", text)
+    m = got["metadatas"][0]
+    return Episode(
+        guid=guid, title=m.get("episode_title", ""),
+        pub_date=datetime.fromisoformat(m["episode_date"]),
+        audio_url="", description="",
+        episode_number=m.get("episode_number") or None,
+    )
 
 
-def relabel_turns(turns: list[dict], name_map: dict[str, str]) -> list[dict]:
-    return [
-        {**t, "speaker": name_map.get(t.get("speaker"), t.get("speaker"))}
-        for t in turns
-    ]
+def reprocess_episode(collection, episode) -> dict:
+    """Rebuild one episode's chunks with current speaker mapping, reusing the
+    stored embeddings. Returns a small summary dict."""
+    segments, _ = get_transcript(episode)  # cached
+    speaker_segments = get_speaker_segments(episode.audio_url, episode.guid)  # cached
+    roster = host_roster_from_title(episode.title)
+    named = apply_diarization(segments, speaker_segments, roster=roster)
+    chunks = chunk_transcript(named, episode)
+
+    existing = collection.get(where={"episode_guid": episode.guid}, include=["embeddings"])
+    emb_by_id = dict(zip(existing["ids"], existing["embeddings"]))
+    missing = [c.chunk_id for c in chunks if c.chunk_id not in emb_by_id]
+    if missing:
+        raise RuntimeError(
+            f"{episode.guid}: {len(missing)} chunk(s) have no stored embedding "
+            f"(chunking changed?); aborting to avoid data loss: {missing[:3]}"
+        )
+    embeddings = [list(emb_by_id[c.chunk_id]) for c in chunks]
+
+    speakers = sorted({s.speaker for s in named if s.speaker})
+    delete_episode(collection, episode.guid)
+    add_chunks(collection, chunks, embeddings)
+    return {"title": episode.title, "chunks": len(chunks), "speakers": speakers}
 
 
-def remap_collection(collection) -> dict:
-    """Relabel every diarized episode that still uses generic ``Speaker N``
-    labels. Idempotent: episodes already mapped (or not diarized) are skipped.
-
-    Returns {guid: {title, name_map, chunks}} for each remapped episode.
-    """
-    got = collection.get(include=["embeddings", "documents", "metadatas"])
-    ids, embs, docs, metas = got["ids"], got["embeddings"], got["documents"], got["metadatas"]
-
-    by_guid: dict[str, list[int]] = {}
-    for i, m in enumerate(metas):
-        by_guid.setdefault(m["episode_guid"], []).append(i)
-
+def reprocess_diarized_episodes(collection) -> dict:
+    """Re-process every diarized episode in the collection. Returns
+    {guid: summary}."""
+    guids = diarized_guids(collection)
+    episodes = {e.guid: e for e in fetch_episodes()}
     summary: dict[str, dict] = {}
-    for guid, idxs in by_guid.items():
-        turn_lists = [_parse_turns(metas[i].get("speakers")) for i in idxs]
-        label_times = speaking_times_from_turns(turn_lists)
-        if not label_times:
-            continue  # not diarized
-        if not any(_GENERIC_LABEL.match(lbl) for lbl in label_times):
-            continue  # already mapped (or no generic labels)
-
-        title = metas[idxs[0]]["episode_title"]
-        roster = host_roster_from_title(title)
-        name_map = assign_names_by_speaking_time(label_times, roster)
-
-        chunks: list[Chunk] = []
-        chunk_embs: list[list[float]] = []
-        for i in idxs:
-            m = metas[i]
-            st, et = m["start_time"], m["end_time"]
-            turns = _parse_turns(m.get("speakers"))
-            chunks.append(Chunk(
-                chunk_id=ids[i],
-                episode_guid=guid,
-                text=docs[i],
-                episode_title=m["episode_title"],
-                episode_date=m["episode_date"],
-                start_time=None if st == SENTINEL_NO_TIME else st,
-                end_time=None if et == SENTINEL_NO_TIME else et,
-                episode_number=m.get("episode_number") or None,
-                speaker_text=relabel_speaker_text(m.get("speaker_text"), name_map),
-                speaker_turns=relabel_turns(turns, name_map) if turns else None,
-            ))
-            chunk_embs.append(list(embs[i]))
-
-        delete_episode(collection, guid)
-        add_chunks(collection, chunks, chunk_embs)
-        summary[guid] = {"title": title, "name_map": name_map, "chunks": len(chunks)}
-
+    for guid in guids:
+        episode = episodes.get(guid) or _episode_from_metadata(collection, guid)
+        if episode is None:
+            logger.warning("diarized guid %s has no feed entry or metadata; skipping", guid)
+            continue
+        try:
+            summary[guid] = reprocess_episode(collection, episode)
+        except FileNotFoundError:
+            # Out-of-feed episode whose caches were evicted — can't re-derive.
+            logger.warning("diarized guid %s missing caches; skipping", guid)
     return summary

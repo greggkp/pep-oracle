@@ -12,6 +12,18 @@ from pep_oracle.models import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
+# pyannote over-segments this podcast audio into 16-30 micro-clusters, BUT the
+# two largest clusters still correspond to the substantive speakers (Chas ~58%,
+# Dave ~34%); the long tail is fragments / music / Lachie (the skippable foil).
+# Capping max_speakers is the wrong fix — it merges Chas and Dave into a single
+# blob. So we leave diarization unconstrained and instead label only the top
+# substantive clusters (see assign_substantive_speakers), skipping the rest.
+DEFAULT_MAX_SPEAKERS = None
+
+# A non-top cluster must hold at least this share of speaking time to count as a
+# real second host/guest; below it we treat it as Lachie/fragments and skip it.
+SUBSTANTIVE_SPEAKER_SHARE = 0.15
+
 
 @dataclass
 class SpeakerSegment:
@@ -23,10 +35,11 @@ class SpeakerSegment:
 def diarize_audio(
     audio_url: str,
     num_speakers: int | None = None,
+    max_speakers: int | None = None,
 ) -> list[SpeakerSegment]:
     """Run pyannote diarization on a Modal GPU. Returns parsed speaker segments."""
     f = modal.Function.from_name("pep-oracle-diarize", "diarize")
-    raw = f.remote(audio_url, num_speakers)
+    raw = f.remote(audio_url, num_speakers, max_speakers)
     return [SpeakerSegment(**r) for r in raw]
 
 
@@ -112,26 +125,38 @@ def host_roster_from_title(title: str) -> list[str]:
     return roster
 
 
-def assign_names_by_speaking_time(
+def assign_substantive_speakers(
     label_to_time: dict[str, float],
     names: list[str],
-) -> dict[str, str]:
-    """Map raw diarization labels to ``names`` in descending speaking-time order.
+) -> dict[str, str | None]:
+    """Map only the substantive diarization clusters to ``names``; skip the rest.
 
-    The loudest (most-talking) label gets names[0], next gets names[1], etc.
-    Labels beyond the roster become "Guest", "Guest 2", ... This is the show's
-    long-standing heuristic; it is correct for the common 2-host episode but can
-    misattribute when a guest out-talks a named host (real fix: voice embeddings).
+    The loudest cluster is always the primary host (names[0] = Chas). Subsequent
+    clusters map to names[1], names[2], ... (then "Guest", "Guest 2", ...) ONLY
+    if they hold at least SUBSTANTIVE_SPEAKER_SHARE of total speaking time; below
+    that they are Lachie / music / over-split fragments and map to None (skipped,
+    so they get no speaker label and no has_speaker_* metadata).
+
+    This favors precision over recall: an over-split fragment of a host is left
+    unattributed rather than mislabeled as a different person. Real fix for full
+    coverage is voice-embedding speaker ID.
     """
+    total = sum(label_to_time.values()) or 1.0
     ordered = sorted(label_to_time, key=lambda s: label_to_time.get(s, 0.0), reverse=True)
-    name_map: dict[str, str] = {}
+    name_map: dict[str, str | None] = {}
     guest_count = 0
     for i, spk in enumerate(ordered):
-        if i < len(names):
-            name_map[spk] = names[i]
+        share = label_to_time.get(spk, 0.0) / total
+        if i == 0:
+            name_map[spk] = names[0] if names else None
+        elif share >= SUBSTANTIVE_SPEAKER_SHARE:
+            if i < len(names):
+                name_map[spk] = names[i]
+            else:
+                guest_count += 1
+                name_map[spk] = "Guest" if guest_count == 1 else f"Guest {guest_count}"
         else:
-            guest_count += 1
-            name_map[spk] = "Guest" if guest_count == 1 else f"Guest {guest_count}"
+            name_map[spk] = None  # Lachie / fragment / music — skip
     return name_map
 
 
@@ -150,11 +175,11 @@ def map_speaker_names(
     profiles = load_speaker_profiles(profile_path)
 
     if profiles:
-        name_map = assign_names_by_speaking_time(
+        name_map = assign_substantive_speakers(
             _speaking_times(speaker_segments), sorted(profiles.keys())
         )
     elif roster:
-        name_map = assign_names_by_speaking_time(
+        name_map = assign_substantive_speakers(
             _speaking_times(speaker_segments), list(roster)
         )
     else:
@@ -184,12 +209,15 @@ def get_speaker_segments(
     audio_url: str,
     episode_guid: str,
     num_speakers: int | None = None,
+    max_speakers: int | None = DEFAULT_MAX_SPEAKERS,
     progress_callback=None,
 ) -> list[SpeakerSegment]:
     """Fetch speaker segments (from cache or via Modal).
 
     Safe to call concurrently with get_transcript — writes only to its own
-    per-episode cache file.
+    per-episode cache file. Diarization runs unconstrained by default
+    (DEFAULT_MAX_SPEAKERS is None); over-clustering is handled downstream by
+    labeling only the substantive clusters, not by capping (which merges hosts).
     """
     ensure_dirs()
     cache_path = DIARIZATION_CACHE_DIR / f"{episode_guid}.json"
@@ -200,7 +228,7 @@ def get_speaker_segments(
     if progress_callback:
         progress_callback("diarizing speakers")
     click.echo("  Diarizing speakers...", nl=False)
-    speaker_segments = diarize_audio(audio_url, num_speakers=num_speakers)
+    speaker_segments = diarize_audio(audio_url, num_speakers=num_speakers, max_speakers=max_speakers)
     _save_cache(speaker_segments, cache_path)
     unique = len(set(s.speaker for s in speaker_segments))
     click.echo(f" {unique} speakers, {len(speaker_segments)} segments")

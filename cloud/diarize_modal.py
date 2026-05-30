@@ -34,8 +34,16 @@ model_cache = modal.Volume.from_name("pep-oracle-pyannote-cache", create_if_miss
     volumes={"/cache/hf": model_cache},
     timeout=1800,
 )
-def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
+def diarize(
+    audio_url: str,
+    num_speakers: int | None = None,
+    max_speakers: int | None = None,
+) -> list[dict]:
     """Download audio from a URL and run pyannote 3.1 on GPU.
+
+    `num_speakers` forces an exact count; `max_speakers` caps clustering while
+    letting pyannote pick the natural number below it (use this — unconstrained
+    diarization over-segments podcast audio into dozens of phantom speakers).
 
     Returns a list of {"speaker": str, "start": float, "end": float} dicts
     sorted by start time.
@@ -76,6 +84,8 @@ def diarize(audio_url: str, num_speakers: int | None = None) -> list[dict]:
         kwargs = {}
         if num_speakers is not None:
             kwargs["num_speakers"] = num_speakers
+        elif max_speakers is not None:
+            kwargs["max_speakers"] = max_speakers
         result = pipeline(str(wav_path), **kwargs)
 
     # pyannote ≥3.3 returns DiarizeOutput; unwrap to Annotation

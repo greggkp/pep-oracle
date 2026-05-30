@@ -59,15 +59,15 @@ def test_map_speaker_names_roster_assigns_by_speaking_time():
     assert result[0].speaker == "Dave"
 
 
-def test_map_speaker_names_roster_chas_only_makes_guest_not_dave():
-    # Dave absent from roster -> second speaker is a Guest, never 'Dave'.
+def test_map_speaker_names_roster_chas_only_substantive_guest():
+    # Dave absent from roster; a substantive (>=15%) second speaker -> Guest.
     segments = [
-        TranscriptSegment(text="a", start_time=0.0, end_time=10.0, speaker="SPEAKER_00"),
-        TranscriptSegment(text="b", start_time=10.0, end_time=12.0, speaker="SPEAKER_01"),
+        TranscriptSegment(text="a", start_time=0.0, end_time=8.0, speaker="SPEAKER_00"),
+        TranscriptSegment(text="b", start_time=8.0, end_time=12.0, speaker="SPEAKER_01"),
     ]
     speaker_segments = [
-        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=10.0),   # 10s
-        SpeakerSegment(speaker="SPEAKER_01", start=10.0, end=12.0),  # 2s
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=8.0),    # 8s (67%)
+        SpeakerSegment(speaker="SPEAKER_01", start=8.0, end=12.0),   # 4s (33%)
     ]
     result = map_speaker_names(
         segments, speaker_segments,
@@ -75,6 +75,25 @@ def test_map_speaker_names_roster_chas_only_makes_guest_not_dave():
     )
     assert result[0].speaker == "Chas"
     assert result[1].speaker == "Guest"
+
+
+def test_map_speaker_names_skips_small_tail_cluster():
+    # A tiny non-top cluster (Lachie/fragment, <15%) is skipped (speaker=None),
+    # not mislabeled Dave/Guest.
+    segments = [
+        TranscriptSegment(text="lots", start_time=0.0, end_time=90.0, speaker="SPEAKER_00"),
+        TranscriptSegment(text="bit", start_time=90.0, end_time=95.0, speaker="SPEAKER_01"),
+    ]
+    speaker_segments = [
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=90.0),   # 90s (95%)
+        SpeakerSegment(speaker="SPEAKER_01", start=90.0, end=95.0),  # 5s  (5%)
+    ]
+    result = map_speaker_names(
+        segments, speaker_segments,
+        profile_path=_nonexistent_profile_path(), roster=["Chas", "Dave"],
+    )
+    assert result[0].speaker == "Chas"
+    assert result[1].speaker is None  # 5% tail -> skipped, NOT 'Dave'
 
 
 def test_map_speaker_names_no_roster_still_generic():
@@ -243,8 +262,8 @@ def test_diarize_audio_calls_modal(monkeypatch):
     calls = []
 
     class FakeRemote:
-        def remote(self, audio_url, num_speakers):
-            calls.append((audio_url, num_speakers))
+        def remote(self, audio_url, num_speakers, max_speakers):
+            calls.append((audio_url, num_speakers, max_speakers))
             return [
                 {"speaker": "SPEAKER_00", "start": 0.0, "end": 5.5},
                 {"speaker": "SPEAKER_01", "start": 5.5, "end": 10.0},
@@ -262,7 +281,7 @@ def test_diarize_audio_calls_modal(monkeypatch):
 
     result = diarize_module.diarize_audio("https://example.com/ep.mp3", num_speakers=2)
 
-    assert calls == [("https://example.com/ep.mp3", 2)]
+    assert calls == [("https://example.com/ep.mp3", 2, None)]
     assert len(result) == 2
     assert result[0].speaker == "SPEAKER_00"
     assert result[0].start == 0.0
@@ -277,8 +296,9 @@ def test_diarize_audio_no_num_speakers(monkeypatch):
     received = {}
 
     class FakeRemote:
-        def remote(self, audio_url, num_speakers):
+        def remote(self, audio_url, num_speakers, max_speakers):
             received["num_speakers"] = num_speakers
+            received["max_speakers"] = max_speakers
             return []
 
     class FakeModal:
@@ -291,6 +311,25 @@ def test_diarize_audio_no_num_speakers(monkeypatch):
 
     diarize_module.diarize_audio("https://example.com/ep.mp3")
     assert received["num_speakers"] is None
+    assert received["max_speakers"] is None
+
+
+def test_get_speaker_segments_diarizes_uncapped_by_default(tmp_path, monkeypatch):
+    """Default diarization is unconstrained (DEFAULT_MAX_SPEAKERS is None);
+    over-clustering is handled by the mapping, not by capping."""
+    from pep_oracle.transcripts import diarize as diarize_mod
+
+    monkeypatch.setattr(diarize_mod, "DIARIZATION_CACHE_DIR", tmp_path)
+    captured = {}
+
+    def _fake_diarize_audio(audio_url, num_speakers=None, max_speakers=None):
+        captured["max_speakers"] = max_speakers
+        return [diarize_mod.SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0)]
+
+    monkeypatch.setattr(diarize_mod, "diarize_audio", _fake_diarize_audio)
+    diarize_mod.get_speaker_segments(audio_url="https://x", episode_guid="g-cap")
+    assert diarize_mod.DEFAULT_MAX_SPEAKERS is None
+    assert captured["max_speakers"] is None
 
 
 def test_get_speaker_segments_uses_cache(tmp_path, monkeypatch):

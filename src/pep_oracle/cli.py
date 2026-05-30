@@ -167,19 +167,20 @@ def identify_speakers(episode_id: str) -> None:
 
 @cli.command(name="remap-speakers")
 def remap_speakers_cmd() -> None:
-    """Relabel diarized chunks from generic 'Speaker N' to host/guest names.
+    """Re-process diarized episodes through the current speaker mapping.
 
-    In-place metadata migration; reuses existing embeddings (no re-embed).
-    Idempotent — already-mapped episodes are skipped.
+    Rebuilds chunks from cached transcript + diarization, applies the
+    substantive-speaker mapping (top clusters -> Chas/Dave/guest, tail skipped),
+    and reuses stored embeddings (no re-embed). Idempotent.
     """
-    from pep_oracle.remap_speakers import remap_collection
+    from pep_oracle.remap_speakers import reprocess_diarized_episodes
     from pep_oracle.store import get_client, get_collection
 
     collection = get_collection(get_client())
-    summary = remap_collection(collection)
+    summary = reprocess_diarized_episodes(collection)
     for info in sorted(summary.values(), key=lambda x: x["title"]):
-        click.echo(f"  {info['title'][:55]}: {info['name_map']} ({info['chunks']} chunks)")
-    click.echo(f"Remapped {len(summary)} episode(s).")
+        click.echo(f"  {info['title'][:55]}: {info['speakers']} ({info['chunks']} chunks)")
+    click.echo(f"Re-processed {len(summary)} episode(s).")
 
 
 @cli.command(name="export")

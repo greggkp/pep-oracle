@@ -1,36 +1,11 @@
-import json
+from datetime import datetime
 
-from pep_oracle.models import Chunk
-from pep_oracle.remap_speakers import (
-    relabel_speaker_text,
-    relabel_turns,
-    remap_collection,
-    speaking_times_from_turns,
-)
+from pep_oracle import remap_speakers
+from pep_oracle.chunking import chunk_transcript
+from pep_oracle.models import Episode, TranscriptSegment
+from pep_oracle.remap_speakers import reprocess_episode
 from pep_oracle.store import add_chunks, get_client
-
-
-def test_speaking_times_aggregates_across_chunks():
-    turn_lists = [
-        [{"speaker": "Speaker 1", "start": 0.0, "end": 10.0}],
-        [{"speaker": "Speaker 1", "start": 0.0, "end": 5.0},
-         {"speaker": "Speaker 2", "start": 5.0, "end": 7.0}],
-    ]
-    times = speaking_times_from_turns(turn_lists)
-    assert times == {"Speaker 1": 15.0, "Speaker 2": 2.0}
-
-
-def test_relabel_speaker_text_rewrites_only_known_labels():
-    text = "[Speaker 1] hello there [Speaker 2] hi back [Speaker 3] guest"
-    name_map = {"Speaker 1": "Chas", "Speaker 2": "Dave"}
-    out = relabel_speaker_text(text, name_map)
-    assert out == "[Chas] hello there [Dave] hi back [Speaker 3] guest"
-
-
-def test_relabel_turns_preserves_timing():
-    turns = [{"speaker": "Speaker 1", "start": 0.0, "end": 5.0}]
-    out = relabel_turns(turns, {"Speaker 1": "Chas"})
-    assert out == [{"speaker": "Chas", "start": 0.0, "end": 5.0}]
+from pep_oracle.transcripts.diarize import SpeakerSegment
 
 
 _counter = 0
@@ -41,63 +16,93 @@ def _fresh_collection():
     _counter += 1
     client = get_client(persistent=False)
     return client.get_or_create_collection(
-        name=f"test_remap_{_counter}", metadata={"hnsw:space": "cosine"}
+        name=f"test_reproc_{_counter}", metadata={"hnsw:space": "cosine"}
     )
 
 
-def _seed_generic_episode(col, title):
-    """Seed one diarized chunk that uses generic 'Speaker N' labels (the bug
-    state): Speaker 1 talks more than Speaker 2."""
-    chunk = Chunk(
-        chunk_id="g1_0000", episode_guid="g1",
-        text="some transcript text about politics",
-        episode_title=title, episode_date="2026-05-01",
-        start_time=0.0, end_time=20.0, episode_number=263,
-        speaker_text="[Speaker 1] long turn here [Speaker 2] short",
-        speaker_turns=[
-            {"speaker": "Speaker 1", "start": 0.0, "end": 15.0},
-            {"speaker": "Speaker 2", "start": 15.0, "end": 20.0},
-        ],
+def _episode(title):
+    return Episode(
+        guid="g1", title=title, pub_date=datetime(2026, 5, 29),
+        audio_url="https://x/ep.mp3", description="", episode_number=263,
     )
-    add_chunks(col, [chunk], [[1.0] + [0.0] * 9])
 
 
-def test_remap_collection_maps_generic_to_hosts_and_clears_stale_keys():
+def _patch_caches(monkeypatch, transcript, speaker_segments):
+    monkeypatch.setattr(remap_speakers, "get_transcript", lambda ep: (transcript, "cached"))
+    monkeypatch.setattr(
+        remap_speakers, "get_speaker_segments",
+        lambda audio_url, guid: speaker_segments,
+    )
+
+
+def _seed_existing(col, episode, transcript):
+    """Pre-seed the collection with this episode's chunks (any speaker state) so
+    reprocess_episode can reuse the embeddings by chunk_id."""
+    chunks = chunk_transcript(transcript, episode)
+    add_chunks(col, chunks, [[1.0] + [0.0] * 9 for _ in chunks])
+    return chunks
+
+
+def test_reprocess_maps_dominant_to_chas_skips_tail(monkeypatch):
     col = _fresh_collection()
-    _seed_generic_episode(col, "PEP with Chas & Dr Dave (Ep 263)")
+    episode = _episode("PEP with Chas & Dr Dave (Ep 263)")
+    transcript = [
+        TranscriptSegment(text="chas opening", start_time=0.0, end_time=50.0),
+        TranscriptSegment(text="more chas", start_time=50.0, end_time=100.0),
+        TranscriptSegment(text="lachie aside", start_time=100.0, end_time=103.0),
+    ]
+    # SPEAKER_00 dominates (97%); SPEAKER_01 is a 3% tail (Lachie) -> skipped.
+    speaker_segments = [
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=100.0),
+        SpeakerSegment(speaker="SPEAKER_01", start=100.0, end=103.0),
+    ]
+    _seed_existing(col, episode, transcript)
+    _patch_caches(monkeypatch, transcript, speaker_segments)
 
-    summary = remap_collection(col)
-    assert summary["g1"]["name_map"] == {"Speaker 1": "Chas", "Speaker 2": "Dave"}
+    summary = reprocess_episode(col, episode)
+    assert summary["speakers"] == ["Chas"]  # tail skipped, no Dave
 
-    got = col.get(include=["metadatas", "documents"])
-    meta = got["metadatas"][0]
-    # Mapped host keys present, raw labels gone.
-    assert meta.get("has_speaker_chas") is True
-    assert meta.get("has_speaker_dave") is True
-    assert not any(k.startswith("has_speaker_speaker_") for k in meta)
-    # speaker_text relabeled; embeddings/text untouched.
-    assert "[Chas]" in meta["speaker_text"] and "[Speaker 1]" not in meta["speaker_text"]
-    assert got["documents"][0] == "some transcript text about politics"
-    turns = json.loads(meta["speakers"])
-    assert {t["speaker"] for t in turns} == {"Chas", "Dave"}
-
-
-def test_remap_collection_guest_episode_no_false_dave():
-    col = _fresh_collection()
-    _seed_generic_episode(col, "PEP with Chas and Melina Wicks")
-    summary = remap_collection(col)
-    # Dave absent from the title -> second speaker becomes Guest, not Dave.
-    assert summary["g1"]["name_map"] == {"Speaker 1": "Chas", "Speaker 2": "Guest"}
     meta = col.get(include=["metadatas"])["metadatas"][0]
     assert meta.get("has_speaker_chas") is True
-    assert meta.get("has_speaker_guest") is True
     assert "has_speaker_dave" not in meta
+    assert not any(k.startswith("has_speaker_speaker_") for k in meta)
+    assert "[Chas]" in meta["speaker_text"]
+    # The 3% tail's text stays in the chunk body but carries no speaker label.
+    assert "lachie aside" in col.get(include=["documents"])["documents"][0]
 
 
-def test_remap_collection_is_idempotent():
+def test_reprocess_two_substantive_hosts(monkeypatch):
     col = _fresh_collection()
-    _seed_generic_episode(col, "PEP with Chas & Dr Dave (Ep 263)")
-    remap_collection(col)
-    # Second pass: already mapped, nothing generic left -> no-op.
-    summary = remap_collection(col)
-    assert summary == {}
+    episode = _episode("PEP with Chas & Dr Dave (Ep 262)")
+    transcript = [
+        TranscriptSegment(text="chas part", start_time=0.0, end_time=60.0),
+        TranscriptSegment(text="dave part", start_time=60.0, end_time=100.0),
+    ]
+    # 60/40 split -> both substantive -> Chas + Dave.
+    speaker_segments = [
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=60.0),
+        SpeakerSegment(speaker="SPEAKER_01", start=60.0, end=100.0),
+    ]
+    _seed_existing(col, episode, transcript)
+    _patch_caches(monkeypatch, transcript, speaker_segments)
+
+    summary = reprocess_episode(col, episode)
+    assert summary["speakers"] == ["Chas", "Dave"]
+    meta = col.get(include=["metadatas"])["metadatas"][0]
+    assert meta.get("has_speaker_chas") is True
+    assert meta.get("has_speaker_dave") is True
+
+
+def test_reprocess_reuses_embeddings(monkeypatch):
+    col = _fresh_collection()
+    episode = _episode("PEP with Chas & Dr Dave (Ep 263)")
+    transcript = [TranscriptSegment(text="hello", start_time=0.0, end_time=10.0)]
+    speaker_segments = [SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=10.0)]
+    _seed_existing(col, episode, transcript)
+    _patch_caches(monkeypatch, transcript, speaker_segments)
+
+    sentinel = [0.5] + [0.1] * 9
+    col.update(ids=["g1_0000"], embeddings=[sentinel])  # mark the stored vector
+    reprocess_episode(col, episode)
+    got = col.get(include=["embeddings"])
+    assert [round(x, 4) for x in got["embeddings"][0]] == [round(x, 4) for x in sentinel]
