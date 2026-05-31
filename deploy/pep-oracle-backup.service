@@ -1,0 +1,11 @@
+[Unit]
+Description=PEP Oracle off-site backup (export + rclone push)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gregg
+WorkingDirectory=/opt/pep-oracle/app
+ExecStart=/opt/pep-oracle/app/.venv/bin/pep-oracle backup
+EnvironmentFile=/opt/pep-oracle/.env

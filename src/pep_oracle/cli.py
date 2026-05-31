@@ -167,6 +167,24 @@ def import_cmd(input_file: str) -> None:
     click.echo(f"Done — {count} chunks upserted into {collection.name}")
 
 
+@cli.command(name="backup")
+@click.option("--keep-local", default=3, help="Number of local backup tarballs to retain.")
+def backup_cmd(keep_local: int) -> None:
+    """Bundle the corpus (export JSON + speaker profiles + topics + Modal
+    caches) into a tarball and push it to the rclone remote named in
+    PEP_ORACLE_BACKUP_REMOTE (e.g. b2:pep-oracle-backup)."""
+    import os
+    from pep_oracle.backup import run_backup
+
+    remote = os.getenv("PEP_ORACLE_BACKUP_REMOTE", "")
+    if not remote:
+        raise click.ClickException(
+            "Set PEP_ORACLE_BACKUP_REMOTE to an rclone remote (e.g. b2:pep-oracle-backup)."
+        )
+    tarball = run_backup(remote, keep_local=keep_local)
+    click.echo(f"Backed up {tarball.name} -> {remote}")
+
+
 @cli.command()
 def status() -> None:
     """Show ingestion statistics."""

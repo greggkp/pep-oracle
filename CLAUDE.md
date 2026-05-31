@@ -59,6 +59,7 @@ Exposes a single tool (Python `search_pep`, exported as `search_us_politics_comm
 ## Key design decisions
 
 - **Data transfer between machines**: Use `pep-oracle export` / `import` to move ingested episodes. Never copy ChromaDB files directly — ChromaDB must handle its own writes via upsert to avoid corruption. Export produces a JSON file with chunks, embeddings, and metadata.
+- **Off-site backup** (`backup.py`, `pep-oracle backup`): bundles the export JSON + `speaker_profiles.json` + `topics.json` + the Modal caches (transcripts, diarization) into one timestamped tarball and `rclone copy`s it to the remote in `PEP_ORACLE_BACKUP_REMOTE` (e.g. `b2:pep-oracle-backup`); keeps the newest `--keep-local` tarballs locally. The export JSON is the recompute-free restore path (no Modal/embed/LLM cost); the caches are re-ingest insurance (may be incomplete vs what's ingested). Runs automatically via `OnSuccess=pep-oracle-backup.service` on the ingest unit (the corpus only changes on ingest). Restore steps: `deploy/restore.md`.
 - **Data stored at `~/.pep-oracle/`** (cache/transcripts, cache/diarization, chroma), not in the project directory. Override with `PEP_ORACLE_DATA_DIR`. (`cache/audio/` is no longer written — both Modal functions fetch audio directly from `episode.audio_url`. The directory is left alone if it exists from a prior install; `rm -rf` at will.)
 - **Incremental ingestion**: episodes tracked by GUID in ChromaDB metadata; already-ingested episodes are skipped unless `--force`.
 - **Cloud transcription**: Transcription runs on a Modal A100 GPU (`cloud/transcribe_modal.py`) using `faster-whisper large-v3-turbo`. Modal fetches audio from the RSS enclosure URL — no local audio download. Model weights persist in a `modal.Volume` (`pep-oracle-whisper-cache`) so cold starts only reseed on first deploy. Wall-clock ~1 min per 2-hour episode; runs concurrently with diarization from `ingest.py`. Deploy with `modal deploy cloud/transcribe_modal.py`. Fail-fast on Modal errors (no fallback). Cache format at `~/.pep-oracle/cache/transcripts/{guid}.whisper.json` is unchanged.
@@ -89,6 +90,7 @@ Optional:
 - `PEP_ORACLE_PUBLIC_URL` — public issuer URL used in the OAuth discovery doc; must match the tunnel hostname (e.g. `https://pep-oracle.iicapn.com`). Required to enable `/mcp`.
 - `PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH` — must be the literal string `1` to mount `/oauth/*` and `/mcp`. Asserts that an upstream gate (e.g. Cloudflare Access) protects `/oauth/authorize`. Any other value (including absent) → mount skipped with ERROR log.
 - `PEP_ORACLE_OAUTH_SIGNING_KEY` — HS256 signing key for access-token JWTs. If unset, falls back to `~/.pep-oracle/oauth_signing_key` (file mode 0600); if that file doesn't exist, one is auto-generated on first start.
+- `PEP_ORACLE_BACKUP_REMOTE` — rclone remote for `pep-oracle backup` (e.g. `b2:pep-oracle-backup`). Required for the backup command/service; rclone creds live in `~/.config/rclone/rclone.conf`.
 
 No host-side ffmpeg required — both Modal images apt-install their own.
 
@@ -97,6 +99,7 @@ No host-side ffmpeg required — both Modal images apt-install their own.
 `deploy/` contains systemd units for running on a server:
 - `pep-oracle-api.service` — runs the FastAPI web server
 - `pep-oracle-ingest.service` + `pep-oracle-ingest.timer` — periodic ingestion of new episodes
+- `pep-oracle-backup.service` — off-site backup; triggered via `OnSuccess=` on the ingest unit (no timer of its own). See `deploy/restore.md` to rebuild on a new machine.
 
 ## Testing
 
