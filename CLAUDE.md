@@ -99,7 +99,7 @@ No host-side ffmpeg required — both Modal images apt-install their own.
 `deploy/` contains systemd units for running on a server:
 - `pep-oracle-api.service` — runs the FastAPI web server
 - `pep-oracle-ingest.service` + `pep-oracle-ingest.timer` — periodic ingestion of new episodes
-- `pep-oracle-backup.service` — off-site backup; triggered via `OnSuccess=` on the ingest unit (no timer of its own). See `deploy/restore.md` to rebuild on a new machine.
+- `pep-oracle-backup.service` — off-site backup; triggered via `OnSuccess=` on the ingest unit (no timer of its own). First-time S3 remote setup: `deploy/s3-backup-setup.md`. Rebuild on a new machine: `deploy/restore.md`.
 
 ## Testing
 
