@@ -11,6 +11,14 @@ re-embedding, and no LLM spend**. New episodes ingest via Modal going forward.
    cp .env.example /opt/pep-oracle/.env   # then fill in ANTHROPIC_API_KEY, MODAL_*, PEP_ORACLE_* vars
    ```
 
+   > **One env file only.** Create exactly `/opt/pep-oracle/.env`. The systemd
+   > units read it via `EnvironmentFile=`, and the app *also* reads this same
+   > file at import via `load_dotenv()` (`find_dotenv` walks up from
+   > `src/pep_oracle/config.py` to the first `.env`). Do **not** create a second
+   > `.env` inside `/opt/pep-oracle/app/` — it shadows this one for the CLI and
+   > the two silently drift. On this box `app/.env` is a symlink back to
+   > `/opt/pep-oracle/.env` for exactly that reason.
+
 2. **Pull the latest backup** (install + configure rclone first if needed:
    `rclone config`, recreating the remote named in `PEP_ORACLE_BACKUP_REMOTE`):
    ```bash
