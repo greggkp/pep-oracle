@@ -13,7 +13,7 @@ from datetime import date
 
 from mcp.server.fastmcp import FastMCP
 
-from pep_oracle import temporal
+from pep_oracle import config, corpus as corpus_mod, temporal
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.hybrid import hybrid_search
 from pep_oracle.query import format_timestamp
@@ -87,6 +87,18 @@ def format_citation(result: dict) -> dict:
     }
 
 
+def get_serving_corpus():
+    """Retrieval source seam: the corpus artifact (InMemoryCorpus) when
+    PEP_ORACLE_SERVE_FROM_ARTIFACT=1 (the Lambda path), else the live ChromaDB
+    collection (the OptiPlex default). Both satisfy hybrid_search +
+    get_ingestion_stats; the artifact path validates dims + embedder at load."""
+    if config.SERVE_FROM_ARTIFACT:
+        return corpus_mod.current_corpus(
+            config.CORPUS_URI, ttl_seconds=config.CORPUS_REFRESH_TTL_SECONDS
+        )
+    return get_fresh_collection()
+
+
 @mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
 def search_pep(
     query: str,
@@ -99,7 +111,7 @@ def search_pep(
     embedding = embed_texts([query])[0]
     # Fresh collection: the API server is long-lived but episodes are written
     # by a separate ingest process, so a cached client would serve stale data.
-    collection = get_fresh_collection()
+    collection = get_serving_corpus()
     # Pull a candidate pool via hybrid (semantic+BM25) retrieval, then let the
     # shared temporal layer select + order the final top_k for the caller intent.
     candidates = hybrid_search(

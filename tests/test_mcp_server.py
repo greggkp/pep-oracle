@@ -534,3 +534,42 @@ def test_mcp_case_insensitive_bearer_scheme(monkeypatch, tmp_path):
             json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
         )
         assert resp.status_code != 401
+
+
+def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
+    import pep_oracle.config as config
+    import pep_oracle.corpus as corpus
+    import pep_oracle.hybrid as hybrid
+    import pep_oracle.mcp_server as mcp_server
+
+    corpus.write_artifact(
+        [
+            {"chunk_id": "z1", "text": "the byrd rule reconciliation senate",
+             "embedding": [1.0, 0.0],
+             "metadata": {"episode_number": 251, "episode_date": "2026-04-01",
+                          "episode_guid": "g", "episode_title": "Ep 251",
+                          "start_time": 0.0, "end_time": 10.0}},
+        ],
+        dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+    )
+    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", True)
+    monkeypatch.setattr(config, "CORPUS_URI", str(tmp_path))
+    monkeypatch.setattr(config, "EMBED_BACKEND", "bedrock")
+    monkeypatch.setattr(config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+    corpus.reset_serving_cache()
+    hybrid._CACHE.clear()
+
+    c = mcp_server.get_serving_corpus()
+    assert c.__class__.__name__ == "InMemoryCorpus"
+    assert c.version == "v0001"
+
+
+def test_get_serving_corpus_uses_chroma_by_default(monkeypatch):
+    import pep_oracle.config as config
+    import pep_oracle.mcp_server as mcp_server
+
+    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", False)
+    sentinel = object()
+    monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: sentinel)
+    assert mcp_server.get_serving_corpus() is sentinel
