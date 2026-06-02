@@ -70,13 +70,17 @@ After the existing `CHROMA_COLLECTION` / `QUERY_MODEL` lines (around line 22-23)
 # Default stays "fastembed" so existing local ingestion/CLI/tests are unchanged;
 # the AWS migration opts in with PEP_ORACLE_EMBED_BACKEND=bedrock.
 EMBED_BACKEND = os.getenv("PEP_ORACLE_EMBED_BACKEND", "fastembed")
+# Sydney — operator default; Bedrock Titan v2 isn't in ap-southeast-4 (Melbourne).
 BEDROCK_REGION = os.getenv("PEP_ORACLE_BEDROCK_REGION", "ap-southeast-2")
+# EMBED_MODEL / EMBED_DIMS apply when EMBED_BACKEND=bedrock (the fastembed model
+# name lives in embeddings.MODEL_NAME).
 EMBED_MODEL = os.getenv("PEP_ORACLE_EMBED_MODEL", "amazon.titan-embed-text-v2:0")
 EMBED_DIMS = int(os.getenv("PEP_ORACLE_EMBED_DIMS", "1024"))
 
-# --- Corpus artifact location (local dir or s3:// base URI) ---
-# The artifact lives under <CORPUS_URI>/corpus/{vNNNN.parquet,vNNNN.manifest.json,current.json}.
-CORPUS_URI = os.getenv("PEP_ORACLE_CORPUS_URI", str(DATA_DIR / "corpus"))
+# --- Corpus artifact base location (local dir or s3:// base URI) ---
+# The artifact lives under <CORPUS_URI>/corpus/{vNNNN.parquet,vNNNN.manifest.json,current.json};
+# the "/corpus" prefix is appended by corpus.py, so this is the BASE, not the corpus dir itself.
+CORPUS_URI = os.getenv("PEP_ORACLE_CORPUS_URI", str(DATA_DIR))
 ```
 
 - [ ] **Step 3: Install and smoke-check the import**
@@ -1227,9 +1231,10 @@ are not re-run. Cost: one Bedrock pass over ~10k short texts (a few cents).
    export PEP_ORACLE_EMBED_BACKEND=bedrock
    export PEP_ORACLE_BEDROCK_REGION=ap-southeast-2
    export AWS_PROFILE=...   # or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-   uv run pep-oracle backfill --export /tmp/corpus-export.json --out ~/.pep-oracle/corpus --version v0001
+   uv run pep-oracle backfill --export /tmp/corpus-export.json --out ~/.pep-oracle --version v0001
    ```
-   Reports chunk count, episode range, model, and sha256.
+   Reports chunk count, episode range, model, and sha256. Artifact lands at
+   `~/.pep-oracle/corpus/v0001.parquet` (the `--out` base + the `/corpus` prefix).
 
 3. Validate retrieval quality (no-regression gate). Compare the two reports —
    the Titan hybrid recall@10 / MRR must hold vs the bge-large baseline:
@@ -1237,7 +1242,7 @@ are not re-run. Cost: one Bedrock pass over ~10k short texts (a few cents).
    # bge-large baseline (default backend), over the live ChromaDB:
    PEP_ORACLE_EMBED_BACKEND=fastembed uv run pep-oracle eval-retrieval
    # Titan artifact (query embedder must also be Titan):
-   PEP_ORACLE_EMBED_BACKEND=bedrock   uv run pep-oracle eval-retrieval --corpus ~/.pep-oracle/corpus
+   PEP_ORACLE_EMBED_BACKEND=bedrock   uv run pep-oracle eval-retrieval --corpus ~/.pep-oracle
    ```
    Gate: artifact `recall@10` ≥ baseline `recall@10` (and MRR within ~0.02). If
    Titan regresses, re-run the backfill with Cohere (`PEP_ORACLE_EMBED_MODEL=cohere.embed-english-v3`,
@@ -1251,7 +1256,7 @@ are not re-run. Cost: one Bedrock pass over ~10k short texts (a few cents).
 
 5. Inspect the artifact (optional):
    ```bash
-   uv run python -c "import pyarrow.parquet as pq; t=pq.read_table('$HOME/.pep-oracle/corpus/corpus/v0001.parquet'); print(t.schema); print(t.num_rows)"
+   uv run python -c "import pyarrow.parquet as pq; t=pq.read_table('$HOME/.pep-oracle/corpus/v0001.parquet'); print(t.schema); print(t.num_rows)"
    ```
 ````
 
