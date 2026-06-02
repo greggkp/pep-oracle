@@ -87,3 +87,26 @@ def test_corpus_cache_rebuilds_when_count_changes():
 def test_empty_collection_returns_empty():
     col = _fresh_collection()
     assert hybrid_search(col, "anything", [1.0, 0.0], top_k=5) == []
+
+
+def test_cache_keys_on_version_not_just_name():
+    """Two InMemoryCorpus instances share the name 'pep_oracle' and the same chunk
+    count; only `.version` differs. The cache must NOT serve the first one's data
+    for the second (the bug that would defeat the serving-path atomic swap)."""
+    from pep_oracle.corpus import InMemoryCorpus
+
+    hybrid._CACHE.clear()
+
+    def _meta(ep):
+        return {"episode_number": ep, "episode_date": f"2026-01-0{ep}",
+                "episode_guid": f"g{ep}", "episode_title": f"Ep {ep}",
+                "start_time": 0.0, "end_time": 1.0}
+
+    a = InMemoryCorpus(["a"], ["byrd rule reconciliation"], [[1.0, 0.0]], [_meta(1)], version="v0001")
+    b = InMemoryCorpus(["b"], ["tariffs section 122"], [[1.0, 0.0]], [_meta(2)], version="v0002")
+
+    ra = hybrid_search(a, "byrd rule", [1.0, 0.0], top_k=1)
+    rb = hybrid_search(b, "tariffs", [1.0, 0.0], top_k=1)
+
+    assert ra[0]["chunk_id"] == "a"
+    assert rb[0]["chunk_id"] == "b"  # not stale 'a' from a name-only cache key

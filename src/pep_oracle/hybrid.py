@@ -25,17 +25,19 @@ RRF_K = 60  # Reciprocal Rank Fusion damping constant (standard default)
 # regression. Lower weights dilute topic queries; higher loses recall@5.
 SEMANTIC_WEIGHT = 0.8
 
-# Per-collection cache keyed by name (constant in prod) + chunk count, so it
-# rebuilds when the ingest process adds/removes chunks. Known limitation: a
-# same-count metadata-only change (e.g. remap-speakers) isn't reflected until the
-# count changes or the process restarts.
-_CACHE: dict = {}  # name -> {count, ids, docs, embeddings, metas, bm25}
+# Per-corpus cache keyed by (name, version) + invalidated on chunk-count change.
+# ChromaDB collections have no `.version` (-> None), so the live /ask+MCP-over-Chroma
+# behavior is unchanged; InMemoryCorpus carries `.version` so a new artifact swap
+# gets a fresh BM25 index instead of colliding with the previous one.
+_CACHE: dict = {}  # (name, version) -> {count, ids, docs, embeddings, metas, bm25}
 
 
 def _load_corpus(collection) -> dict:
     name = collection.name
+    version = getattr(collection, "version", None)  # InMemoryCorpus carries a version; Chroma doesn't
     count = collection.count()
-    cached = _CACHE.get(name)
+    key = (name, version)
+    cached = _CACHE.get(key)
     if cached is not None and cached["count"] == count:
         return cached
     got = collection.get(include=["documents", "embeddings", "metadatas"])
@@ -48,7 +50,7 @@ def _load_corpus(collection) -> dict:
         "metas": got["metadatas"],
         "bm25": BM25([normalize_numbers(d or "") for d in docs]),
     }
-    _CACHE[name] = corpus
+    _CACHE[key] = corpus
     return corpus
 
 
