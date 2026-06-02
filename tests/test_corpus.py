@@ -2,6 +2,8 @@ import hashlib
 import json
 
 import pep_oracle.corpus as corpus
+import pep_oracle.hybrid as hybrid
+from pep_oracle.hybrid import hybrid_search
 
 
 def _row(cid, text, ep, embedding):
@@ -61,3 +63,62 @@ def test_write_artifact_handles_missing_episode_numbers(tmp_path):
         embed_model="m", dims=2, git_sha="s", built_at="t",
     )
     assert manifest.episode_range == [None, None]
+
+
+def test_inmemory_corpus_roundtrip_and_get_shape(tmp_path):
+    rows = [
+        _row("a", "byrd rule reconciliation", 251, [1.0, 0.0]),
+        _row("b", "weather and chit chat", 252, [0.0, 1.0]),
+    ]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="m", dims=2, git_sha="s", built_at="t",
+    )
+
+    c = corpus.load_current(str(tmp_path))
+    assert c.count() == 2
+    assert c.name == "pep_oracle"
+
+    got = c.get(include=["documents", "embeddings", "metadatas"])
+    assert got["ids"] == ["a", "b"]
+    assert got["documents"][0] == "byrd rule reconciliation"
+    assert got["embeddings"][0] == [1.0, 0.0]
+    assert got["metadatas"][0]["episode_number"] == 251
+    # include is honored: omit a key -> absent
+    assert "documents" not in c.get(include=["metadatas"])
+
+
+def test_inmemory_corpus_is_drop_in_for_hybrid_search(tmp_path):
+    hybrid._CACHE.clear()
+    rows = [
+        _row("a", "byrd rule reconciliation senate", 251, [1.0, 0.0]),
+        _row("b", "weather and chit chat", 252, [0.0, 1.0]),
+    ]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="m", dims=2, git_sha="s", built_at="t",
+    )
+    c = corpus.load_current(str(tmp_path))
+
+    results = hybrid_search(c, "byrd rule", [1.0, 0.0], top_k=2)
+    assert results[0]["chunk_id"] == "a"
+    assert set(results[0]) >= {
+        "chunk_id", "text", "distance", "episode_guid",
+        "episode_title", "episode_date", "episode_number",
+        "start_time", "end_time",
+    }
+
+
+def test_load_current_rejects_corrupt_parquet(tmp_path):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="m", dims=2, git_sha="s", built_at="t",
+    )
+    # Corrupt the parquet so its sha256 no longer matches current.json
+    (tmp_path / "corpus" / "v0001.parquet").write_bytes(b"corrupted")
+    try:
+        corpus.load_current(str(tmp_path))
+        assert False, "expected a sha256 mismatch error"
+    except ValueError as exc:
+        assert "sha256" in str(exc).lower()

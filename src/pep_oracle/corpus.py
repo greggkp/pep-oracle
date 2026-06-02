@@ -22,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pep_oracle import _storage as storage
+from pep_oracle.config import CHROMA_COLLECTION
 
 
 @dataclasses.dataclass
@@ -100,3 +101,56 @@ def write_artifact(
         json.dumps({"version": version, "sha256": sha, "manifest_url": manifest_uri}),
     )
     return manifest
+
+
+class InMemoryCorpus:
+    """In-memory stand-in for the slice of the ChromaDB Collection API that
+    hybrid.hybrid_search and store.get_ingestion_stats use: `.name`, `.count()`,
+    and `.get(include=[...])`. Backed by parallel lists loaded from the parquet
+    artifact, so retrieval code is reused unchanged (no ChromaDB on this path)."""
+
+    def __init__(self, ids, docs, embeddings, metas, version: str | None = None):
+        self.name = CHROMA_COLLECTION
+        self.version = version
+        self.ids = ids
+        self.docs = docs
+        self.embeddings = embeddings
+        self.metas = metas
+
+    def count(self) -> int:
+        return len(self.ids)
+
+    def get(self, include=None) -> dict:
+        include = include or []
+        out = {"ids": list(self.ids)}
+        if "documents" in include:
+            out["documents"] = list(self.docs)
+        if "embeddings" in include:
+            out["embeddings"] = list(self.embeddings)
+        if "metadatas" in include:
+            out["metadatas"] = list(self.metas)
+        return out
+
+    @classmethod
+    def from_parquet_bytes(cls, data: bytes, version: str | None = None) -> "InMemoryCorpus":
+        table = pq.read_table(io.BytesIO(data))
+        ids = table.column("chunk_id").to_pylist()
+        docs = table.column("text").to_pylist()
+        embeddings = table.column("embedding").to_pylist()
+        metas = [json.loads(m) for m in table.column("metadata").to_pylist()]
+        return cls(ids, docs, embeddings, metas, version=version)
+
+
+def load_current(base: str) -> InMemoryCorpus:
+    """Resolve <base>/corpus/current.json, download that version's parquet,
+    verify sha256, and load it into an InMemoryCorpus."""
+    prefix = str(base).rstrip("/") + "/corpus"
+    cur = json.loads(storage.get_text(f"{prefix}/current.json"))
+    version = cur["version"]
+    data = storage.get_bytes(f"{prefix}/{version}.parquet")
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != cur["sha256"]:
+        raise ValueError(
+            f"corpus sha256 mismatch for {version}: current.json={cur['sha256']} actual={actual}"
+        )
+    return InMemoryCorpus.from_parquet_bytes(data, version=version)
