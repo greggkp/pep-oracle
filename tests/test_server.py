@@ -374,3 +374,42 @@ def test_lambda_handler_is_constructed():
 
     assert server.handler is not None
     assert server.handler.__class__.__name__ == "Mangum"
+
+
+def test_version_reports_code_only_by_default(monkeypatch):
+    from fastapi.testclient import TestClient
+    from pep_oracle import config, server
+
+    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", False)
+    monkeypatch.setattr(config, "GIT_SHA", "abc1234")
+    with TestClient(server.app) as client:
+        r = client.get("/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code_git_sha"] == "abc1234"
+    assert "code_semver" in body
+    assert "corpus_version" not in body  # artifact serving off
+
+
+def test_version_reports_corpus_when_serving_from_artifact(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from pep_oracle import config, corpus, server
+
+    corpus.write_artifact(
+        [{"chunk_id": "a", "text": "x", "embedding": [1.0, 0.0],
+          "metadata": {"episode_number": 251, "episode_date": "2026-04-01",
+                       "episode_guid": "g", "episode_title": "t",
+                       "start_time": 0.0, "end_time": 1.0}}],
+        dest=str(tmp_path), version="v0042",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s",
+        built_at="2026-06-01T06:14:00+00:00",
+    )
+    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", True)
+    monkeypatch.setattr(config, "CORPUS_URI", str(tmp_path))
+    with TestClient(server.app) as client:
+        r = client.get("/version")
+    body = r.json()
+    assert body["corpus_version"] == "v0042"
+    assert body["corpus_episode_range"] == [251, 251]
+    assert body["embed_model"] == "amazon.titan-embed-text-v2:0"
+    assert body["corpus_built_at"] == "2026-06-01T06:14:00+00:00"
