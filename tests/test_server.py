@@ -365,3 +365,12 @@ def test_topics_returns_all_uningested_episodes(client_and_collection, tmp_path)
     assert 1 in not_ingested
     assert 3 in not_ingested
     assert 2 not in not_ingested
+
+
+def test_lambda_handler_is_constructed():
+    """server.handler is a Mangum ASGI adapter wrapping the FastAPI app, so the
+    same app runs under uvicorn locally and Lambda in prod."""
+    from pep_oracle import server
+
+    assert server.handler is not None
+    assert server.handler.__class__.__name__ == "Mangum"

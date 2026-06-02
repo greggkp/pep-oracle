@@ -467,6 +467,19 @@ async def root():
 mount_mcp_if_configured(app)
 
 
+def _make_lambda_handler():
+    """Wrap the ASGI app with Mangum for AWS Lambda. Returns None if mangum isn't
+    installed (e.g. a base local install), so importing server stays cheap."""
+    try:
+        from mangum import Mangum
+    except ImportError:
+        return None
+    return Mangum(app)
+
+
+handler = _make_lambda_handler()
+
+
 def main():
     import uvicorn
 
