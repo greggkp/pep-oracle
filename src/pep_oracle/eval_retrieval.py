@@ -117,12 +117,17 @@ def _semantic_retriever(collection):
     return fn
 
 
-def _hybrid_retriever(collection):
-    from pep_oracle.embeddings import embed_texts
+def _hybrid_retriever(collection, embed=None):
     from pep_oracle.hybrid import hybrid_search
 
+    if embed is None:
+        from pep_oracle.embeddings import embed_texts
+
+        embed = embed_texts
+
     def fn(query, top_k):
-        return hybrid_search(collection, query, embed_texts([query])[0], top_k=top_k)
+        return hybrid_search(collection, query, embed([query])[0], top_k=top_k)
+
     return fn
 
 
@@ -138,6 +143,36 @@ def run_comparison(ks=(5, 10)) -> dict:
         "semantic": evaluate(_semantic_retriever(collection), docs, metas, ks=ks),
         "hybrid": evaluate(_hybrid_retriever(collection), docs, metas, ks=ks),
     }
+
+
+def evaluate_corpus(corpus, embed=None, cases=CASES, ks=(5, 10)) -> dict:
+    """Run the hybrid retrieval eval over an InMemoryCorpus (a parquet artifact),
+    so retrieval quality can be measured for a Bedrock-embedded corpus and
+    compared against the bge-large ChromaDB baseline from run_comparison().
+
+    NOTE: when measuring a Titan artifact for real, the query embedder MUST also
+    be Titan (same vector space) — i.e. run with PEP_ORACLE_EMBED_BACKEND=bedrock,
+    or pass `embed` explicitly. Mismatched query/corpus embedders are meaningless.
+    """
+    got = corpus.get(include=["documents", "metadatas"])
+    return evaluate(
+        _hybrid_retriever(corpus, embed), got["documents"], got["metadatas"],
+        cases=cases, ks=ks,
+    )
+
+
+def format_single(name: str, res: dict, ks=(5, 10)) -> str:
+    """Render one evaluate() result (format_report requires the semantic+hybrid
+    pair; this handles a single retriever, e.g. a corpus-artifact eval)."""
+    o = res["overall"]
+    lines = ["=== OVERALL ===",
+             "retriever  " + "  ".join(f"recall@{k}" for k in ks) + "   MRR"]
+    cells = "   ".join(f"{o['recall'][k]:.2f}    " for k in ks)
+    lines.append(f"{name:14}  {cells}  {o['mrr']:.2f}  (n={o['n']})")
+    lines.append("\n=== recall@%d by query type ===" % ks[-1])
+    for t, agg in res["by_type"].items():
+        lines.append(f"  {t:18} {agg['recall'][ks[-1]]:.2f}  (n={agg['n']})")
+    return "\n".join(lines)
 
 
 def format_report(comparison: dict, ks=(5, 10)) -> str:
