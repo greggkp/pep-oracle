@@ -1,0 +1,28 @@
+[
+  {
+    "id": "ep251-chunk-0",
+    "document": "the byrd rule constrains reconciliation in the senate",
+    "embedding": [0.111, 0.222, 0.333],
+    "metadata": {
+      "episode_guid": "guid-251",
+      "episode_title": "Ep 251",
+      "episode_date": "2026-04-01",
+      "episode_number": 251,
+      "start_time": 12.5,
+      "end_time": 45.0
+    }
+  },
+  {
+    "id": "ep253-chunk-0",
+    "document": "section 122 tariffs and the trade deficit",
+    "embedding": [0.444, 0.555, 0.666],
+    "metadata": {
+      "episode_guid": "guid-253",
+      "episode_title": "Ep 253",
+      "episode_date": "2026-05-01",
+      "episode_number": 253,
+      "start_time": 0.0,
+      "end_time": 30.0
+    }
+  }
+]

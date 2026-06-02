@@ -167,6 +167,35 @@ def import_cmd(input_file: str) -> None:
     click.echo(f"Done — {count} chunks upserted into {collection.name}")
 
 
+@cli.command(name="backfill")
+@click.option("--export", "export_path", type=click.Path(exists=True), required=True,
+              help="Path to a `pep-oracle export` JSON file to re-embed.")
+@click.option("--out", "dest", default=None,
+              help="Destination base (local dir or s3:// URI). Default: PEP_ORACLE_CORPUS_URI.")
+@click.option("--version", default="v0001", help="Artifact version label (vNNNN).")
+def backfill_cmd(export_path: str, dest: str | None, version: str) -> None:
+    """Re-embed an exported corpus via Bedrock and publish a versioned artifact.
+
+    Requires PEP_ORACLE_EMBED_BACKEND=bedrock so the published vectors (and the
+    manifest's embed_model) are Titan, not the local bge-large model.
+    """
+    from pep_oracle import config
+    from pep_oracle.backfill import backfill as run_backfill
+
+    if config.EMBED_BACKEND != "bedrock":
+        raise click.ClickException(
+            "Set PEP_ORACLE_EMBED_BACKEND=bedrock before backfill so the artifact "
+            "is Titan-embedded (the manifest records embed_model from config)."
+        )
+    dest = dest or config.CORPUS_URI
+    manifest = run_backfill(export_path=export_path, dest=dest, version=version)
+    click.echo(
+        f"Published {version}: {manifest.chunk_count} chunks "
+        f"(episodes {manifest.episode_range}) via {manifest.embed_model} "
+        f"-> {dest}/corpus/{version}.parquet (sha256 {manifest.sha256[:12]}…)"
+    )
+
+
 @cli.command(name="backup")
 @click.option("--keep-local", default=3, help="Number of local backup tarballs to retain.")
 def backup_cmd(keep_local: int) -> None:
