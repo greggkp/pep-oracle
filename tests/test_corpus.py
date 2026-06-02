@@ -3,6 +3,7 @@ import json
 
 import pep_oracle.corpus as corpus
 import pep_oracle.hybrid as hybrid
+from pep_oracle import config as _config
 from pep_oracle.hybrid import hybrid_search
 
 
@@ -122,3 +123,61 @@ def test_load_current_rejects_corrupt_parquet(tmp_path):
         assert False, "expected a sha256 mismatch error"
     except ValueError as exc:
         assert "sha256" in str(exc).lower()
+
+
+def test_load_manifest_returns_version_and_manifest(tmp_path):
+    rows = [_row("a", "x", 251, [1.0, 0.0]), _row("b", "y", 253, [0.0, 1.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0007",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s",
+        built_at="2026-06-02T00:00:00+00:00",
+    )
+    version, manifest = corpus.load_manifest(str(tmp_path))
+    assert version == "v0007"
+    assert manifest.embed_model == "amazon.titan-embed-text-v2:0"
+    assert manifest.dims == 2
+    assert manifest.episode_range == [251, 253]
+
+
+def test_validate_serving_passes_when_dims_and_model_match(tmp_path, monkeypatch):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+    )
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
+    monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+    c = corpus.load_current(str(tmp_path))
+    corpus._validate_serving(c, str(tmp_path))  # no raise
+
+
+def test_validate_serving_raises_on_embed_model_mismatch(tmp_path, monkeypatch):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+    )
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "fastembed")  # bge-large queries vs Titan corpus
+    monkeypatch.setattr(_config, "EMBED_MODEL", "BAAI/bge-large-en-v1.5")
+    c = corpus.load_current(str(tmp_path))
+    try:
+        corpus._validate_serving(c, str(tmp_path))
+        assert False, "expected an embedder-mismatch error"
+    except ValueError as exc:
+        assert "embed" in str(exc).lower()
+
+
+def test_validate_serving_raises_on_dims_mismatch(tmp_path, monkeypatch):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]  # 2-d vectors
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=99, git_sha="s", built_at="t",  # manifest lies: 99 != 2
+    )
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
+    monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+    c = corpus.load_current(str(tmp_path))
+    try:
+        corpus._validate_serving(c, str(tmp_path))
+        assert False, "expected a dims-mismatch error"
+    except ValueError as exc:
+        assert "dim" in str(exc).lower()

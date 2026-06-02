@@ -22,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pep_oracle import _storage as storage
+from pep_oracle import config
 from pep_oracle.config import CHROMA_COLLECTION
 
 
@@ -154,3 +155,33 @@ def load_current(base: str) -> InMemoryCorpus:
             f"corpus sha256 mismatch for {version}: current.json={cur['sha256']} actual={actual}"
         )
     return InMemoryCorpus.from_parquet_bytes(data, version=version)
+
+
+def load_manifest(base: str) -> tuple[str, Manifest]:
+    """Read <base>/corpus/current.json + the version's manifest. Returns (version, Manifest)."""
+    prefix = str(base).rstrip("/") + "/corpus"
+    cur = json.loads(storage.get_text(f"{prefix}/current.json"))
+    version = cur["version"]
+    m = json.loads(storage.get_text(f"{prefix}/{version}.manifest.json"))
+    return version, Manifest(**m)
+
+
+def _validate_serving(corpus: "InMemoryCorpus", base: str) -> None:
+    """Guard the serving path against a corpus/embedder mismatch:
+      1. The manifest dims must match the loaded vectors' width.
+      2. The active query embedder (config) must match the artifact's embed_model,
+         else queries would be embedded in a different vector space than the corpus.
+    Raises ValueError on either mismatch."""
+    _version, manifest = load_manifest(base)
+    if corpus.embeddings:
+        actual_dims = len(corpus.embeddings[0])
+        if actual_dims != manifest.dims:
+            raise ValueError(
+                f"corpus dims mismatch: manifest={manifest.dims} but vectors are {actual_dims}-d"
+            )
+    if config.EMBED_BACKEND != "bedrock" or config.EMBED_MODEL != manifest.embed_model:
+        raise ValueError(
+            f"query embedder mismatch: serving a {manifest.embed_model} corpus requires "
+            f"EMBED_BACKEND=bedrock + EMBED_MODEL={manifest.embed_model}, but config has "
+            f"backend={config.EMBED_BACKEND!r} model={config.EMBED_MODEL!r}"
+        )
