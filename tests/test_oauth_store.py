@@ -78,3 +78,26 @@ def test_revoke_family_empty_is_noop(store):
     store.put_refresh("x", client_id="c1", family_id="", ttl_seconds=3600)
     store.revoke_family("")
     assert store.get_refresh("x").revoked is False
+
+
+def test_concurrent_revoke_exactly_one_wins(store):
+    """Two threads racing to rotate the same refresh token: the conditional
+    revoke must let exactly ONE win (the rotation), the other loses cleanly."""
+    import threading
+
+    store.put_refresh("race", client_id="c1", family_id="f1", ttl_seconds=3600)
+    results = []
+    barrier = threading.Barrier(2)
+
+    def attempt():
+        barrier.wait()  # maximize contention
+        results.append(store.revoke_refresh("race"))
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(results) == [False, True]  # exactly one winner
+    assert store.get_refresh("race").revoked is True
