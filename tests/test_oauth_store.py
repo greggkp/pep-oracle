@@ -1,18 +1,22 @@
 import time
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from pep_oracle import oauth_store
 
 
-@pytest.fixture
+@pytest.fixture(params=["sqlite", "dynamodb"])
 def store(request):
-    """A fresh OAuthStore. Parametrized over backends as they land."""
-    backend = getattr(request, "param", "sqlite")
-    if backend == "sqlite":
+    if request.param == "sqlite":
         yield oauth_store.SqliteStore(":memory:")
-    else:  # pragma: no cover - added in Task 3
-        raise NotImplementedError(backend)
+        return
+    with mock_aws():
+        boto3.client("dynamodb", region_name="ap-southeast-2")  # ensure region in moto
+        s = oauth_store.DynamoDbStore("test-oauth", region="ap-southeast-2")
+        s.ensure_table()
+        yield s
 
 
 def test_client_roundtrip(store):
@@ -68,3 +72,9 @@ def test_revoke_family_revokes_all_members(store):
 
 def test_revoke_missing_token_returns_false(store):
     assert store.revoke_refresh("nope") is False
+
+
+def test_revoke_family_empty_is_noop(store):
+    store.put_refresh("x", client_id="c1", family_id="", ttl_seconds=3600)
+    store.revoke_family("")
+    assert store.get_refresh("x").revoked is False
