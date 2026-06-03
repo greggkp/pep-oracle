@@ -198,7 +198,6 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
         return False
 
     signing_key = _resolve_signing_key()
-    data_dir = Path(os.environ.get("PEP_ORACLE_DATA_DIR") or (Path.home() / ".pep-oracle")).expanduser()
     from pep_oracle import oauth_store
 
     store = oauth_store.get_store()
