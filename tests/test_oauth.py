@@ -593,3 +593,39 @@ def test_authcode_grant_creates_new_family(client):
     )
     assert r_b.status_code == 200, r_b.text
     assert r_b.json()["refresh_token"] != refresh_b1
+
+
+# --- Lost concurrent-rotation race must NOT revoke the family ------------
+
+
+def test_refresh_lost_race_does_not_revoke_family(client, monkeypatch):
+    """Losing the conditional rotation race (revoke_refresh -> False) on a token that
+    was NOT revoked at read time must yield a clean 400 WITHOUT revoking the family —
+    a benign concurrent double-submit must not log the user out."""
+    # Obtain a valid (client_id, refresh_token) via the normal auth-code + PKCE flow.
+    client_id, refresh_token = _bootstrap_refresh(client)
+
+    # Simulate losing the race: the token reads back un-revoked (rec.revoked is False
+    # because we got a valid refresh_token above), but the conditional revoke returns
+    # False as if a concurrent rotation already revoked it between our read and write.
+    # The family revoke must NOT be called.
+    family_calls: list[str] = []
+    monkeypatch.setattr(oauth_store.SqliteStore, "revoke_refresh", lambda self, token: False)
+    monkeypatch.setattr(
+        oauth_store.SqliteStore,
+        "revoke_family",
+        lambda self, family_id: family_calls.append(family_id),
+    )
+
+    resp = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_grant"
+    assert family_calls == [], "lost rotation race must NOT revoke the token family"
