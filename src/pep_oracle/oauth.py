@@ -1,7 +1,7 @@
 """OAuth 2.1 + Dynamic Client Registration provider for the pep-oracle MCP server.
 
-SQLite-backed clients + refresh tokens, in-memory 60s auth codes, HS256 JWT
-access tokens. ``register_oauth_routes`` wires endpoints onto a FastAPI app.
+Store-backed clients + refresh tokens + single-use auth codes, HS256 JWT access
+tokens. ``register_oauth_routes`` wires endpoints onto a FastAPI app.
 The bearer wrapper that gates ``/mcp`` imports :func:`verify_access_token` and
 :class:`InvalidToken` from this module.
 """
@@ -13,8 +13,6 @@ import hashlib
 import json
 import logging
 import secrets
-import sqlite3
-import threading
 import time
 import uuid
 from typing import Any, Optional
@@ -24,16 +22,14 @@ import jwt
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from pep_oracle.oauth_store import OAuthStore, REFRESH_TTL_SECONDS
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_AUDIENCE = "pep-oracle-mcp"
 ACCESS_TTL_SECONDS = 3600
-REFRESH_TTL_SECONDS = 30 * 24 * 3600
 AUTH_CODE_TTL_SECONDS = 60
 SCOPE = "mcp"
-
-# code -> {client_id, code_challenge, redirect_uri, expires_at}
-_auth_codes: dict[str, dict[str, Any]] = {}
 
 
 class InvalidToken(Exception):
@@ -41,86 +37,6 @@ class InvalidToken(Exception):
 
     Single opaque error — don't leak which check (sig/exp/aud/iss) failed.
     """
-
-
-def _connect(db_path: str) -> sqlite3.Connection:
-    # check_same_thread=False: the shared in-memory connection is used across
-    # request worker threads; we serialize via a lock in _Store.
-    conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS clients (
-  client_id     TEXT PRIMARY KEY,
-  client_name   TEXT,
-  redirect_uris TEXT NOT NULL,
-  created_at    INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-  token        TEXT PRIMARY KEY,
-  client_id    TEXT NOT NULL,
-  issued_at    INTEGER NOT NULL,
-  expires_at   INTEGER NOT NULL,
-  revoked      INTEGER NOT NULL DEFAULT 0
-);
-"""
-
-
-class _Store:
-    """SQLite handle. For ``:memory:`` we keep one shared connection (a fresh
-    open would give a different DB) serialized by a lock. For file paths we
-    open a new connection per request — cheap and thread-safe."""
-
-    def __init__(self, db_path: str) -> None:
-        self.db_path = db_path
-        self._shared: Optional[sqlite3.Connection] = None
-        self._lock = threading.Lock()
-        if db_path == ":memory:":
-            self._shared = _connect(db_path)
-            self._shared.executescript(_SCHEMA)
-            try:
-                self._shared.execute(
-                    "ALTER TABLE refresh_tokens ADD COLUMN family_id TEXT NOT NULL DEFAULT ''"
-                )
-            except sqlite3.OperationalError:
-                pass
-        else:
-            conn = _connect(db_path)
-            try:
-                conn.executescript(_SCHEMA)
-                try:
-                    conn.execute(
-                        "ALTER TABLE refresh_tokens ADD COLUMN family_id TEXT NOT NULL DEFAULT ''"
-                    )
-                except sqlite3.OperationalError:
-                    pass
-            finally:
-                conn.close()
-
-    def conn(self) -> sqlite3.Connection:
-        if self._shared is not None:
-            self._lock.acquire()
-            return self._shared
-        return _connect(self.db_path)
-
-    def close(self, conn: sqlite3.Connection) -> None:
-        if conn is self._shared:
-            self._lock.release()
-        else:
-            conn.close()
-
-
-def _pop_auth_code(code: str) -> Optional[dict[str, Any]]:
-    now = time.time()
-    # Purge expired entries lazily.
-    for c in [c for c, v in _auth_codes.items() if v["expires_at"] <= now]:
-        _auth_codes.pop(c, None)
-    entry = _auth_codes.pop(code, None)
-    if entry is None or entry["expires_at"] <= now:
-        return None
-    return entry
 
 
 def _pkce_s256(code_verifier: str) -> str:
@@ -195,71 +111,6 @@ def verify_access_token(
         raise InvalidToken("invalid token") from e
 
 
-def _persist_refresh(store: _Store, token: str, client_id: str, family_id: str) -> None:
-    now = int(time.time())
-    conn = store.conn()
-    try:
-        conn.execute(
-            "INSERT INTO refresh_tokens (token, client_id, issued_at, expires_at, revoked, family_id) "
-            "VALUES (?, ?, ?, ?, 0, ?)",
-            (token, client_id, now, now + REFRESH_TTL_SECONDS, family_id),
-        )
-    finally:
-        store.close(conn)
-
-
-def _lookup_refresh(store: _Store, token: str) -> Optional[sqlite3.Row]:
-    conn = store.conn()
-    try:
-        cur = conn.execute("SELECT * FROM refresh_tokens WHERE token = ?", (token,))
-        return cur.fetchone()
-    finally:
-        store.close(conn)
-
-
-def _revoke_refresh(store: _Store, token: str) -> None:
-    conn = store.conn()
-    try:
-        conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE token = ?", (token,))
-    finally:
-        store.close(conn)
-
-
-def _revoke_family(store: _Store, family_id: str) -> None:
-    conn = store.conn()
-    try:
-        conn.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?", (family_id,)
-        )
-    finally:
-        store.close(conn)
-
-
-def _lookup_client(store: _Store, client_id: str) -> Optional[sqlite3.Row]:
-    conn = store.conn()
-    try:
-        cur = conn.execute("SELECT * FROM clients WHERE client_id = ?", (client_id,))
-        return cur.fetchone()
-    finally:
-        store.close(conn)
-
-
-def _persist_client(
-    store: _Store, client_id: str, client_name: str, redirect_uris: list[str]
-) -> int:
-    now = int(time.time())
-    conn = store.conn()
-    try:
-        conn.execute(
-            "INSERT INTO clients (client_id, client_name, redirect_uris, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (client_id, client_name or "", json.dumps(redirect_uris), now),
-        )
-    finally:
-        store.close(conn)
-    return now
-
-
 def _err(status: int, error: str, description: str = "") -> JSONResponse:
     body: dict[str, Any] = {"error": error}
     if description:
@@ -268,7 +119,7 @@ def _err(status: int, error: str, description: str = "") -> JSONResponse:
 
 
 def _issue_token_pair(
-    store: _Store,
+    store: OAuthStore,
     signing_key: str,
     issuer: str,
     client_id: str,
@@ -278,7 +129,8 @@ def _issue_token_pair(
     refresh = secrets.token_urlsafe(32)
     if family_id is None:
         family_id = secrets.token_urlsafe(16)
-    _persist_refresh(store, refresh, client_id, family_id)
+    store.put_refresh(refresh, client_id=client_id, family_id=family_id,
+                      ttl_seconds=REFRESH_TTL_SECONDS)
     return {
         "access_token": access,
         "token_type": "Bearer",
@@ -289,7 +141,7 @@ def _issue_token_pair(
 
 
 def register_oauth_routes(
-    app: FastAPI, signing_key: str, public_url: str, db_path: str
+    app: FastAPI, signing_key: str, public_url: str, store: OAuthStore
 ) -> None:
     """Register OAuth 2.1 + DCR endpoints on a FastAPI app.
 
@@ -297,7 +149,6 @@ def register_oauth_routes(
     ``/oauth/authorize``, ``/oauth/token``, ``/oauth/revoke``.
     """
     issuer = public_url.rstrip("/")
-    store = _Store(db_path)
 
     @app.get("/.well-known/oauth-authorization-server")
     async def discovery() -> dict[str, Any]:
@@ -348,7 +199,7 @@ def register_oauth_routes(
             return _err(400, "invalid_client_metadata", "client_name must be a string")
 
         client_id = str(uuid.uuid4())
-        issued_at = _persist_client(store, client_id, client_name, redirect_uris)
+        issued_at = store.put_client(client_id, client_name, redirect_uris)
         logger.info("DCR: registered client_id=%s name=%s", client_id, client_name or "<unnamed>")
         return JSONResponse(
             status_code=201,
@@ -386,21 +237,17 @@ def register_oauth_routes(
         if not code_challenge:
             return _err(400, "invalid_request", "missing code_challenge")
 
-        row = _lookup_client(store, client_id)
-        if row is None:
+        client = store.get_client(client_id)
+        if client is None:
             logger.warning("authorize rejected: unknown client_id=%s", client_id)
             return _err(400, "invalid_client", "unknown client_id")
-        if redirect_uri not in json.loads(row["redirect_uris"]):
+        if redirect_uri not in client.redirect_uris:
             logger.warning("authorize rejected: redirect_uri mismatch for client_id=%s", client_id)
             return _err(400, "invalid_request", "redirect_uri not registered")
 
         code = secrets.token_urlsafe(32)
-        _auth_codes[code] = {
-            "client_id": client_id,
-            "code_challenge": code_challenge,
-            "redirect_uri": redirect_uri,
-            "expires_at": time.time() + AUTH_CODE_TTL_SECONDS,
-        }
+        store.put_auth_code(code, client_id=client_id, code_challenge=code_challenge,
+                            redirect_uri=redirect_uri, ttl_seconds=AUTH_CODE_TTL_SECONDS)
         logger.info("authorize: issued code for client_id=%s", client_id)
 
         params = {"code": code}
@@ -421,15 +268,15 @@ def register_oauth_routes(
         if grant_type == "authorization_code":
             if not (code and redirect_uri and client_id and code_verifier):
                 return _err(400, "invalid_request", "missing required fields")
-            entry = _pop_auth_code(code)
+            entry = store.pop_auth_code(code)
             if entry is None:
                 logger.warning("token: code missing/expired/used for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "code missing, expired, or already used")
-            if entry["client_id"] != client_id or entry["redirect_uri"] != redirect_uri:
+            if entry.client_id != client_id or entry.redirect_uri != redirect_uri:
                 logger.warning("token: code binding mismatch for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "client_id or redirect_uri mismatch")
             expected = _pkce_s256(code_verifier).encode("ascii")
-            stored = entry["code_challenge"].encode("ascii")
+            stored = entry.code_challenge.encode("ascii")
             if not secrets.compare_digest(expected, stored):
                 logger.warning("token: PKCE verifier mismatch for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "PKCE verification failed")
@@ -439,35 +286,33 @@ def register_oauth_routes(
         if grant_type == "refresh_token":
             if not (refresh_token and client_id):
                 return _err(400, "invalid_request", "missing required fields")
-            row = _lookup_refresh(store, refresh_token)
-            if row is None:
+            rec = store.get_refresh(refresh_token)
+            if rec is None:
                 logger.warning("refresh: unknown token for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "unknown refresh_token")
-            if row["revoked"]:
-                # RFC 9700 §4.13.2 / OAuth 2.1 §6.1: reuse of a previously rotated
-                # refresh token indicates a possible compromise — revoke the
-                # entire token family before returning the error.
-                family_id = row["family_id"]
-                _revoke_family(store, family_id)
+            if rec.revoked:
+                # Token already revoked at read time = reuse of a rotated token
+                # (RFC 9700 §4.13.2): possible compromise -> revoke the family.
+                store.revoke_family(rec.family_id)
                 logger.warning(
                     "Refresh token reuse detected — revoking family family_id=%s client_id=%s",
-                    family_id,
-                    client_id,
+                    rec.family_id, client_id,
                 )
                 return _err(400, "invalid_grant", "refresh_token revoked")
-            if row["expires_at"] <= int(time.time()):
+            if rec.expires_at <= int(time.time()):
                 logger.warning("refresh: token expired for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "refresh_token expired")
-            if row["client_id"] != client_id:
+            if rec.client_id != client_id:
                 logger.warning("refresh: client_id mismatch")
                 return _err(400, "invalid_grant", "client_id mismatch")
-            _revoke_refresh(store, refresh_token)
+            if not store.revoke_refresh(refresh_token):
+                # Lost a concurrent rotation race (another request revoked it between
+                # our read and write). Benign — clean 400, do NOT revoke the family.
+                logger.info("refresh: lost rotation race for client_id=%s", client_id)
+                return _err(400, "invalid_grant", "refresh_token already rotated")
             logger.info("refresh: rotated refresh_token for client_id=%s", client_id)
-            return JSONResponse(
-                _issue_token_pair(
-                    store, signing_key, issuer, client_id, family_id=row["family_id"]
-                )
-            )
+            return JSONResponse(_issue_token_pair(store, signing_key, issuer, client_id,
+                                                  family_id=rec.family_id))
 
         return _err(400, "unsupported_grant_type")
 
@@ -478,10 +323,10 @@ def register_oauth_routes(
     ) -> Response:
         # RFC 7009: always 200, don't leak existence. Access tokens are
         # stateless JWTs and can't be revoked here.
-        row = _lookup_refresh(store, token)
-        if row is not None:
-            _revoke_refresh(store, token)
-            logger.info("revoke: marked refresh token revoked for client_id=%s", row["client_id"])
+        rec = store.get_refresh(token)
+        if rec is not None:
+            store.revoke_refresh(token)
+            logger.info("revoke: marked refresh token revoked for client_id=%s", rec.client_id)
         return Response(status_code=200)
 
     logger.info("OAuth provider routes registered (issuer=%s)", issuer)

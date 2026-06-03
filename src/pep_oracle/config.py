@@ -52,6 +52,14 @@ CORPUS_REFRESH_TTL_SECONDS = int(os.getenv("PEP_ORACLE_CORPUS_REFRESH_TTL_SECOND
 GIT_SHA = os.getenv("PEP_ORACLE_GIT_SHA", "")
 
 
+# --- OAuth store backend (Phase 2b) ---
+# "sqlite" (local default, file/:memory:) or "dynamodb" (cloud). The serving
+# Lambda sets "dynamodb"; the OptiPlex keeps "sqlite".
+OAUTH_STORE = os.getenv("PEP_ORACLE_OAUTH_STORE", "sqlite")
+OAUTH_DDB_TABLE = os.getenv("PEP_ORACLE_OAUTH_DDB_TABLE", "pep-oracle-oauth")
+OAUTH_DDB_REGION = os.getenv("PEP_ORACLE_OAUTH_DDB_REGION", BEDROCK_REGION)
+
+
 def ensure_dirs() -> None:
     for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
         d.mkdir(parents=True, exist_ok=True)

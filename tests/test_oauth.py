@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pep_oracle import oauth
+from pep_oracle import oauth, oauth_store
 from pep_oracle.oauth import (
     InvalidToken,
     mint_access_token,
@@ -34,18 +34,11 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-@pytest.fixture(autouse=True)
-def _clear_codes():
-    """Wipe the module-level auth code store before each test."""
-    oauth._auth_codes.clear()
-    yield
-    oauth._auth_codes.clear()
-
-
 @pytest.fixture
 def client():
     app = FastAPI()
-    register_oauth_routes(app, SIGNING_KEY, PUBLIC_URL, ":memory:")
+    store = oauth_store.SqliteStore(":memory:")
+    register_oauth_routes(app, SIGNING_KEY, PUBLIC_URL, store)
     with TestClient(app) as c:
         yield c
 
@@ -239,15 +232,15 @@ def test_token_rejects_wrong_verifier(client):
 # --- 8. token rejects expired code ---------------------------------------
 
 
-def test_token_rejects_expired_code(client):
+def test_token_rejects_expired_code(client, monkeypatch):
     client_id = _register(client)
     verifier, challenge = _pkce_pair()
     r = _authorize(client, client_id, challenge)
     code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
 
-    # Backdate the entry's expiration so the next access treats it as expired.
-    assert code in oauth._auth_codes
-    oauth._auth_codes[code]["expires_at"] = time.time() - 1
+    # Advance the store's clock past the 60s code TTL so pop_auth_code sees it expired.
+    real = time.time()
+    monkeypatch.setattr(oauth_store.time, "time", lambda: real + 120)
 
     r2 = client.post(
         "/oauth/token",
@@ -415,12 +408,10 @@ def test_revoke_unknown_token_still_200(client):
 
 
 def test_register_oauth_routes_idempotent_schema(tmp_path):
-    """Re-running register_oauth_routes against the same file DB doesn't error."""
+    """Constructing SqliteStore twice against the same file DB doesn't error."""
     db = tmp_path / "oauth.db"
-    app1 = FastAPI()
-    register_oauth_routes(app1, SIGNING_KEY, PUBLIC_URL, str(db))
-    app2 = FastAPI()
-    register_oauth_routes(app2, SIGNING_KEY, PUBLIC_URL, str(db))
+    oauth_store.SqliteStore(str(db))
+    oauth_store.SqliteStore(str(db))  # CREATE TABLE IF NOT EXISTS -> no error
 
 
 def test_token_unsupported_grant_type(client):
@@ -602,3 +593,39 @@ def test_authcode_grant_creates_new_family(client):
     )
     assert r_b.status_code == 200, r_b.text
     assert r_b.json()["refresh_token"] != refresh_b1
+
+
+# --- Lost concurrent-rotation race must NOT revoke the family ------------
+
+
+def test_refresh_lost_race_does_not_revoke_family(client, monkeypatch):
+    """Losing the conditional rotation race (revoke_refresh -> False) on a token that
+    was NOT revoked at read time must yield a clean 400 WITHOUT revoking the family —
+    a benign concurrent double-submit must not log the user out."""
+    # Obtain a valid (client_id, refresh_token) via the normal auth-code + PKCE flow.
+    client_id, refresh_token = _bootstrap_refresh(client)
+
+    # Simulate losing the race: the token reads back un-revoked (rec.revoked is False
+    # because we got a valid refresh_token above), but the conditional revoke returns
+    # False as if a concurrent rotation already revoked it between our read and write.
+    # The family revoke must NOT be called.
+    family_calls: list[str] = []
+    monkeypatch.setattr(oauth_store.SqliteStore, "revoke_refresh", lambda self, token: False)
+    monkeypatch.setattr(
+        oauth_store.SqliteStore,
+        "revoke_family",
+        lambda self, family_id: family_calls.append(family_id),
+    )
+
+    resp = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_grant"
+    assert family_calls == [], "lost rotation race must NOT revoke the token family"

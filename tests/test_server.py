@@ -430,3 +430,38 @@ def test_version_corpus_error_is_generic_and_leaks_no_path(tmp_path, monkeypatch
     assert r.status_code == 200  # never 500s
     assert r.json()["corpus_error"] == "corpus manifest unavailable"
     assert "nonexistent-secret-bucket-name" not in r.text  # internal path not leaked
+
+
+def test_mount_builds_oauth_store_from_config(tmp_path, monkeypatch):
+    """mount_mcp_if_configured builds an OAuthStore from config and passes the
+    STORE OBJECT (not a db-path string) to register_oauth_routes."""
+    from fastapi import FastAPI
+
+    from pep_oracle import config, oauth_store, server
+
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_register(app, signing_key, public_url, store):
+        captured["store"] = store
+        raise _Stop  # short-circuit before the (heavy) MCP mount that follows
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
+    monkeypatch.setenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "1")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)          # don't touch ~/.pep-oracle
+    monkeypatch.setattr(config, "OAUTH_STORE", "sqlite")
+    monkeypatch.setattr(server.oauth, "register_oauth_routes", fake_register)
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
+
+    try:
+        server.mount_mcp_if_configured(FastAPI())
+    except _Stop:
+        pass
+
+    store = captured["store"]
+    # a store object, NOT a path string:
+    assert not isinstance(store, str)
+    assert hasattr(store, "get_refresh") and hasattr(store, "revoke_refresh")
+    assert isinstance(store, oauth_store.SqliteStore)
