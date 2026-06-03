@@ -3,8 +3,10 @@ import json
 import logging
 import os
 import secrets
+import subprocess
 import sys
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -12,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from pep_oracle import oauth
+from pep_oracle import config as _config, corpus as _corpus, oauth
 from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
 from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
@@ -246,6 +248,46 @@ async def health():
     return {"status": "ok"}
 
 
+def _code_version() -> tuple[str, str]:
+    sha = _config.GIT_SHA.strip()
+    if not sha:
+        try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except Exception:  # noqa: BLE001 — version info only; never fail the endpoint
+            sha = "unknown"
+    try:
+        semver = _pkg_version("pep-oracle")
+    except PackageNotFoundError:
+        semver = "0.0.0"
+    return semver, sha
+
+
+@app.get("/version")
+async def api_version():
+    semver, sha = _code_version()
+    out = {"code_semver": semver, "code_git_sha": sha}
+    if _config.SERVE_FROM_ARTIFACT:
+        try:
+            version, manifest = _corpus.load_manifest(_config.CORPUS_URI)
+            out.update(
+                corpus_version=version,
+                corpus_episode_range=manifest.episode_range,
+                corpus_built_at=manifest.built_at,
+                embed_model=manifest.embed_model,
+                corpus_dims=manifest.dims,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface, don't 500 the version probe
+            # /version is a PUBLIC route (not behind the /mcp bearer gate), so log
+            # the detail (corpus path, S3 bucket, traceback) server-side and return
+            # a generic marker — never leak internals to an unauthenticated caller.
+            logger.warning("corpus manifest unavailable for /version: %s", exc)
+            out["corpus_error"] = "corpus manifest unavailable"
+    return out
+
+
 @app.get("/freshness")
 async def api_freshness():
     return get_freshness(_caches)
@@ -465,6 +507,19 @@ async def root():
 
 
 mount_mcp_if_configured(app)
+
+
+def _make_lambda_handler():
+    """Wrap the ASGI app with Mangum for AWS Lambda. Returns None if mangum isn't
+    installed (e.g. a base local install), so importing server stays cheap."""
+    try:
+        from mangum import Mangum
+    except ImportError:
+        return None
+    return Mangum(app)
+
+
+handler = _make_lambda_handler()
 
 
 def main():

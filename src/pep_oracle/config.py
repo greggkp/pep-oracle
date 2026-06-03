@@ -38,6 +38,19 @@ EMBED_DIMS = int(os.getenv("PEP_ORACLE_EMBED_DIMS", "1024"))
 # the "/corpus" prefix is appended by corpus.py, so this is the BASE, not the corpus dir itself.
 CORPUS_URI = os.getenv("PEP_ORACLE_CORPUS_URI", str(DATA_DIR))
 
+# --- Serving source (Phase 2a) ---
+# When "1", the MCP tool retrieves from the corpus artifact at CORPUS_URI via an
+# in-memory InMemoryCorpus (the Lambda path); otherwise it uses the live ChromaDB
+# collection (the OptiPlex default — nothing rebuilds the artifact on ingest until
+# Phase 3). Serving from the artifact REQUIRES EMBED_BACKEND=bedrock with a model
+# matching the artifact's manifest (validated at load).
+SERVE_FROM_ARTIFACT = os.getenv("PEP_ORACLE_SERVE_FROM_ARTIFACT", "0") == "1"
+# How often a warm process re-checks current.json for a new corpus version (a cheap
+# small-object GET). New episodes reach a warm container within this window.
+CORPUS_REFRESH_TTL_SECONDS = int(os.getenv("PEP_ORACLE_CORPUS_REFRESH_TTL_SECONDS", "300"))
+# Baked into the image at build time (Phase 2c); reported by GET /version.
+GIT_SHA = os.getenv("PEP_ORACLE_GIT_SHA", "")
+
 
 def ensure_dirs() -> None:
     for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):

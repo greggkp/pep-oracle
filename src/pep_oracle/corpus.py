@@ -17,11 +17,14 @@ import dataclasses
 import hashlib
 import io
 import json
+import threading
+import time
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pep_oracle import _storage as storage
+from pep_oracle import config
 from pep_oracle.config import CHROMA_COLLECTION
 
 
@@ -154,3 +157,79 @@ def load_current(base: str) -> InMemoryCorpus:
             f"corpus sha256 mismatch for {version}: current.json={cur['sha256']} actual={actual}"
         )
     return InMemoryCorpus.from_parquet_bytes(data, version=version)
+
+
+def load_manifest(base: str) -> tuple[str, Manifest]:
+    """Read <base>/corpus/current.json + the version's manifest. Returns (version, Manifest)."""
+    prefix = str(base).rstrip("/") + "/corpus"
+    cur = json.loads(storage.get_text(f"{prefix}/current.json"))
+    version = cur["version"]
+    m = json.loads(storage.get_text(f"{prefix}/{version}.manifest.json"))
+    return version, Manifest(**m)
+
+
+def _validate_serving(corpus: "InMemoryCorpus", base: str) -> None:
+    """Guard the serving path against a corpus/embedder mismatch:
+      1. The manifest dims must match the loaded vectors' width.
+      2. The active query embedder (config) must match the artifact's embed_model,
+         else queries would be embedded in a different vector space than the corpus.
+    Raises ValueError on either mismatch."""
+    _version, manifest = load_manifest(base)
+    if corpus.embeddings:
+        actual_dims = len(corpus.embeddings[0])
+        if actual_dims != manifest.dims:
+            raise ValueError(
+                f"corpus dims mismatch: manifest={manifest.dims} but vectors are {actual_dims}-d"
+            )
+    if config.EMBED_BACKEND != "bedrock" or config.EMBED_MODEL != manifest.embed_model:
+        raise ValueError(
+            f"query embedder mismatch: serving a {manifest.embed_model} corpus requires "
+            f"EMBED_BACKEND=bedrock + EMBED_MODEL={manifest.embed_model}, but config has "
+            f"backend={config.EMBED_BACKEND!r} model={config.EMBED_MODEL!r}"
+        )
+
+
+# Process-cached serving corpus with bounded staleness. A warm process re-checks
+# current.json every ttl_seconds (a cheap GET); on a version change it loads the new
+# artifact and atomically swaps the reference (the read path never locks on the
+# cached object). Combined with the (name, version)-keyed hybrid cache, the swap
+# fully takes effect. One copy per process; concurrent Lambda containers each hold
+# their own (S3 absorbs the fan-out).
+_SERVING: dict = {"corpus": None, "version": None, "checked_at": 0.0}
+_SERVING_LOCK = threading.Lock()
+
+
+def reset_serving_cache() -> None:
+    """Clear the process serving cache (tests + explicit reload)."""
+    _SERVING.update(corpus=None, version=None, checked_at=0.0)
+
+
+def current_corpus(base: str, ttl_seconds: int = 300, now=time.monotonic):
+    """Return a process-cached InMemoryCorpus for <base>, refreshing on a TTL.
+
+    Within ttl_seconds of the last check the cached corpus is returned without any
+    I/O. After the TTL, current.json is re-read; if the version is unchanged the
+    cached corpus is kept (TTL reset), otherwise the new version is loaded,
+    validated (dims + embedder), and atomically swapped in."""
+    cached = _SERVING["corpus"]
+    t = now()
+    if cached is not None and t - _SERVING["checked_at"] < ttl_seconds:
+        return cached
+
+    prefix = str(base).rstrip("/") + "/corpus"
+    cur = json.loads(storage.get_text(f"{prefix}/current.json"))
+    if cached is not None and cur["version"] == _SERVING["version"]:
+        # Unchanged version: extend the TTL window. This single dict write is left
+        # unlocked on purpose — it's a GIL-atomic update (like the read fast path),
+        # and concurrent writers race only to set ~the same timestamp. Only the
+        # corpus-swap below takes the lock.
+        _SERVING["checked_at"] = t
+        return cached
+
+    fresh = load_current(base)
+    _validate_serving(fresh, base)
+    with _SERVING_LOCK:
+        _SERVING["corpus"] = fresh
+        _SERVING["version"] = fresh.version
+        _SERVING["checked_at"] = t
+    return fresh

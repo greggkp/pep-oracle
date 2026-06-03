@@ -2,7 +2,8 @@ import hashlib
 import json
 
 import pep_oracle.corpus as corpus
-import pep_oracle.hybrid as hybrid
+import pep_oracle.hybrid as _hybrid
+from pep_oracle import config as _config
 from pep_oracle.hybrid import hybrid_search
 
 
@@ -89,7 +90,7 @@ def test_inmemory_corpus_roundtrip_and_get_shape(tmp_path):
 
 
 def test_inmemory_corpus_is_drop_in_for_hybrid_search(tmp_path):
-    hybrid._CACHE.clear()
+    _hybrid._CACHE.clear()
     rows = [
         _row("a", "byrd rule reconciliation senate", 251, [1.0, 0.0]),
         _row("b", "weather and chit chat", 252, [0.0, 1.0]),
@@ -122,3 +123,125 @@ def test_load_current_rejects_corrupt_parquet(tmp_path):
         assert False, "expected a sha256 mismatch error"
     except ValueError as exc:
         assert "sha256" in str(exc).lower()
+
+
+def test_load_manifest_returns_version_and_manifest(tmp_path):
+    rows = [_row("a", "x", 251, [1.0, 0.0]), _row("b", "y", 253, [0.0, 1.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0007",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s",
+        built_at="2026-06-02T00:00:00+00:00",
+    )
+    version, manifest = corpus.load_manifest(str(tmp_path))
+    assert version == "v0007"
+    assert manifest.embed_model == "amazon.titan-embed-text-v2:0"
+    assert manifest.dims == 2
+    assert manifest.episode_range == [251, 253]
+
+
+def test_validate_serving_passes_when_dims_and_model_match(tmp_path, monkeypatch):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+    )
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
+    monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+    c = corpus.load_current(str(tmp_path))
+    corpus._validate_serving(c, str(tmp_path))  # no raise
+
+
+def test_validate_serving_raises_on_embed_model_mismatch(tmp_path, monkeypatch):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+    )
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "fastembed")  # bge-large queries vs Titan corpus
+    monkeypatch.setattr(_config, "EMBED_MODEL", "BAAI/bge-large-en-v1.5")
+    c = corpus.load_current(str(tmp_path))
+    try:
+        corpus._validate_serving(c, str(tmp_path))
+        assert False, "expected an embedder-mismatch error"
+    except ValueError as exc:
+        assert "embed" in str(exc).lower()
+
+
+def test_validate_serving_raises_on_dims_mismatch(tmp_path, monkeypatch):
+    rows = [_row("a", "x", 251, [1.0, 0.0])]  # 2-d vectors
+    corpus.write_artifact(
+        rows, dest=str(tmp_path), version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0", dims=99, git_sha="s", built_at="t",  # manifest lies: 99 != 2
+    )
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
+    monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+    c = corpus.load_current(str(tmp_path))
+    try:
+        corpus._validate_serving(c, str(tmp_path))
+        assert False, "expected a dims-mismatch error"
+    except ValueError as exc:
+        assert "dim" in str(exc).lower()
+
+
+def _publish(tmp_path, version, ep, text):
+    corpus.write_artifact(
+        [_row("c", text, ep, [1.0, 0.0])],
+        dest=str(tmp_path), version=version,
+        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+    )
+
+
+def _serving_config(monkeypatch):
+    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
+    monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+
+
+def test_current_corpus_caches_within_ttl(tmp_path, monkeypatch):
+    _serving_config(monkeypatch)
+    corpus.reset_serving_cache()
+    _publish(tmp_path, "v0001", 251, "first")
+
+    clock = {"t": 1000.0}
+    c1 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c1.version == "v0001"
+
+    # Publish a new version, but stay within the TTL window -> cached v0001 returned,
+    # current.json is NOT even re-read.
+    _publish(tmp_path, "v0002", 252, "second")
+    clock["t"] = 1000.0 + 299
+    c2 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c2 is c1
+    assert c2.version == "v0001"
+
+
+def test_current_corpus_swaps_after_ttl_when_version_changes(tmp_path, monkeypatch):
+    _serving_config(monkeypatch)
+    corpus.reset_serving_cache()
+    _hybrid._CACHE.clear()
+    _publish(tmp_path, "v0001", 251, "byrd rule")
+
+    clock = {"t": 0.0}
+    c1 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c1.version == "v0001"
+
+    _publish(tmp_path, "v0002", 252, "tariffs")
+    clock["t"] = 400.0  # past the TTL
+    c2 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c2.version == "v0002"
+    assert c2 is not c1
+
+    # And retrieval reflects the swap (relies on the Task 1 cache-key fix):
+    res = _hybrid.hybrid_search(c2, "tariffs", [1.0, 0.0], top_k=1)
+    assert res[0]["episode_number"] == 252
+
+
+def test_current_corpus_keeps_cache_after_ttl_if_version_unchanged(tmp_path, monkeypatch):
+    _serving_config(monkeypatch)
+    corpus.reset_serving_cache()
+    _publish(tmp_path, "v0001", 251, "first")
+
+    clock = {"t": 0.0}
+    c1 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    clock["t"] = 400.0  # past TTL, but no new version published
+    c2 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c2 is c1  # same object — version unchanged, no reload
