@@ -280,7 +280,11 @@ async def api_version():
                 corpus_dims=manifest.dims,
             )
         except Exception as exc:  # noqa: BLE001 — surface, don't 500 the version probe
-            out["corpus_error"] = str(exc)
+            # /version is a PUBLIC route (not behind the /mcp bearer gate), so log
+            # the detail (corpus path, S3 bucket, traceback) server-side and return
+            # a generic marker — never leak internals to an unauthenticated caller.
+            logger.warning("corpus manifest unavailable for /version: %s", exc)
+            out["corpus_error"] = "corpus manifest unavailable"
     return out
 
 

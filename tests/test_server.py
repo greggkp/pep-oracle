@@ -413,3 +413,20 @@ def test_version_reports_corpus_when_serving_from_artifact(tmp_path, monkeypatch
     assert body["corpus_episode_range"] == [251, 251]
     assert body["embed_model"] == "amazon.titan-embed-text-v2:0"
     assert body["corpus_built_at"] == "2026-06-01T06:14:00+00:00"
+
+
+def test_version_corpus_error_is_generic_and_leaks_no_path(tmp_path, monkeypatch):
+    """/version is public (not behind the /mcp bearer gate), so a corpus load
+    failure must return a generic marker, not the raw exception (which would leak
+    the corpus path / S3 bucket)."""
+    from fastapi.testclient import TestClient
+    from pep_oracle import config, server
+
+    secret_path = str(tmp_path / "nonexistent-secret-bucket-name")
+    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", True)
+    monkeypatch.setattr(config, "CORPUS_URI", secret_path)  # no current.json -> load fails
+    with TestClient(server.app) as client:
+        r = client.get("/version")
+    assert r.status_code == 200  # never 500s
+    assert r.json()["corpus_error"] == "corpus manifest unavailable"
+    assert "nonexistent-secret-bucket-name" not in r.text  # internal path not leaked
