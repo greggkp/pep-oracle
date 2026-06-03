@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pep_oracle import oauth
+from pep_oracle import oauth, oauth_store
 from pep_oracle.oauth import (
     InvalidToken,
     mint_access_token,
@@ -34,18 +34,11 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-@pytest.fixture(autouse=True)
-def _clear_codes():
-    """Wipe the module-level auth code store before each test."""
-    oauth._auth_codes.clear()
-    yield
-    oauth._auth_codes.clear()
-
-
 @pytest.fixture
 def client():
     app = FastAPI()
-    register_oauth_routes(app, SIGNING_KEY, PUBLIC_URL, ":memory:")
+    store = oauth_store.SqliteStore(":memory:")
+    register_oauth_routes(app, SIGNING_KEY, PUBLIC_URL, store)
     with TestClient(app) as c:
         yield c
 
@@ -239,15 +232,15 @@ def test_token_rejects_wrong_verifier(client):
 # --- 8. token rejects expired code ---------------------------------------
 
 
-def test_token_rejects_expired_code(client):
+def test_token_rejects_expired_code(client, monkeypatch):
     client_id = _register(client)
     verifier, challenge = _pkce_pair()
     r = _authorize(client, client_id, challenge)
     code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
 
-    # Backdate the entry's expiration so the next access treats it as expired.
-    assert code in oauth._auth_codes
-    oauth._auth_codes[code]["expires_at"] = time.time() - 1
+    # Advance the store's clock past the 60s code TTL so pop_auth_code sees it expired.
+    real = time.time()
+    monkeypatch.setattr(oauth_store.time, "time", lambda: real + 120)
 
     r2 = client.post(
         "/oauth/token",
@@ -415,12 +408,10 @@ def test_revoke_unknown_token_still_200(client):
 
 
 def test_register_oauth_routes_idempotent_schema(tmp_path):
-    """Re-running register_oauth_routes against the same file DB doesn't error."""
+    """Constructing SqliteStore twice against the same file DB doesn't error."""
     db = tmp_path / "oauth.db"
-    app1 = FastAPI()
-    register_oauth_routes(app1, SIGNING_KEY, PUBLIC_URL, str(db))
-    app2 = FastAPI()
-    register_oauth_routes(app2, SIGNING_KEY, PUBLIC_URL, str(db))
+    oauth_store.SqliteStore(str(db))
+    oauth_store.SqliteStore(str(db))  # CREATE TABLE IF NOT EXISTS -> no error
 
 
 def test_token_unsupported_grant_type(client):
