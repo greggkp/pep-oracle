@@ -1,11 +1,26 @@
-# Phase 2c — Lambda app-compat findings (deploy paused 2026-06-07)
+# Phase 2c — Lambda app-compat findings (RESOLVED 2026-06-07)
+
+> **STATUS: RESOLVED — the MCP endpoint works end-to-end on AWS.** Verified against the
+> CloudFront domain: `/health`, `/version` (corpus v0001, eps 169–263), `/oauth` discovery,
+> and `/mcp` (no-token→401; minted-JWT `initialize`/`tools/list`/`tools/call`→200 with real
+> citations — Bedrock embedding from Lambda + S3-artifact retrieval). Fixes are on branch
+> `phase2c-lambda-readiness`. The ONLY remaining step is the DNS cutover of
+> `pep-oracle.iicapn.com` (add the 4 Route 53 NS records at Cloudflare + remove the old
+> `pep-oracle` record) — user-gated; until then the apex still serves via the tunnel.
+>
+> Fixes applied: (1) per-request stateless MCP session manager (Mangum runs the ASGI lifespan
+> per-invoke; the SDK's `run()` is once-per-instance); (2) artifact-aware `/status`+`/episodes`
+> + `DATA_DIR=/tmp` (read-only FS); (2.5, found in smoke) disable the MCP DNS-rebinding
+> host-check + normalize `/mcp`→`/mcp/` in the Lambda handler (behind CloudFront→APIGW the
+> Lambda sees the execute-api Host → 421 + cross-host 307). (3) the 10s init timeout remains a
+> deferred perf follow-up (cold starts are slow but functional; lazy-import chromadb/fastembed).
+
+---
 
 The Phase 2c CDK stack deployed successfully to AWS (account 940831808393, ap-southeast-2),
 but **running the actual app on Lambda surfaced real app-level compat bugs** — Phase 2a added
-the Mangum handler but the app was never run on real Lambda (unit tests mock the server).
-The deploy is **paused** with the stack left provisioned (idle ~$0, nothing cut over,
-`pep-oracle.iicapn.com` still served by the OptiPlex/Cloudflare tunnel). These issues are a
-proper dev task (TDD + review), not live prod edits.
+the Mangum handler but the app was never run on real Lambda (unit tests mock the server). The
+original findings below are kept for the record; all but the perf item (#3) are now fixed.
 
 ## Deployed state (live, working at the infra layer)
 - Stacks: `PepOracleCertStack` (us-east-1, ACM cert ISSUED via a Cloudflare validation CNAME),
