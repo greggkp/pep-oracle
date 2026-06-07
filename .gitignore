@@ -9,3 +9,6 @@ resume.sh
 .worktrees/
 infra/.venv/
 infra/cdk.out/
+infra/node_modules/
+infra/package.json
+infra/package-lock.json
