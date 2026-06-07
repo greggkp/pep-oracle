@@ -89,7 +89,6 @@ def test_lambda_env_has_serving_contract():
     t = _template()
     t.has_resource_properties("AWS::Lambda::Function", Match.object_like({
         "PackageType": "Image",
-        "ReservedConcurrentExecutions": 30,
         "Environment": {"Variables": Match.object_like({
             "PEP_ORACLE_SERVE_FROM_ARTIFACT": "1",
             "PEP_ORACLE_EMBED_BACKEND": "bedrock",
@@ -104,6 +103,30 @@ def test_lambda_env_has_serving_contract():
             "PEP_ORACLE_GIT_SHA": "unknown",
         })},
     }))
+
+
+def test_lambda_reserved_concurrency_default_off_and_configurable():
+    from dataclasses import replace
+
+    # Default: no reservation (the account's default-10 concurrency can't support one).
+    _template().resource_properties_count_is(
+        "AWS::Lambda::Function",
+        Match.object_like({"ReservedConcurrentExecutions": Match.any_value()}),
+        0,
+    )
+
+    # Configured via context: applied to the serving function.
+    app = cdk.App()
+    stack = PepOracleProdStack(
+        app, "ProdRC", cfg=replace(_cfg(), lambda_reserved_concurrency=5),
+        cert_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc",
+        hosted_zone_id="Z123456ABCDEFG", hosted_zone_name="pep-oracle.iicapn.com",
+        cross_region_references=True, env=ENV,
+    )
+    Template.from_stack(stack).has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like({"ReservedConcurrentExecutions": 5}),
+    )
 
 
 def test_function_url_is_iam_auth():

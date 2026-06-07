@@ -152,14 +152,17 @@ class PepOracleProdStack(Stack):
             "PEP_ORACLE_GIT_SHA": cfg.git_sha,
         }
 
-        self.fn = lambda_.DockerImageFunction(
-            self, "ServeFn",
+        fn_kwargs = dict(
             code=lambda_.DockerImageCode.from_image_asset(str(project_root)),
             memory_size=2048,
             timeout=Duration.seconds(30),
-            reserved_concurrent_executions=30,
             environment=env,
         )
+        # Reserving concurrency requires the account's unreserved pool to stay >= 10;
+        # the default-10 account limit can't support any reservation, so default off.
+        if cfg.lambda_reserved_concurrency:
+            fn_kwargs["reserved_concurrent_executions"] = cfg.lambda_reserved_concurrency
+        self.fn = lambda_.DockerImageFunction(self, "ServeFn", **fn_kwargs)
 
         # Least-privilege grants
         self.corpus_bucket.grant_read(self.fn)

@@ -9,7 +9,10 @@ CDK app lives in `infra/`. It pins `aws-cdk-lib==2.180.0` (the version providing
 `FunctionUrlOrigin.with_origin_access_control`).
 
 ## 0. Prereqs
-- Node + `npm i -g aws-cdk` (the CDK CLI); Docker running (the Lambda image builds at deploy).
+- Node + the CDK CLI; Docker running (the Lambda image builds at deploy). If a global
+  `npm i -g aws-cdk` hits an EACCES permissions error, install it locally instead:
+  `cd infra && npm install aws-cdk` and invoke via `./node_modules/.bin/cdk` (point it at the
+  infra venv's Python: `PATH="$PWD/.venv/bin:$PATH" ./node_modules/.bin/cdk ...`).
 - `cd infra && python -m venv .venv && .venv/bin/pip install -r requirements.txt`
 - Confirm Bedrock Titan v2 access in ap-southeast-2 (already verified for this account).
 
@@ -47,10 +50,12 @@ pipeline bakes it automatically):
 ```
 Note the stack outputs (KMS DataKey id, Cognito user-pool id, CloudFront domain).
 
-**Precondition:** the Lambda sets `reserved_concurrent_executions=30`, which carves 30
-from the account's concurrency pool — the deploy fails if the account doesn't have ≥30
-unreserved while preserving the 100-unit unreserved floor. On a fresh/low-quota account,
-request a concurrency increase or lower the reservation in `prod_stack.py` first.
+**Lambda concurrency:** reserved concurrency is **off by default** (`lambda_reserved_concurrency=0`)
+because reserving any concurrency requires the account's unreserved pool to stay ≥10, which a
+default-limit account (ConcurrentExecutions=10) can't satisfy — it fails the deploy with
+"decreases account's UnreservedConcurrentExecution below its minimum value of [10]". To add a
+runaway-fan-out cap once the account's concurrency quota is raised, pass
+`-c lambda_reserved_concurrency=N` (leaving ≥10 unreserved).
 
 ## 4. Create the SSM SecureString signing key (encrypted with the stack KMS key)
 The CDK grants the Lambda `ssm:GetParameter` + `kms:Decrypt`; create the value out-of-band
