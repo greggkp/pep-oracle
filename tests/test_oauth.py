@@ -629,3 +629,136 @@ def test_refresh_lost_race_does_not_revoke_family(client, monkeypatch):
     assert resp.status_code == 400
     assert resp.json()["error"] == "invalid_grant"
     assert family_calls == [], "lost rotation race must NOT revoke the token family"
+
+
+# --- Identity-gate authorize + callback (Phase 2b2) ----------------------
+
+from pep_oracle.authorize_gate import IdentityError  # noqa: E402
+
+
+class _FakeGate:
+    """Stand-in for CognitoGate; no network. ``verify`` may return claims or raise."""
+
+    def __init__(self, *, identity=True, verify=None):
+        self._identity = identity
+        self._verify = verify
+        self.exchange_calls: list[tuple[str, str]] = []
+        self.login_url = "https://cognito.example/oauth2/authorize"
+
+    def requires_identity(self) -> bool:
+        return self._identity
+
+    def login_redirect(self, *, redirect_uri: str, login_state: str) -> str:
+        from urllib.parse import urlencode
+        return f"{self.login_url}?{urlencode({'redirect_uri': redirect_uri, 'state': login_state})}"
+
+    def exchange_and_verify(self, *, code: str, redirect_uri: str) -> dict:
+        self.exchange_calls.append((code, redirect_uri))
+        if self._verify is None:
+            return {"email": "me@example.com"}
+        return self._verify(code, redirect_uri)
+
+
+def _client_with_gate(gate):
+    app = FastAPI()
+    store = oauth_store.SqliteStore(":memory:")
+    register_oauth_routes(app, SIGNING_KEY, PUBLIC_URL, store, gate)
+    return TestClient(app), store
+
+
+def test_authorize_with_identity_gate_redirects_to_idp():
+    gate = _FakeGate(identity=True)
+    client, store = _client_with_gate(gate)
+    client_id = _register(client)
+    _, challenge = _pkce_pair()
+    r = _authorize(client, client_id, challenge, state="client-state-xyz")
+    assert r.status_code == 302
+    loc = urlparse(r.headers["location"])
+    assert loc.netloc == "cognito.example"
+    qs = parse_qs(loc.query)
+    assert qs["redirect_uri"] == [f"{PUBLIC_URL}/oauth/authorize/callback"]
+    ls = oauth._decode_login_state(SIGNING_KEY, PUBLIC_URL, qs["state"][0])
+    assert ls["mcp_client_id"] == client_id
+    assert ls["mcp_redirect_uri"] == "https://claude.ai/cb"
+    assert ls["mcp_code_challenge"] == challenge
+    assert ls["mcp_state"] == "client-state-xyz"
+
+
+def test_callback_issues_pep_code_after_successful_identity():
+    gate = _FakeGate(identity=True)  # default verify -> allowed identity
+    client, store = _client_with_gate(gate)
+    client_id = _register(client)
+    verifier, challenge = _pkce_pair()
+    login_state = oauth._encode_login_state(
+        SIGNING_KEY, PUBLIC_URL, client_id=client_id,
+        redirect_uri="https://claude.ai/cb", code_challenge=challenge,
+        client_state="client-state-xyz",
+    )
+    r = client.get(
+        "/oauth/authorize/callback",
+        params={"code": "cognito-code", "state": login_state},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert gate.exchange_calls == [("cognito-code", f"{PUBLIC_URL}/oauth/authorize/callback")]
+    loc = urlparse(r.headers["location"])
+    assert f"{loc.scheme}://{loc.netloc}{loc.path}" == "https://claude.ai/cb"
+    qs = parse_qs(loc.query)
+    assert qs["state"] == ["client-state-xyz"]
+    code = qs["code"][0]
+    r2 = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "https://claude.ai/cb", "client_id": client_id,
+        "code_verifier": verifier,
+    })
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["access_token"]
+
+
+def test_callback_rejects_failed_identity():
+    def deny(code, redirect_uri):
+        raise IdentityError("nope")
+
+    gate = _FakeGate(identity=True, verify=deny)
+    client, store = _client_with_gate(gate)
+    client_id = _register(client)
+    _, challenge = _pkce_pair()
+    login_state = oauth._encode_login_state(
+        SIGNING_KEY, PUBLIC_URL, client_id=client_id,
+        redirect_uri="https://claude.ai/cb", code_challenge=challenge, client_state=None,
+    )
+    r = client.get("/oauth/authorize/callback",
+                   params={"code": "bad", "state": login_state}, follow_redirects=False)
+    assert r.status_code == 403
+    assert r.json()["error"] == "access_denied"
+
+
+def test_callback_rejects_tampered_login_state():
+    gate = _FakeGate(identity=True)
+    client, _ = _client_with_gate(gate)
+    r = client.get("/oauth/authorize/callback",
+                   params={"code": "x", "state": "not-a-real-jwt"}, follow_redirects=False)
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_request"
+
+
+def test_callback_rejects_expired_login_state(monkeypatch):
+    gate = _FakeGate(identity=True)
+    client, _ = _client_with_gate(gate)
+    client_id = _register(client)
+    _, challenge = _pkce_pair()
+    real = time.time()
+    monkeypatch.setattr(oauth.time, "time", lambda: real - oauth.LOGIN_STATE_TTL_SECONDS - 10)
+    login_state = oauth._encode_login_state(
+        SIGNING_KEY, PUBLIC_URL, client_id=client_id,
+        redirect_uri="https://claude.ai/cb", code_challenge=challenge, client_state=None,
+    )
+    monkeypatch.setattr(oauth.time, "time", lambda: real)
+    r = client.get("/oauth/authorize/callback",
+                   params={"code": "x", "state": login_state}, follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_callback_route_absent_for_trusted_upstream_gate(client):
+    r = client.get("/oauth/authorize/callback", params={"code": "x", "state": "y"})
+    assert r.status_code == 404

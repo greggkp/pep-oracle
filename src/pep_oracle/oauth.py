@@ -23,6 +23,12 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from pep_oracle.oauth_store import OAuthStore, REFRESH_TTL_SECONDS
+from pep_oracle.authorize_gate import (
+    CALLBACK_PATH,
+    AuthorizeGate,
+    IdentityError,
+    TrustedUpstreamGate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,8 @@ DEFAULT_AUDIENCE = "pep-oracle-mcp"
 ACCESS_TTL_SECONDS = 3600
 AUTH_CODE_TTL_SECONDS = 60
 SCOPE = "mcp"
+LOGIN_STATE_AUDIENCE = "pep-oracle-login"
+LOGIN_STATE_TTL_SECONDS = 600
 
 
 class InvalidToken(Exception):
@@ -111,6 +119,49 @@ def verify_access_token(
         raise InvalidToken("invalid token") from e
 
 
+def _encode_login_state(
+    signing_key: str,
+    issuer: str,
+    *,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    client_state: Optional[str],
+) -> str:
+    """Short-lived HS256 JWT carrying the original MCP authorize params across the
+    Cognito leg (stateless -- no store row). Verified on the callback."""
+    now = int(time.time())
+    claims: dict[str, Any] = {
+        "iss": issuer,
+        "aud": LOGIN_STATE_AUDIENCE,
+        "iat": now,
+        "exp": now + LOGIN_STATE_TTL_SECONDS,
+        "mcp_client_id": client_id,
+        "mcp_redirect_uri": redirect_uri,
+        "mcp_code_challenge": code_challenge,
+    }
+    if client_state is not None:
+        claims["mcp_state"] = client_state
+    return jwt.encode(claims, signing_key, algorithm="HS256")
+
+
+def _decode_login_state(signing_key: str, issuer: str, blob: str) -> dict[str, Any]:
+    """Verify + decode a login-state JWT. Raises on bad signature / iss / aud / exp."""
+    return jwt.decode(
+        blob,
+        signing_key,
+        algorithms=["HS256"],
+        audience=LOGIN_STATE_AUDIENCE,
+        issuer=issuer,
+        options={
+            "require": [
+                "exp", "iat", "iss", "aud",
+                "mcp_client_id", "mcp_redirect_uri", "mcp_code_challenge",
+            ]
+        },
+    )
+
+
 def _err(status: int, error: str, description: str = "") -> JSONResponse:
     body: dict[str, Any] = {"error": error}
     if description:
@@ -141,7 +192,11 @@ def _issue_token_pair(
 
 
 def register_oauth_routes(
-    app: FastAPI, signing_key: str, public_url: str, store: OAuthStore
+    app: FastAPI,
+    signing_key: str,
+    public_url: str,
+    store: OAuthStore,
+    gate: Optional[AuthorizeGate] = None,
 ) -> None:
     """Register OAuth 2.1 + DCR endpoints on a FastAPI app.
 
@@ -149,6 +204,24 @@ def register_oauth_routes(
     ``/oauth/authorize``, ``/oauth/token``, ``/oauth/revoke``.
     """
     issuer = public_url.rstrip("/")
+
+    if gate is None:
+        gate = TrustedUpstreamGate()
+
+    def _issue_code_and_redirect(
+        *, client_id: str, redirect_uri: str, code_challenge: str, client_state: Optional[str]
+    ) -> Response:
+        code = secrets.token_urlsafe(32)
+        store.put_auth_code(
+            code, client_id=client_id, code_challenge=code_challenge,
+            redirect_uri=redirect_uri, ttl_seconds=AUTH_CODE_TTL_SECONDS,
+        )
+        logger.info("authorize: issued code for client_id=%s", client_id)
+        params = {"code": code}
+        if client_state is not None:
+            params["state"] = client_state
+        sep = "&" if "?" in redirect_uri else "?"
+        return RedirectResponse(url=f"{redirect_uri}{sep}{urlencode(params)}", status_code=302)
 
     @app.get("/.well-known/oauth-authorization-server")
     async def discovery() -> dict[str, Any]:
@@ -245,16 +318,21 @@ def register_oauth_routes(
             logger.warning("authorize rejected: redirect_uri mismatch for client_id=%s", client_id)
             return _err(400, "invalid_request", "redirect_uri not registered")
 
-        code = secrets.token_urlsafe(32)
-        store.put_auth_code(code, client_id=client_id, code_challenge=code_challenge,
-                            redirect_uri=redirect_uri, ttl_seconds=AUTH_CODE_TTL_SECONDS)
-        logger.info("authorize: issued code for client_id=%s", client_id)
-
-        params = {"code": code}
-        if state is not None:
-            params["state"] = state
-        sep = "&" if "?" in redirect_uri else "?"
-        return RedirectResponse(url=f"{redirect_uri}{sep}{urlencode(params)}", status_code=302)
+        if gate.requires_identity():
+            login_state = _encode_login_state(
+                signing_key, issuer, client_id=client_id, redirect_uri=redirect_uri,
+                code_challenge=code_challenge, client_state=state,
+            )
+            callback_uri = f"{issuer}{CALLBACK_PATH}"
+            logger.info("authorize: redirecting to identity provider for client_id=%s", client_id)
+            return RedirectResponse(
+                url=gate.login_redirect(redirect_uri=callback_uri, login_state=login_state),
+                status_code=302,
+            )
+        return _issue_code_and_redirect(
+            client_id=client_id, redirect_uri=redirect_uri,
+            code_challenge=code_challenge, client_state=state,
+        )
 
     @app.post("/oauth/token")
     async def token(
@@ -328,5 +406,49 @@ def register_oauth_routes(
             store.revoke_refresh(token)
             logger.info("revoke: marked refresh token revoked for client_id=%s", rec.client_id)
         return Response(status_code=200)
+
+    if gate.requires_identity():
+
+        @app.get(CALLBACK_PATH)
+        async def authorize_callback(request: Request) -> Response:
+            qp = request.query_params
+            cognito_code = qp.get("code")
+            login_state = qp.get("state")
+            if qp.get("error"):
+                logger.warning("authorize callback: idp error=%s", qp.get("error"))
+                return _err(400, "access_denied", "identity provider returned an error")
+            if not cognito_code or not login_state:
+                return _err(400, "invalid_request", "missing code or state")
+            try:
+                ls = _decode_login_state(signing_key, issuer, login_state)
+            except Exception:
+                logger.warning("authorize callback: bad/expired login_state")
+                return _err(400, "invalid_request", "invalid login state")
+
+            mcp_client_id = ls["mcp_client_id"]
+            mcp_redirect_uri = ls["mcp_redirect_uri"]
+            mcp_code_challenge = ls["mcp_code_challenge"]
+            mcp_state = ls.get("mcp_state")
+
+            # Re-validate the client binding (it may have been deleted mid-flow).
+            client = store.get_client(mcp_client_id)
+            if client is None or mcp_redirect_uri not in client.redirect_uris:
+                logger.warning("authorize callback: client/redirect no longer valid")
+                return _err(400, "invalid_request", "client or redirect_uri no longer valid")
+
+            callback_uri = f"{issuer}{CALLBACK_PATH}"
+            try:
+                # This route is only registered when requires_identity() is True,
+                # i.e. for CognitoGate, which is the only gate exposing
+                # exchange_and_verify (kept off the minimal AuthorizeGate Protocol).
+                gate.exchange_and_verify(code=cognito_code, redirect_uri=callback_uri)
+            except IdentityError:
+                logger.warning("authorize callback: identity verification failed")
+                return _err(403, "access_denied", "identity verification failed")
+
+            return _issue_code_and_redirect(
+                client_id=mcp_client_id, redirect_uri=mcp_redirect_uri,
+                code_challenge=mcp_code_challenge, client_state=mcp_state,
+            )
 
     logger.info("OAuth provider routes registered (issuer=%s)", issuer)
