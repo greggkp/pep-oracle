@@ -165,6 +165,39 @@ class CognitoGate:
             raise IdentityError("email not allowed")
         return claims
 
+    def exchange_and_verify(self, *, code: str, redirect_uri: str) -> dict[str, Any]:
+        """Exchange a Cognito auth code, then verify the returned ID token.
+
+        Returns the verified ID-token claims; raises IdentityError on any failure.
+        ``redirect_uri`` must equal the one sent to the Hosted UI (Cognito enforces).
+        """
+        id_token = self._exchange_code(code=code, redirect_uri=redirect_uri)
+        return self._verify_id_token(id_token)
+
+    def _exchange_code(self, *, code: str, redirect_uri: str) -> str:
+        try:
+            resp = requests.post(
+                f"{self.domain}/oauth2/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": self.client_id,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                auth=(self.client_id, self.client_secret),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=_HTTP_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            raise IdentityError("token exchange failed") from e
+        if resp.status_code != 200:
+            logger.warning("Cognito token exchange non-200: %s", resp.status_code)
+            raise IdentityError("token exchange rejected")
+        id_token = resp.json().get("id_token")
+        if not id_token:
+            raise IdentityError("no id_token in token response")
+        return id_token
+
 
 def get_gate() -> AuthorizeGate:
     if config.AUTHORIZE_GATE == "cognito":

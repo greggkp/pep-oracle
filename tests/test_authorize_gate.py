@@ -199,3 +199,68 @@ def test_verify_id_token_jwks_fetch_error_raises(monkeypatch):
     tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com")
     with pytest.raises(authorize_gate.IdentityError):
         gate._verify_id_token(tok)
+
+
+# --- code exchange + exchange_and_verify ----------------------------------
+
+
+class _FakeResp:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_exchange_and_verify_happy_path(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com")
+    captured = {}
+
+    def fake_post(url, data=None, auth=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        captured["auth"] = auth
+        return _FakeResp(200, {"id_token": tok})
+
+    monkeypatch.setattr(authorize_gate.requests, "post", fake_post)
+    claims = gate.exchange_and_verify(code="cognito-code", redirect_uri="https://app/cb")
+    assert claims["email"] == "me@example.com"
+    assert captured["url"].endswith("/oauth2/token")
+    assert captured["data"]["grant_type"] == "authorization_code"
+    assert captured["data"]["code"] == "cognito-code"
+    assert captured["data"]["redirect_uri"] == "https://app/cb"
+    assert captured["data"]["client_id"] == gate.client_id
+    assert captured["auth"] == (gate.client_id, gate.client_secret)
+
+
+def test_exchange_non_200_raises(monkeypatch):
+    gate = _gate()
+    monkeypatch.setattr(
+        authorize_gate.requests, "post",
+        lambda *a, **k: _FakeResp(400, {"error": "invalid_grant"}),
+    )
+    with pytest.raises(authorize_gate.IdentityError):
+        gate.exchange_and_verify(code="bad", redirect_uri="https://app/cb")
+
+
+def test_exchange_missing_id_token_raises(monkeypatch):
+    gate = _gate()
+    monkeypatch.setattr(
+        authorize_gate.requests, "post",
+        lambda *a, **k: _FakeResp(200, {"access_token": "a"}),  # no id_token
+    )
+    with pytest.raises(authorize_gate.IdentityError):
+        gate.exchange_and_verify(code="x", redirect_uri="https://app/cb")
+
+
+def test_exchange_network_error_raises(monkeypatch):
+    gate = _gate()
+
+    def boom(*a, **k):
+        raise authorize_gate.requests.RequestException("connreset")
+
+    monkeypatch.setattr(authorize_gate.requests, "post", boom)
+    with pytest.raises(authorize_gate.IdentityError):
+        gate.exchange_and_verify(code="x", redirect_uri="https://app/cb")
