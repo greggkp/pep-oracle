@@ -52,7 +52,7 @@ SEARCH_PEP_DESCRIPTION = (
 
 SEARCH_TOOL_NAME = "search_us_politics_commentary"
 
-mcp = FastMCP("pep-oracle")
+mcp = FastMCP("pep-oracle", stateless_http=True)
 
 
 def format_citation(result: dict) -> dict:

@@ -573,3 +573,10 @@ def test_get_serving_corpus_uses_chroma_by_default(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: sentinel)
     assert mcp_server.get_serving_corpus() is sentinel
+
+
+def test_mcp_is_stateless_http():
+    """Multi-container Lambda serving requires stateless MCP (no per-session state)."""
+    from pep_oracle.mcp_server import mcp
+
+    assert mcp.settings.stateless_http is True
