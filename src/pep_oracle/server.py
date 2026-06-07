@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import secrets
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -152,26 +151,13 @@ class _BearerAuthASGIWrapper:
 
 
 def _resolve_signing_key() -> str:
-    """Env ``PEP_ORACLE_OAUTH_SIGNING_KEY`` → ``$DATA_DIR/oauth_signing_key``
-    → newly generated key written to that path with 0600 perms."""
-    env_key = os.environ.get("PEP_ORACLE_OAUTH_SIGNING_KEY", "").strip()
-    if env_key:
-        return env_key
-    data_dir = Path(os.environ.get("PEP_ORACLE_DATA_DIR") or (Path.home() / ".pep-oracle")).expanduser()
-    key_path = data_dir / "oauth_signing_key"
-    if key_path.exists():
-        existing = key_path.read_text().strip()
-        if existing:
-            return existing
-    data_dir.mkdir(parents=True, exist_ok=True)
-    new_key = secrets.token_urlsafe(32)
-    fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, new_key.encode("ascii"))
-    finally:
-        os.close(fd)
-    logger.info("Generated new OAuth signing key at %s (mode 0600)", key_path)
-    return new_key
+    """Resolve the OAuth HS256 signing key via the pluggable backend.
+
+    Kept as a module-level seam so ``mount_mcp_if_configured`` and tests can patch it.
+    """
+    from pep_oracle import signing
+
+    return signing.resolve_signing_key()
 
 
 def mount_mcp_if_configured(app: FastAPI) -> bool:

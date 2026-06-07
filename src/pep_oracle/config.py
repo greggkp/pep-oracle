@@ -59,6 +59,16 @@ OAUTH_STORE = os.getenv("PEP_ORACLE_OAUTH_STORE", "sqlite")
 OAUTH_DDB_TABLE = os.getenv("PEP_ORACLE_OAUTH_DDB_TABLE", "pep-oracle-oauth")
 OAUTH_DDB_REGION = os.getenv("PEP_ORACLE_OAUTH_DDB_REGION", BEDROCK_REGION)
 
+# --- OAuth signing-key backend (Phase 2b2) ---
+# "local" (default): env PEP_ORACLE_OAUTH_SIGNING_KEY -> $DATA_DIR/oauth_signing_key
+# -> a freshly generated 0600 key (unchanged OptiPlex/dev behavior). "ssm": an
+# HS256 SecureString from SSM Parameter Store (the Lambda path).
+OAUTH_SIGNING_BACKEND = os.getenv("PEP_ORACLE_OAUTH_SIGNING_BACKEND", "local")
+OAUTH_SIGNING_SSM_PARAM = os.getenv(
+    "PEP_ORACLE_OAUTH_SIGNING_SSM_PARAM", "/pep-oracle/oauth-signing-key"
+)
+OAUTH_SIGNING_SSM_REGION = os.getenv("PEP_ORACLE_OAUTH_SIGNING_SSM_REGION", BEDROCK_REGION)
+
 
 def ensure_dirs() -> None:
     for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
