@@ -437,15 +437,16 @@ def test_mount_builds_oauth_store_from_config(tmp_path, monkeypatch):
     STORE OBJECT (not a db-path string) to register_oauth_routes."""
     from fastapi import FastAPI
 
-    from pep_oracle import config, oauth_store, server
+    from pep_oracle import authorize_gate, config, oauth_store, server
 
     captured = {}
 
     class _Stop(Exception):
         pass
 
-    def fake_register(app, signing_key, public_url, store):
+    def fake_register(app, signing_key, public_url, store, gate=None):
         captured["store"] = store
+        captured["gate"] = gate
         raise _Stop  # short-circuit before the (heavy) MCP mount that follows
 
     monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
@@ -465,3 +466,87 @@ def test_mount_builds_oauth_store_from_config(tmp_path, monkeypatch):
     assert not isinstance(store, str)
     assert hasattr(store, "get_refresh") and hasattr(store, "revoke_refresh")
     assert isinstance(store, oauth_store.SqliteStore)
+    # default path resolves the trusted_upstream gate
+    assert isinstance(captured["gate"], authorize_gate.TrustedUpstreamGate)
+
+
+def test_mount_trusted_upstream_requires_flag(tmp_path, monkeypatch):
+    """Default gate (trusted_upstream): mount refuses without TRUSTS_UPSTREAM_AUTH=1."""
+    from fastapi import FastAPI
+
+    from pep_oracle import config, server
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
+    monkeypatch.delenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", raising=False)
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "trusted_upstream")
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
+    assert server.mount_mcp_if_configured(FastAPI()) is False
+
+
+def test_mount_cognito_gate_skips_upstream_flag(tmp_path, monkeypatch):
+    """Cognito gate IS the auth, so mount proceeds without TRUSTS_UPSTREAM_AUTH and
+    passes a CognitoGate to register_oauth_routes."""
+    from fastapi import FastAPI
+
+    from pep_oracle import authorize_gate, config, server
+
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_register(app, signing_key, public_url, store, gate=None):
+        captured["gate"] = gate
+        raise _Stop
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
+    monkeypatch.delenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", raising=False)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "OAUTH_STORE", "sqlite")
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "cognito")
+    monkeypatch.setattr(config, "COGNITO_DOMAIN", "https://d.example")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_ID", "cid")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(config, "COGNITO_USER_POOL_ID", "ap-southeast-2_pool")
+    monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "me@example.com")
+    monkeypatch.setattr(server.oauth, "register_oauth_routes", fake_register)
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
+
+    try:
+        server.mount_mcp_if_configured(FastAPI())
+    except _Stop:
+        pass
+    assert isinstance(captured["gate"], authorize_gate.CognitoGate)
+
+
+def test_mount_cognito_misconfigured_refuses(tmp_path, monkeypatch):
+    """AUTHORIZE_GATE=cognito with missing config must refuse to mount (fail-closed)."""
+    from fastapi import FastAPI
+
+    from pep_oracle import config, server
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
+    monkeypatch.delenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", raising=False)
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "cognito")
+    monkeypatch.setattr(config, "COGNITO_DOMAIN", "")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_ID", "")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET", "")
+    monkeypatch.setattr(config, "COGNITO_USER_POOL_ID", "")
+    monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "")
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
+    assert server.mount_mcp_if_configured(FastAPI()) is False
+
+
+def test_mount_unknown_gate_refuses(tmp_path, monkeypatch):
+    """An unrecognized AUTHORIZE_GATE value must refuse to mount (fail-closed),
+    even with TRUSTS_UPSTREAM_AUTH=1 — the mount's else branch refuses unknown
+    gate values (fail-closed) before get_gate() is ever called."""
+    from fastapi import FastAPI
+
+    from pep_oracle import config, server
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
+    monkeypatch.setenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "1")
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "bogus-typo")
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
+    assert server.mount_mcp_if_configured(FastAPI()) is False

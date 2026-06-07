@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from pep_oracle import config as _config, corpus as _corpus, oauth
+from pep_oracle import authorize_gate, config as _config, corpus as _corpus, oauth
 from pep_oracle.cache import CacheEntry, get_freshness, trigger_refresh
 from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
@@ -161,10 +161,11 @@ def _resolve_signing_key() -> str:
 
 
 def mount_mcp_if_configured(app: FastAPI) -> bool:
-    """Mount /mcp + register OAuth routes. Requires PEP_ORACLE_PUBLIC_URL and
-    PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH=1 (deployment-safety guard: confirms
-    /oauth/authorize sits behind an upstream authenticator). Signing key
-    comes from :func:`_resolve_signing_key`. Returns True iff mounted."""
+    """Mount /mcp + register OAuth routes. Requires PEP_ORACLE_PUBLIC_URL.
+    Gate is selected from config.AUTHORIZE_GATE: ``cognito`` uses the in-app
+    Cognito identity check (no upstream flag needed); ``trusted_upstream`` requires
+    PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH=1. Unknown gate values fail closed.
+    Signing key comes from :func:`_resolve_signing_key`. Returns True iff mounted."""
     public_url = os.environ.get("PEP_ORACLE_PUBLIC_URL", "").strip()
     if not public_url:
         logger.warning(
@@ -173,13 +174,30 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
         )
         return False
 
-    if os.environ.get("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "") != "1":
+    gate_name = _config.AUTHORIZE_GATE
+    if gate_name == "cognito":
+        # The in-app Cognito identity check IS the authorize-endpoint auth, so the
+        # upstream-trust flag isn't required here. Refuse if misconfigured (fail-closed).
+        try:
+            gate = authorize_gate.get_gate()
+        except ValueError as e:
+            logger.error("AUTHORIZE_GATE=cognito but misconfigured (%s) — refusing to mount /mcp.", e)
+            return False
+    elif gate_name == "trusted_upstream":
+        if os.environ.get("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "") != "1":
+            logger.error(
+                "PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH != '1' — refusing to mount /mcp. "
+                "/oauth/authorize has no app-layer auth and MUST sit behind an upstream "
+                "authenticator (e.g. Cloudflare Access on /oauth/authorize), or set "
+                "PEP_ORACLE_AUTHORIZE_GATE=cognito for the in-app identity check. See the "
+                "Cloudflare Access setup section in /home/gregg/.claude/plans/mcp-oauth-dcr.md. "
+                "Set the var to '1' once that upstream guard is in place."
+            )
+            return False
+        gate = authorize_gate.get_gate()  # TrustedUpstreamGate
+    else:
         logger.error(
-            "PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH != '1' — refusing to mount /mcp. "
-            "/oauth/authorize has no app-layer auth and MUST sit behind an upstream "
-            "authenticator (e.g. Cloudflare Access on /oauth/authorize). See the "
-            "Cloudflare Access setup section in /home/gregg/.claude/plans/mcp-oauth-dcr.md. "
-            "Set the var to '1' once that upstream guard is in place."
+            "unknown PEP_ORACLE_AUTHORIZE_GATE=%r — refusing to mount /mcp.", gate_name
         )
         return False
 
@@ -187,7 +205,7 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     from pep_oracle import oauth_store
 
     store = oauth_store.get_store()
-    oauth.register_oauth_routes(app, signing_key, public_url, store)
+    oauth.register_oauth_routes(app, signing_key, public_url, store, gate)
     logger.info("OAuth provider routes registered")
 
     from pep_oracle.mcp_server import mcp
