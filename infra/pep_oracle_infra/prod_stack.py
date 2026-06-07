@@ -8,6 +8,7 @@ from typing import Optional
 
 from aws_cdk import RemovalPolicy
 from aws_cdk import Stack
+from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_s3 as s3
@@ -75,5 +76,31 @@ class PepOracleProdStack(Stack):
         )
 
         # Task 5: Cognito user pool + domain + app client
+        self.user_pool = cognito.UserPool(
+            self, "UserPool",
+            sign_in_aliases=cognito.SignInAliases(email=True),
+            self_sign_up_enabled=False,  # single operator-created user
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.user_pool_domain = self.user_pool.add_domain(
+            "HostedUiDomain",
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=cfg.cognito_domain_prefix
+            ),
+        )
+        self.user_pool_client = self.user_pool.add_client(
+            "AppClient",
+            generate_secret=True,
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(authorization_code_grant=True),
+                scopes=[cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
+                callback_urls=[f"{cfg.public_url}/oauth/authorize/callback"],
+            ),
+            supported_identity_providers=[
+                cognito.UserPoolClientIdentityProvider.COGNITO
+            ],
+            prevent_user_existence_errors=True,
+        )
+
         # Task 6: Lambda (container) + Function URL + IAM
         # Task 7: CloudFront (cert cross-region) + Route 53 alias

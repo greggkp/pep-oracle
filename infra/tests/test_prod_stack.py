@@ -64,3 +64,22 @@ def test_corpus_bucket_is_private_versioned_encrypted():
 def test_kms_key_present():
     t = _template()
     t.resource_count_is("AWS::KMS::Key", 1)
+
+
+def test_cognito_user_pool_and_domain():
+    t = _template()
+    t.resource_count_is("AWS::Cognito::UserPool", 1)
+    t.has_resource_properties("AWS::Cognito::UserPoolDomain", Match.object_like({
+        "Domain": "pep-oracle-test",
+    }))
+
+
+def test_cognito_client_is_confidential_auth_code():
+    t = _template()
+    t.has_resource_properties("AWS::Cognito::UserPoolClient", Match.object_like({
+        "GenerateSecret": True,
+        "AllowedOAuthFlows": ["code"],
+        "AllowedOAuthScopes": Match.array_with(["openid", "email"]),
+        "CallbackURLs": ["https://pep-oracle.iicapn.com/oauth/authorize/callback"],
+        "SupportedIdentityProviders": ["COGNITO"],
+    }))
