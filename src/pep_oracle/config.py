@@ -69,6 +69,19 @@ OAUTH_SIGNING_SSM_PARAM = os.getenv(
 )
 OAUTH_SIGNING_SSM_REGION = os.getenv("PEP_ORACLE_OAUTH_SIGNING_SSM_REGION", BEDROCK_REGION)
 
+# --- /oauth/authorize identity gate (Phase 2b2) ---
+# "trusted_upstream" (default): auto-approve, relying on an upstream authenticator
+# (Cloudflare Access) -- the OptiPlex model. "cognito": in-app identity check against
+# a one-user Cognito user pool (the AWS model; no external-edge dependency).
+AUTHORIZE_GATE = os.getenv("PEP_ORACLE_AUTHORIZE_GATE", "trusted_upstream")
+# Hosted-UI base, e.g. https://pep-oracle.auth.ap-southeast-2.amazoncognito.com
+COGNITO_DOMAIN = os.getenv("PEP_ORACLE_COGNITO_DOMAIN", "")
+COGNITO_CLIENT_ID = os.getenv("PEP_ORACLE_COGNITO_CLIENT_ID", "")
+COGNITO_CLIENT_SECRET = os.getenv("PEP_ORACLE_COGNITO_CLIENT_SECRET", "")
+COGNITO_USER_POOL_ID = os.getenv("PEP_ORACLE_COGNITO_USER_POOL_ID", "")  # e.g. ap-southeast-2_abc123
+COGNITO_REGION = os.getenv("PEP_ORACLE_COGNITO_REGION", BEDROCK_REGION)
+COGNITO_ALLOWED_EMAILS = os.getenv("PEP_ORACLE_COGNITO_ALLOWED_EMAILS", "")  # comma-separated
+
 
 def ensure_dirs() -> None:
     for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
