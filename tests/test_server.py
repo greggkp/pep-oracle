@@ -641,3 +641,32 @@ def test_fetch_status_uses_artifact_not_chromadb_when_serving_from_artifact(monk
     assert data["ingested_count"] == 2  # 2 distinct guids
     assert data["db_size_bytes"] == 0
     assert data["latest_episode"] == 251
+
+
+def test_mcp_host_check_disabled_and_slash_normalized(monkeypatch, tmp_path):
+    """Behind CloudFront→APIGW the Lambda sees the proxy Host, so the MCP DNS-rebinding
+    host-check must be off (else 421), and /mcp (no slash) must be served directly via the
+    Lambda handler's normalizer (else a cross-host 307 that drops Authorization)."""
+    from fastapi import FastAPI
+
+    from pep_oracle import config, mcp_server, server
+
+    mangum = pytest.importorskip("mangum")
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://test.example")
+    monkeypatch.setenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "1")
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "trusted_upstream")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "OAUTH_STORE", "sqlite")
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k" * 40)
+
+    app = FastAPI()
+    assert server.mount_mcp_if_configured(app) is True
+
+    # host/origin DNS-rebinding check disabled (the Lambda can't see the public Host)
+    assert mcp_server.mcp.settings.transport_security.enable_dns_rebinding_protection is False
+
+    # /mcp (no trailing slash) reaches the bearer wrapper (401 no-token) — NOT a 307 redirect
+    handler = mangum.Mangum(server._McpSlashNormalizer(app))
+    r = handler(_apigw_v2_event(method="POST", path="/mcp"), None)
+    assert r["statusCode"] == 401, r

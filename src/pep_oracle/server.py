@@ -212,10 +212,13 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
 
     # Remap SDK's /mcp → / so mount at /mcp gives final URL /mcp (not /mcp/mcp).
     mcp.settings.streamable_http_path = "/"
-    # SDK's TransportSecurity defaults reject non-localhost Host headers (DNS
-    # rebinding defense). Extend allowed_hosts/allowed_origins with the public
-    # hostname; the JWT bearer check is the real auth, and CF Access fronts
-    # the only browser-driven OAuth path. Keep localhost defaults for dev.
+    # SDK's TransportSecurity defaults reject non-localhost Host headers (a DNS-rebinding
+    # defense for browser-facing localhost servers). Behind CloudFront→API Gateway the
+    # Lambda sees the APIGW execute-api Host, not the public hostname, so that check 421s
+    # every /mcp call. DNS rebinding is a browser threat and irrelevant here — /mcp is a
+    # server-to-server JSON API gated by the JWT bearer (the real auth) — so disable the
+    # host/origin check. Still extend allowed_hosts/origins with the public hostname for
+    # the uvicorn/OptiPlex path where the check stays meaningful.
     parsed = urlparse(public_url)
     if parsed.hostname:
         ts = mcp.settings.transport_security
@@ -224,6 +227,7 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
         public_origin = f"{parsed.scheme}://{parsed.hostname}"
         if public_origin not in ts.allowed_origins:
             ts.allowed_origins = [*ts.allowed_origins, public_origin]
+    mcp.settings.transport_security.enable_dns_rebinding_protection = False
     # Build the streamable app once to create the session-manager template (it captures
     # the MCP server app, the stateless flag, and the transport-security settings).
     mcp.streamable_http_app()
@@ -548,6 +552,24 @@ async def root():
 mount_mcp_if_configured(app)
 
 
+class _McpSlashNormalizer:
+    """Rewrite a request to exactly ``/mcp`` into ``/mcp/`` in the ASGI scope so the
+    mounted MCP app serves it directly instead of issuing a 307 redirect. Behind
+    CloudFront→API Gateway the Lambda sees the APIGW execute-api Host, so Starlette would
+    build that 307's Location against the internal host — a cross-host redirect that leaks
+    the origin and makes clients drop the Authorization header. Rewriting in-process
+    avoids the redirect. (uvicorn/OptiPlex doesn't use this wrapper; its same-host 307 is
+    harmless.)"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
+        await self.app(scope, receive, send)
+
+
 def _make_lambda_handler():
     """Wrap the ASGI app with Mangum for AWS Lambda. Returns None if mangum isn't
     installed (e.g. a base local install), so importing server stays cheap."""
@@ -555,7 +577,7 @@ def _make_lambda_handler():
         from mangum import Mangum
     except ImportError:
         return None
-    return Mangum(app)
+    return Mangum(_McpSlashNormalizer(app))
 
 
 handler = _make_lambda_handler()
