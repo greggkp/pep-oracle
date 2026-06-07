@@ -126,6 +126,9 @@ class PepOracleProdStack(Stack):
 
         env = {
             "PEP_ORACLE_SERVE_FROM_ARTIFACT": "1",
+            # Only /tmp is writable on Lambda; point the data dir there so any
+            # ensure_dirs()/cache path can't crash on the read-only HOME.
+            "PEP_ORACLE_DATA_DIR": "/tmp/.pep-oracle",
             "PEP_ORACLE_EMBED_BACKEND": "bedrock",
             "PEP_ORACLE_BEDROCK_REGION": cfg.compute_region,
             "PEP_ORACLE_EMBED_MODEL": cfg.embed_model,

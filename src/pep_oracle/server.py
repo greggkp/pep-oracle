@@ -266,6 +266,18 @@ def _get_fresh_collection():
     return get_fresh_collection()
 
 
+def _serving_collection():
+    """Status/episodes retrieval source, mirroring the MCP serving seam: the artifact
+    InMemoryCorpus when SERVE_FROM_ARTIFACT=1 (the Lambda path — no ChromaDB, no disk
+    writes / ``ensure_dirs`` under a read-only HOME), else the live ChromaDB collection
+    (the OptiPlex default). Both satisfy ``.get(include=[...])`` + ``.count()``."""
+    if _config.SERVE_FROM_ARTIFACT:
+        return _corpus.current_corpus(
+            _config.CORPUS_URI, ttl_seconds=_config.CORPUS_REFRESH_TTL_SECONDS
+        )
+    return _get_fresh_collection()
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -324,10 +336,14 @@ async def api_ask(req: AskRequest):
 
 def _fetch_status():
     """Fetch fresh status data (called by cache refresh)."""
-    collection = _get_fresh_collection()
+    collection = _serving_collection()
     ingested = get_ingested_guids(collection)
     chunk_count = collection.count()
-    db_size = sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
+    db_size = (
+        0
+        if _config.SERVE_FROM_ARTIFACT
+        else sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
+    )
     stats = get_ingestion_stats(collection)
     try:
         all_episodes = fetch_episodes()
@@ -356,7 +372,7 @@ def _fetch_episodes():
     """Fetch fresh episodes data (called by cache refresh)."""
     all_episodes = fetch_episodes()
     try:
-        collection = _get_fresh_collection()
+        collection = _serving_collection()
         ingested = get_ingested_guids(collection)
     except Exception:
         ingested = set()

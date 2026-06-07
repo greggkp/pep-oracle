@@ -605,3 +605,39 @@ def test_mcp_mount_survives_warm_mangum_reinvocation(monkeypatch, tmp_path):
     # from StreamableHTTPSessionManager.run() called twice on the singleton).
     r2 = handler(event, None)
     assert r2["statusCode"] == 200, r2
+
+
+def test_fetch_status_uses_artifact_not_chromadb_when_serving_from_artifact(monkeypatch):
+    """On the artifact serve path (Lambda), /status must read the InMemoryCorpus, never
+    ChromaDB (which mkdirs under a read-only HOME on Lambda)."""
+    from pep_oracle import config, server
+
+    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", True)
+
+    class _FakeCorpus:
+        def count(self):
+            return 3
+
+        def get(self, include=None):
+            return {
+                "ids": ["a", "b", "c"],
+                "metadatas": [
+                    {"episode_guid": "g1", "episode_date": "2026-01-01", "episode_number": 250},
+                    {"episode_guid": "g1", "episode_date": "2026-01-01", "episode_number": 250},
+                    {"episode_guid": "g2", "episode_date": "2026-02-01", "episode_number": 251},
+                ],
+            }
+
+    monkeypatch.setattr(server._corpus, "current_corpus", lambda *a, **k: _FakeCorpus())
+    monkeypatch.setattr(server, "fetch_episodes", lambda: [])
+
+    def _boom():
+        raise AssertionError("artifact serve path must NOT touch ChromaDB")
+
+    monkeypatch.setattr(server, "_get_fresh_collection", _boom)
+
+    data = server._fetch_status()
+    assert data["chunk_count"] == 3
+    assert data["ingested_count"] == 2  # 2 distinct guids
+    assert data["db_size_bytes"] == 0
+    assert data["latest_episode"] == 251
