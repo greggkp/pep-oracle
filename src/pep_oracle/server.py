@@ -224,23 +224,40 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
         public_origin = f"{parsed.scheme}://{parsed.hostname}"
         if public_origin not in ts.allowed_origins:
             ts.allowed_origins = [*ts.allowed_origins, public_origin]
-    mcp_asgi = mcp.streamable_http_app()
-    session_manager = mcp.session_manager
+    # Build the streamable app once to create the session-manager template (it captures
+    # the MCP server app, the stateless flag, and the transport-security settings).
+    mcp.streamable_http_app()
+    _sm_template = mcp.session_manager
 
-    # StreamableHTTPSessionManager must be entered as an async context for the
-    # app's lifetime or its task group never starts ("Task group is not
-    # initialized."). Chain into the FastAPI router lifespan.
-    previous_lifespan = app.router.lifespan_context
+    # Per-request fresh StreamableHTTPSessionManager. The SDK's run() is once-per-instance
+    # and tears its task group down on exit; driving a long-lived run() from the FastAPI
+    # lifespan works under uvicorn but BREAKS under Mangum, which runs the ASGI lifespan
+    # per invocation — warm invocation #2 re-calls run() on the singleton → RuntimeError →
+    # LifespanFailure → every route 500s. Stateless requests are self-contained (fresh
+    # transport, no cross-request state), so a fresh manager per request is correct under
+    # both runtimes and needs no lifespan wiring. (Requires stateless_http=True, which
+    # mcp_server sets.)
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-    @asynccontextmanager
-    async def _combined_lifespan(app_: FastAPI):
-        async with session_manager.run():
-            async with previous_lifespan(app_):
-                yield
+    async def _mcp_stateless_asgi(scope, receive, send):
+        if scope["type"] != "http":
+            return
+        sm = StreamableHTTPSessionManager(
+            app=_sm_template.app,
+            event_store=_sm_template.event_store,
+            json_response=_sm_template.json_response,
+            stateless=_sm_template.stateless,
+            security_settings=_sm_template.security_settings,
+            retry_interval=_sm_template.retry_interval,
+        )
+        async with sm.run():
+            await sm.handle_request(scope, receive, send)
 
-    app.router.lifespan_context = _combined_lifespan
-    app.mount("/mcp", _BearerAuthASGIWrapper(mcp_asgi, signing_key, public_url.rstrip("/")))
-    logger.info("MCP mounted at /mcp")
+    app.mount(
+        "/mcp",
+        _BearerAuthASGIWrapper(_mcp_stateless_asgi, signing_key, public_url.rstrip("/")),
+    )
+    logger.info("MCP mounted at /mcp (per-request stateless session manager)")
     return True
 
 

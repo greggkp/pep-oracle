@@ -550,3 +550,58 @@ def test_mount_unknown_gate_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AUTHORIZE_GATE", "bogus-typo")
     monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
     assert server.mount_mcp_if_configured(FastAPI()) is False
+
+
+# --- Lambda warm-reinvocation (MCP session manager vs Mangum per-invoke lifespan) ---
+
+def _apigw_v2_event(method="GET", path="/health"):
+    return {
+        "version": "2.0",
+        "routeKey": "$default",
+        "rawPath": path,
+        "rawQueryString": "",
+        "headers": {"host": "test.example", "content-length": "0"},
+        "requestContext": {
+            "domainName": "test.example",
+            "http": {"method": method, "path": path, "protocol": "HTTP/1.1",
+                     "sourceIp": "1.2.3.4"},
+            "stage": "$default",
+            "requestId": "req-1",
+        },
+        "isBase64Encoded": False,
+    }
+
+
+def test_mcp_mount_survives_warm_mangum_reinvocation(monkeypatch, tmp_path):
+    """Mangum runs the ASGI lifespan per invocation. The MCP mount must not break on
+    the 2nd (warm) invocation — i.e. mounting must NOT drive the once-per-instance
+    StreamableHTTPSessionManager.run() from the per-invoke lifespan."""
+    from fastapi import FastAPI
+
+    from pep_oracle import config, server
+
+    mangum = pytest.importorskip("mangum")
+
+    monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://test.example")
+    monkeypatch.setenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "1")
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "trusted_upstream")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "OAUTH_STORE", "sqlite")
+    monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k" * 40)
+
+    app = FastAPI()
+
+    @app.get("/health")
+    async def _health():
+        return {"status": "ok"}
+
+    assert server.mount_mcp_if_configured(app) is True
+
+    handler = mangum.Mangum(app)
+    event = _apigw_v2_event()
+    r1 = handler(event, None)
+    assert r1["statusCode"] == 200, r1
+    # 2nd warm invocation in the same process — the bug surfaced here (LifespanFailure
+    # from StreamableHTTPSessionManager.run() called twice on the singleton).
+    r2 = handler(event, None)
+    assert r2["statusCode"] == 200, r2
