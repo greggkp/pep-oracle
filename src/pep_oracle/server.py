@@ -212,10 +212,13 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
 
     # Remap SDK's /mcp → / so mount at /mcp gives final URL /mcp (not /mcp/mcp).
     mcp.settings.streamable_http_path = "/"
-    # SDK's TransportSecurity defaults reject non-localhost Host headers (DNS
-    # rebinding defense). Extend allowed_hosts/allowed_origins with the public
-    # hostname; the JWT bearer check is the real auth, and CF Access fronts
-    # the only browser-driven OAuth path. Keep localhost defaults for dev.
+    # SDK's TransportSecurity defaults reject non-localhost Host headers (a DNS-rebinding
+    # defense for browser-facing localhost servers). Behind CloudFront→API Gateway the
+    # Lambda sees the APIGW execute-api Host, not the public hostname, so that check 421s
+    # every /mcp call. DNS rebinding is a browser threat and irrelevant here — /mcp is a
+    # server-to-server JSON API gated by the JWT bearer (the real auth) — so disable the
+    # host/origin check. Still extend allowed_hosts/origins with the public hostname for
+    # the uvicorn/OptiPlex path where the check stays meaningful.
     parsed = urlparse(public_url)
     if parsed.hostname:
         ts = mcp.settings.transport_security
@@ -224,29 +227,59 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
         public_origin = f"{parsed.scheme}://{parsed.hostname}"
         if public_origin not in ts.allowed_origins:
             ts.allowed_origins = [*ts.allowed_origins, public_origin]
-    mcp_asgi = mcp.streamable_http_app()
-    session_manager = mcp.session_manager
+    mcp.settings.transport_security.enable_dns_rebinding_protection = False
+    # Build the streamable app once to create the session-manager template (it captures
+    # the MCP server app, the stateless flag, and the transport-security settings).
+    mcp.streamable_http_app()
+    _sm_template = mcp.session_manager
 
-    # StreamableHTTPSessionManager must be entered as an async context for the
-    # app's lifetime or its task group never starts ("Task group is not
-    # initialized."). Chain into the FastAPI router lifespan.
-    previous_lifespan = app.router.lifespan_context
+    # Per-request fresh StreamableHTTPSessionManager. The SDK's run() is once-per-instance
+    # and tears its task group down on exit; driving a long-lived run() from the FastAPI
+    # lifespan works under uvicorn but BREAKS under Mangum, which runs the ASGI lifespan
+    # per invocation — warm invocation #2 re-calls run() on the singleton → RuntimeError →
+    # LifespanFailure → every route 500s. Stateless requests are self-contained (fresh
+    # transport, no cross-request state), so a fresh manager per request is correct under
+    # both runtimes and needs no lifespan wiring. (Requires stateless_http=True, which
+    # mcp_server sets.)
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-    @asynccontextmanager
-    async def _combined_lifespan(app_: FastAPI):
-        async with session_manager.run():
-            async with previous_lifespan(app_):
-                yield
+    async def _mcp_stateless_asgi(scope, receive, send):
+        if scope["type"] != "http":
+            return
+        sm = StreamableHTTPSessionManager(
+            app=_sm_template.app,
+            event_store=_sm_template.event_store,
+            json_response=_sm_template.json_response,
+            stateless=_sm_template.stateless,
+            security_settings=_sm_template.security_settings,
+            retry_interval=_sm_template.retry_interval,
+        )
+        async with sm.run():
+            await sm.handle_request(scope, receive, send)
 
-    app.router.lifespan_context = _combined_lifespan
-    app.mount("/mcp", _BearerAuthASGIWrapper(mcp_asgi, signing_key, public_url.rstrip("/")))
-    logger.info("MCP mounted at /mcp")
+    app.mount(
+        "/mcp",
+        _BearerAuthASGIWrapper(_mcp_stateless_asgi, signing_key, public_url.rstrip("/")),
+    )
+    logger.info("MCP mounted at /mcp (per-request stateless session manager)")
     return True
 
 
 def _get_fresh_collection():
     """Thin alias for store.get_fresh_collection (kept for local call sites)."""
     return get_fresh_collection()
+
+
+def _serving_collection():
+    """Status/episodes retrieval source, mirroring the MCP serving seam: the artifact
+    InMemoryCorpus when SERVE_FROM_ARTIFACT=1 (the Lambda path — no ChromaDB, no disk
+    writes / ``ensure_dirs`` under a read-only HOME), else the live ChromaDB collection
+    (the OptiPlex default). Both satisfy ``.get(include=[...])`` + ``.count()``."""
+    if _config.SERVE_FROM_ARTIFACT:
+        return _corpus.current_corpus(
+            _config.CORPUS_URI, ttl_seconds=_config.CORPUS_REFRESH_TTL_SECONDS
+        )
+    return _get_fresh_collection()
 
 
 @app.get("/health")
@@ -307,10 +340,14 @@ async def api_ask(req: AskRequest):
 
 def _fetch_status():
     """Fetch fresh status data (called by cache refresh)."""
-    collection = _get_fresh_collection()
+    collection = _serving_collection()
     ingested = get_ingested_guids(collection)
     chunk_count = collection.count()
-    db_size = sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
+    db_size = (
+        0
+        if _config.SERVE_FROM_ARTIFACT
+        else sum(f.stat().st_size for f in CHROMA_DIR.rglob("*") if f.is_file())
+    )
     stats = get_ingestion_stats(collection)
     try:
         all_episodes = fetch_episodes()
@@ -339,7 +376,7 @@ def _fetch_episodes():
     """Fetch fresh episodes data (called by cache refresh)."""
     all_episodes = fetch_episodes()
     try:
-        collection = _get_fresh_collection()
+        collection = _serving_collection()
         ingested = get_ingested_guids(collection)
     except Exception:
         ingested = set()
@@ -515,6 +552,24 @@ async def root():
 mount_mcp_if_configured(app)
 
 
+class _McpSlashNormalizer:
+    """Rewrite a request to exactly ``/mcp`` into ``/mcp/`` in the ASGI scope so the
+    mounted MCP app serves it directly instead of issuing a 307 redirect. Behind
+    CloudFront→API Gateway the Lambda sees the APIGW execute-api Host, so Starlette would
+    build that 307's Location against the internal host — a cross-host redirect that leaks
+    the origin and makes clients drop the Authorization header. Rewriting in-process
+    avoids the redirect. (uvicorn/OptiPlex doesn't use this wrapper; its same-host 307 is
+    harmless.)"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
+        await self.app(scope, receive, send)
+
+
 def _make_lambda_handler():
     """Wrap the ASGI app with Mangum for AWS Lambda. Returns None if mangum isn't
     installed (e.g. a base local install), so importing server stays cheap."""
@@ -522,7 +577,7 @@ def _make_lambda_handler():
         from mangum import Mangum
     except ImportError:
         return None
-    return Mangum(app)
+    return Mangum(_McpSlashNormalizer(app))
 
 
 handler = _make_lambda_handler()
