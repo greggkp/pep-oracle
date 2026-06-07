@@ -181,11 +181,15 @@ class PepOracleProdStack(Stack):
             ],
         ))
 
+        # auth=NONE (not AWS_IAM/OAC): OAC signs the Authorization header with SigV4,
+        # which collides with the MCP viewer bearer token that must pass through on the
+        # same header. The app's own JWT (/mcp), PKCE (/token) and Cognito (/authorize)
+        # checks are the security boundary; CloudFront forwards the bearer unchanged.
         self.fn_url = self.fn.add_function_url(
-            auth_type=lambda_.FunctionUrlAuthType.AWS_IAM
+            auth_type=lambda_.FunctionUrlAuthType.NONE
         )
 
-        # --- Public endpoint: CloudFront + OAC + Route 53 alias (cert is cross-region) ---
+        # --- Public endpoint: CloudFront + Route 53 alias (cert is cross-region) ---
         cert = acm.Certificate.from_certificate_arn(self, "Cert", self._cert_arn)
         zone = route53.PublicHostedZone.from_public_hosted_zone_attributes(
             self, "Zone",
@@ -196,7 +200,7 @@ class PepOracleProdStack(Stack):
         self.distribution = cloudfront.Distribution(
             self, "Cdn",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.FunctionUrlOrigin.with_origin_access_control(self.fn_url),
+                origin=origins.FunctionUrlOrigin(self.fn_url),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
                 cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,

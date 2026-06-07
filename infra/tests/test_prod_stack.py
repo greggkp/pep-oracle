@@ -129,10 +129,12 @@ def test_lambda_reserved_concurrency_default_off_and_configurable():
     )
 
 
-def test_function_url_is_iam_auth():
+def test_function_url_is_public_app_auth():
+    # auth=NONE: OAC's SigV4 collides with the MCP viewer bearer; app-layer JWT/OAuth
+    # is the security boundary (see prod_stack ServeFn function-url comment).
     t = _template()
     t.has_resource_properties("AWS::Lambda::Url", Match.object_like({
-        "AuthType": "AWS_IAM",
+        "AuthType": "NONE",
     }))
 
 
@@ -149,15 +151,15 @@ def test_lambda_role_has_bedrock_and_ssm():
     }))
 
 
-def test_cloudfront_distribution_has_domain_and_oac_origin():
+def test_cloudfront_distribution_has_domain_no_oac():
     t = _template()
     t.has_resource_properties("AWS::CloudFront::Distribution", Match.object_like({
         "DistributionConfig": Match.object_like({
             "Aliases": ["pep-oracle.iicapn.com"],
         })
     }))
-    # OAC is created for the Function URL origin
-    t.resource_count_is("AWS::CloudFront::OriginAccessControl", 1)
+    # No OAC: the Function URL is public (auth=NONE) and app-layer auth protects it.
+    t.resource_count_is("AWS::CloudFront::OriginAccessControl", 0)
 
 
 def test_route53_alias_record_present():
