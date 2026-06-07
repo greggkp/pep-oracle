@@ -159,6 +159,12 @@ class CognitoGate:
             raise
         except Exception as e:  # noqa: BLE001 -- single opaque error per spec
             raise IdentityError("id_token verification failed") from e
+        if claims.get("token_use") != "id":
+            # Defense-in-depth (canonical Cognito guidance): only accept ID tokens.
+            # The aud==client_id check already rejects pool access tokens (which omit
+            # aud), but assert token_use too in case the token shape ever changes.
+            logger.warning("Cognito login rejected: token_use != id")
+            raise IdentityError("not an id token")
         email = str(claims.get("email", "")).lower()
         if email not in self.allowed_emails:
             logger.warning("Cognito login rejected: email not on allow-list")

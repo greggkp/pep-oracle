@@ -123,10 +123,10 @@ def _rsa_keypair():
     return priv_pem, {"keys": [jwk]}
 
 
-def _id_token(priv_pem, *, iss, aud, email, ttl=3600, kid=_KID):
+def _id_token(priv_pem, *, iss, aud, email, ttl=3600, kid=_KID, token_use="id"):
     now = int(time.time())
     claims = {"sub": "u1", "iss": iss, "aud": aud, "email": email,
-              "iat": now, "exp": now + ttl}
+              "token_use": token_use, "iat": now, "exp": now + ttl}
     return jwt.encode(claims, priv_pem, algorithm="RS256", headers={"kid": kid})
 
 
@@ -135,6 +135,14 @@ def _verifying_gate(monkeypatch):
     gate = _gate()
     monkeypatch.setattr(gate, "_fetch_jwks", lambda: jwks)
     return gate, priv_pem
+
+
+def test_verify_id_token_rejects_non_id_token_use(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id,
+                    email="me@example.com", token_use="access")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
 
 
 def test_verify_id_token_accepts_valid(monkeypatch):
