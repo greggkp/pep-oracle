@@ -101,6 +101,7 @@ def test_lambda_env_has_serving_contract():
             "PEP_ORACLE_AUTHORIZE_GATE": "cognito",
             "PEP_ORACLE_PUBLIC_URL": "https://pep-oracle.iicapn.com",
             "PEP_ORACLE_CORPUS_URI": "s3://pep-oracle-corpus-test",
+            "PEP_ORACLE_GIT_SHA": "unknown",
         })},
     }))
 

@@ -38,10 +38,19 @@ the `acm.ICertificate` / `route53.IHostedZone` constructs directly (pass `cert_s
 / `cert_stack.hosted_zone` from `app.py`) per the plan's Task 7 "Cross-region reference" note.
 
 ## 3. Deploy the prod stack (builds + pushes the Lambda image)
+Pass `git_sha` so `GET /version` reports real code provenance (until the Phase 4
+pipeline bakes it automatically):
 ```bash
-.venv/bin/cdk deploy PepOracleProdStack -c allowed_email=<you@example.com>
+.venv/bin/cdk deploy PepOracleProdStack \
+  -c allowed_email=<you@example.com> \
+  -c git_sha=$(git -C .. rev-parse --short HEAD)
 ```
 Note the stack outputs (KMS DataKey id, Cognito user-pool id, CloudFront domain).
+
+**Precondition:** the Lambda sets `reserved_concurrent_executions=30`, which carves 30
+from the account's concurrency pool — the deploy fails if the account doesn't have ≥30
+unreserved while preserving the 100-unit unreserved floor. On a fresh/low-quota account,
+request a concurrency increase or lower the reservation in `prod_stack.py` first.
 
 ## 4. Create the SSM SecureString signing key (encrypted with the stack KMS key)
 The CDK grants the Lambda `ssm:GetParameter` + `kms:Decrypt`; create the value out-of-band

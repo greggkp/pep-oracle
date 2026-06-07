@@ -1,5 +1,11 @@
-"""ap-southeast-2 prod stack: data layer, Cognito, Lambda + Function URL, CloudFront,
-Route 53 alias. Resources are added in Tasks 4-7.
+"""ap-southeast-2 prod stack for the pep-oracle MCP serving endpoint.
+
+Owns: a KMS key; a private/versioned/KMS-encrypted S3 corpus bucket; the DynamoDB
+OAuth table (schema matching oauth_store.DynamoDbStore); a one-user Cognito pool +
+Hosted-UI domain + confidential app client; the container serving Lambda (FastAPI +
+Mangum) behind a Function URL (AWS_IAM) fronted by CloudFront + OAC; a Route 53
+A-alias; and least-privilege IAM. The CloudFront ACM cert lives in us-east-1
+(PepOracleCertStack) and is referenced here cross-region.
 """
 
 from __future__ import annotations
@@ -44,7 +50,7 @@ class PepOracleProdStack(Stack):
         self._hosted_zone_id = hosted_zone_id
         self._hosted_zone_name = hosted_zone_name
 
-        # Task 4: KMS + S3 corpus bucket + DynamoDB OAuth table
+        # --- Data layer: KMS + S3 corpus bucket + DynamoDB OAuth table ---
         self.kms_key = kms.Key(
             self, "DataKey",
             description="pep-oracle encryption-at-rest (S3 corpus, DynamoDB, SSM signing key)",
@@ -73,7 +79,9 @@ class PepOracleProdStack(Stack):
             time_to_live_attribute="ttl",
             encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
             encryption_key=self.kms_key,
-            point_in_time_recovery=True,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True
+            ),
             removal_policy=RemovalPolicy.RETAIN,
         )
         self.oauth_table.add_global_secondary_index(
@@ -84,7 +92,7 @@ class PepOracleProdStack(Stack):
             projection_type=dynamodb.ProjectionType.KEYS_ONLY,
         )
 
-        # Task 5: Cognito user pool + domain + app client
+        # --- Cognito: one-user pool + Hosted-UI domain + confidential app client ---
         self.user_pool = cognito.UserPool(
             self, "UserPool",
             sign_in_aliases=cognito.SignInAliases(email=True),
@@ -111,7 +119,7 @@ class PepOracleProdStack(Stack):
             prevent_user_existence_errors=True,
         )
 
-        # Task 6: Lambda (container) + Function URL + IAM
+        # --- Serving Lambda (container) + Function URL + least-privilege IAM ---
         project_root = Path(__file__).resolve().parents[2]
 
         env = {
@@ -139,6 +147,9 @@ class PepOracleProdStack(Stack):
             "PEP_ORACLE_COGNITO_REGION": cfg.compute_region,
             "PEP_ORACLE_COGNITO_ALLOWED_EMAILS": cfg.allowed_email,
             "PEP_ORACLE_PUBLIC_URL": cfg.public_url,
+            # Code provenance for GET /version; supply at deploy via `-c git_sha=...`
+            # (defaults to "unknown" until the Phase 4 pipeline bakes it).
+            "PEP_ORACLE_GIT_SHA": cfg.git_sha,
         }
 
         self.fn = lambda_.DockerImageFunction(
@@ -171,7 +182,7 @@ class PepOracleProdStack(Stack):
             auth_type=lambda_.FunctionUrlAuthType.AWS_IAM
         )
 
-        # Task 7: CloudFront (cert cross-region) + Route 53 alias
+        # --- Public endpoint: CloudFront + OAC + Route 53 alias (cert is cross-region) ---
         cert = acm.Certificate.from_certificate_arn(self, "Cert", self._cert_arn)
         zone = route53.PublicHostedZone.from_public_hosted_zone_attributes(
             self, "Zone",
