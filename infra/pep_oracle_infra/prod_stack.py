@@ -16,6 +16,8 @@ from typing import Optional
 from aws_cdk import Duration
 from aws_cdk import RemovalPolicy
 from aws_cdk import Stack
+from aws_cdk import aws_apigatewayv2 as apigwv2
+from aws_cdk import aws_apigatewayv2_integrations as apigw_integrations
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
@@ -152,14 +154,17 @@ class PepOracleProdStack(Stack):
             "PEP_ORACLE_GIT_SHA": cfg.git_sha,
         }
 
-        self.fn = lambda_.DockerImageFunction(
-            self, "ServeFn",
+        fn_kwargs = dict(
             code=lambda_.DockerImageCode.from_image_asset(str(project_root)),
             memory_size=2048,
             timeout=Duration.seconds(30),
-            reserved_concurrent_executions=30,
             environment=env,
         )
+        # Reserving concurrency requires the account's unreserved pool to stay >= 10;
+        # the default-10 account limit can't support any reservation, so default off.
+        if cfg.lambda_reserved_concurrency:
+            fn_kwargs["reserved_concurrent_executions"] = cfg.lambda_reserved_concurrency
+        self.fn = lambda_.DockerImageFunction(self, "ServeFn", **fn_kwargs)
 
         # Least-privilege grants
         self.corpus_bucket.grant_read(self.fn)
@@ -178,11 +183,23 @@ class PepOracleProdStack(Stack):
             ],
         ))
 
-        self.fn_url = self.fn.add_function_url(
-            auth_type=lambda_.FunctionUrlAuthType.AWS_IAM
+        # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this
+        # account blocks public (auth=NONE) function URLs, and AWS_IAM/OAC would sign the
+        # Authorization header (colliding with the MCP viewer bearer). An HTTP API passes
+        # the bearer through natively; Mangum handles the API Gateway v2 event unchanged.
+        # The app's own JWT (/mcp), PKCE (/token) and Cognito (/authorize) checks are the
+        # security boundary.
+        self.http_api = apigwv2.HttpApi(
+            self, "HttpApi",
+            default_integration=apigw_integrations.HttpLambdaIntegration(
+                "LambdaProxy", self.fn
+            ),
+        )
+        api_domain = (
+            f"{self.http_api.api_id}.execute-api.{cfg.compute_region}.amazonaws.com"
         )
 
-        # --- Public endpoint: CloudFront + OAC + Route 53 alias (cert is cross-region) ---
+        # --- Public endpoint: CloudFront + Route 53 alias (cert is cross-region) ---
         cert = acm.Certificate.from_certificate_arn(self, "Cert", self._cert_arn)
         zone = route53.PublicHostedZone.from_public_hosted_zone_attributes(
             self, "Zone",
@@ -193,7 +210,10 @@ class PepOracleProdStack(Stack):
         self.distribution = cloudfront.Distribution(
             self, "Cdn",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.FunctionUrlOrigin.with_origin_access_control(self.fn_url),
+                origin=origins.HttpOrigin(
+                    api_domain,
+                    protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+                ),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
                 cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,

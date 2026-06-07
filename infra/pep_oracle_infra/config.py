@@ -24,6 +24,10 @@ class DeployConfig:
     embed_dims: str = "1024"
     oauth_table_name: str = "pep-oracle-oauth"
     signing_ssm_param: str = "/pep-oracle/oauth-signing-key"
+    # 0 = no reserved concurrency (default). A reservation needs the account's
+    # unreserved pool to stay >= 10, so it's unusable on the default-10 account
+    # limit; set via `-c lambda_reserved_concurrency=N` once the quota is raised.
+    lambda_reserved_concurrency: int = 0
 
     @property
     def public_url(self) -> str:
@@ -43,4 +47,5 @@ class DeployConfig:
             cognito_domain_prefix=ctx("cognito_domain_prefix", "pep-oracle-prod"),
             allowed_email=ctx("allowed_email", "REPLACE_ME@example.com"),
             git_sha=ctx("git_sha", "unknown"),
+            lambda_reserved_concurrency=int(ctx("lambda_reserved_concurrency", 0)),
         )

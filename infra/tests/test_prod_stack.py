@@ -89,7 +89,6 @@ def test_lambda_env_has_serving_contract():
     t = _template()
     t.has_resource_properties("AWS::Lambda::Function", Match.object_like({
         "PackageType": "Image",
-        "ReservedConcurrentExecutions": 30,
         "Environment": {"Variables": Match.object_like({
             "PEP_ORACLE_SERVE_FROM_ARTIFACT": "1",
             "PEP_ORACLE_EMBED_BACKEND": "bedrock",
@@ -106,11 +105,41 @@ def test_lambda_env_has_serving_contract():
     }))
 
 
-def test_function_url_is_iam_auth():
+def test_lambda_reserved_concurrency_default_off_and_configurable():
+    from dataclasses import replace
+
+    # Default: no reservation (the account's default-10 concurrency can't support one).
+    _template().resource_properties_count_is(
+        "AWS::Lambda::Function",
+        Match.object_like({"ReservedConcurrentExecutions": Match.any_value()}),
+        0,
+    )
+
+    # Configured via context: applied to the serving function.
+    app = cdk.App()
+    stack = PepOracleProdStack(
+        app, "ProdRC", cfg=replace(_cfg(), lambda_reserved_concurrency=5),
+        cert_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc",
+        hosted_zone_id="Z123456ABCDEFG", hosted_zone_name="pep-oracle.iicapn.com",
+        cross_region_references=True, env=ENV,
+    )
+    Template.from_stack(stack).has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like({"ReservedConcurrentExecutions": 5}),
+    )
+
+
+def test_http_api_proxies_to_lambda():
+    # HTTP API ($default proxy) instead of a Function URL (public function URLs are
+    # blocked on this account; APIGW passes the bearer through, no OAC/SigV4 conflict).
     t = _template()
-    t.has_resource_properties("AWS::Lambda::Url", Match.object_like({
-        "AuthType": "AWS_IAM",
+    t.resource_count_is("AWS::ApiGatewayV2::Api", 1)
+    t.has_resource_properties("AWS::ApiGatewayV2::Integration", Match.object_like({
+        "IntegrationType": "AWS_PROXY",
+        "PayloadFormatVersion": "2.0",
     }))
+    # No Lambda Function URL remains.
+    t.resource_count_is("AWS::Lambda::Url", 0)
 
 
 def test_lambda_role_has_bedrock_and_ssm():
@@ -126,15 +155,15 @@ def test_lambda_role_has_bedrock_and_ssm():
     }))
 
 
-def test_cloudfront_distribution_has_domain_and_oac_origin():
+def test_cloudfront_distribution_has_domain_no_oac():
     t = _template()
     t.has_resource_properties("AWS::CloudFront::Distribution", Match.object_like({
         "DistributionConfig": Match.object_like({
             "Aliases": ["pep-oracle.iicapn.com"],
         })
     }))
-    # OAC is created for the Function URL origin
-    t.resource_count_is("AWS::CloudFront::OriginAccessControl", 1)
+    # No OAC: the Function URL is public (auth=NONE) and app-layer auth protects it.
+    t.resource_count_is("AWS::CloudFront::OriginAccessControl", 0)
 
 
 def test_route53_alias_record_present():
