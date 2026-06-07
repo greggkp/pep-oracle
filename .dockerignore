@@ -1,0 +1,11 @@
+.git
+.venv
+infra/.venv
+infra/cdk.out
+tests
+docs
+.pep-oracle
+**/__pycache__
+*.pyc
+.playwright-mcp
+.superpowers
