@@ -1,0 +1,12 @@
+{
+  "app": "python app.py",
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true,
+    "domain_name": "pep-oracle.iicapn.com",
+    "compute_region": "ap-southeast-2",
+    "cert_region": "us-east-1",
+    "corpus_bucket_name": "pep-oracle-corpus-prod",
+    "cognito_domain_prefix": "pep-oracle-prod",
+    "allowed_email": "REPLACE_ME@example.com"
+  }
+}

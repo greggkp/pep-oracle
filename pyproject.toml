@@ -30,7 +30,7 @@ pep-oracle-server = "pep_oracle.server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not live'"
+addopts = "-m 'not live' --ignore=infra"
 markers = ["live: tests that require real database and network (deselected by default)"]
 asyncio_mode = "auto"
 
