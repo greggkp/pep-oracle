@@ -123,3 +123,22 @@ def test_lambda_role_has_bedrock_and_ssm():
             ])
         })
     }))
+
+
+def test_cloudfront_distribution_has_domain_and_oac_origin():
+    t = _template()
+    t.has_resource_properties("AWS::CloudFront::Distribution", Match.object_like({
+        "DistributionConfig": Match.object_like({
+            "Aliases": ["pep-oracle.iicapn.com"],
+        })
+    }))
+    # OAC is created for the Function URL origin
+    t.resource_count_is("AWS::CloudFront::OriginAccessControl", 1)
+
+
+def test_route53_alias_record_present():
+    t = _template()
+    t.has_resource_properties("AWS::Route53::RecordSet", Match.object_like({
+        "Type": "A",
+        "Name": "pep-oracle.iicapn.com.",
+    }))

@@ -26,7 +26,13 @@ def _cfg() -> DeployConfig:
 
 def test_prod_stack_synthesizes():
     app = cdk.App()
-    stack = PepOracleProdStack(app, "Prod", cfg=_cfg(), cross_region_references=True, env=ENV)
+    stack = PepOracleProdStack(
+        app, "Prod", cfg=_cfg(),
+        cert_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc",
+        hosted_zone_id="Z123456ABCDEFG",
+        hosted_zone_name="pep-oracle.iicapn.com",
+        cross_region_references=True, env=ENV,
+    )
     Template.from_stack(stack)  # raises if synthesis fails
 
 

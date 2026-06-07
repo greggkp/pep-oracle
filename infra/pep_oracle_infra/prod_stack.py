@@ -10,11 +10,16 @@ from typing import Optional
 from aws_cdk import Duration
 from aws_cdk import RemovalPolicy
 from aws_cdk import Stack
+from aws_cdk import aws_certificatemanager as acm
+from aws_cdk import aws_cloudfront as cloudfront
+from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_route53 as route53
+from aws_cdk import aws_route53_targets as route53_targets
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
@@ -167,3 +172,32 @@ class PepOracleProdStack(Stack):
         )
 
         # Task 7: CloudFront (cert cross-region) + Route 53 alias
+        cert = acm.Certificate.from_certificate_arn(self, "Cert", self._cert_arn)
+        zone = route53.PublicHostedZone.from_public_hosted_zone_attributes(
+            self, "Zone",
+            hosted_zone_id=self._hosted_zone_id,
+            zone_name=self._hosted_zone_name,
+        )
+
+        self.distribution = cloudfront.Distribution(
+            self, "Cdn",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.FunctionUrlOrigin.with_origin_access_control(self.fn_url),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+            ),
+            domain_names=[cfg.domain_name],
+            certificate=cert,
+            minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+        )
+
+        route53.ARecord(
+            self, "AliasA",
+            zone=zone,
+            record_name=cfg.domain_name,
+            target=route53.RecordTarget.from_alias(
+                route53_targets.CloudFrontTarget(self.distribution)
+            ),
+        )

@@ -17,4 +17,15 @@ class PepOracleCertStack(Stack):
     def __init__(self, scope: Construct, cid: str, *, cfg: DeployConfig, **kwargs) -> None:
         super().__init__(scope, cid, **kwargs)
         self.cfg = cfg
-        # Task 7 adds: PublicHostedZone + Certificate (DNS-validated).
+
+        from aws_cdk import aws_certificatemanager as acm
+        from aws_cdk import aws_route53 as route53
+
+        self.hosted_zone = route53.PublicHostedZone(
+            self, "Zone", zone_name=cfg.domain_name
+        )
+        self.certificate = acm.Certificate(
+            self, "Cert",
+            domain_name=cfg.domain_name,
+            validation=acm.CertificateValidation.from_dns(self.hosted_zone),
+        )

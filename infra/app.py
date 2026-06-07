@@ -26,12 +26,16 @@ cert_stack = PepOracleCertStack(
     env=cdk.Environment(account=account, region=cfg.cert_region),
 )
 
-PepOracleProdStack(
+prod = PepOracleProdStack(
     app,
     "PepOracleProdStack",
     cfg=cfg,
+    cert_arn=cert_stack.certificate.certificate_arn,
+    hosted_zone_id=cert_stack.hosted_zone.hosted_zone_id,
+    hosted_zone_name=cert_stack.hosted_zone.zone_name,
     cross_region_references=True,
     env=cdk.Environment(account=account, region=cfg.compute_region),
 )
+prod.add_dependency(cert_stack)
 
 app.synth()
