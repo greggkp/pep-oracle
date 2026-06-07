@@ -16,9 +16,14 @@ in later steps; this module starts with construction + the login-redirect URL.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional, Protocol
 from urllib.parse import urlencode
+
+import jwt
+import requests
+from jwt.algorithms import RSAAlgorithm
 
 from pep_oracle import config
 
@@ -105,6 +110,60 @@ class CognitoGate:
             "state": login_state,
         }
         return f"{self.domain}/oauth2/authorize?{urlencode(params)}"
+
+    def _fetch_jwks(self) -> dict[str, Any]:
+        """Fetch (and cache) the pool's JWKS.
+
+        The cache is per-instance, and the gate is constructed once at mount,
+        so in practice this is one fetch per process lifetime. NOTE: if Cognito
+        rotates its signing keys, a long-lived process holds a stale JWKS until
+        restart; on Lambda this self-heals via container recycling. TODO: add a
+        TTL / refresh-on-unknown-kid if the gate runs long-lived outside Lambda.
+        """
+        if self._jwks_cache is None:
+            resp = requests.get(
+                f"{self.issuer}/.well-known/jwks.json", timeout=_HTTP_TIMEOUT
+            )
+            resp.raise_for_status()
+            self._jwks_cache = resp.json()
+        return self._jwks_cache
+
+    def _verify_id_token(self, id_token: str) -> dict[str, Any]:
+        """Verify the Cognito ID token (RS256 via pool JWKS) and the email allow-list.
+
+        Raises IdentityError on any failure (bad sig/iss/aud/exp, unknown kid, or a
+        caller whose email is not on the allow-list).
+        """
+        try:
+            header = jwt.get_unverified_header(id_token)
+            jwks = self._fetch_jwks()
+            jwk = next(
+                (k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")),
+                None,
+            )
+            if jwk is None:
+                raise IdentityError("no matching JWKS key")
+            public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
+            claims = jwt.decode(
+                id_token,
+                public_key,
+                algorithms=["RS256"],
+                audience=self.client_id,
+                issuer=self.issuer,
+                options={"require": ["exp", "iat", "iss", "aud"]},
+            )
+        except requests.RequestException as e:
+            logger.error("Cognito JWKS fetch failed: %s", e)
+            raise IdentityError("id_token verification failed") from e
+        except IdentityError:
+            raise
+        except Exception as e:  # noqa: BLE001 -- single opaque error per spec
+            raise IdentityError("id_token verification failed") from e
+        email = str(claims.get("email", "")).lower()
+        if email not in self.allowed_emails:
+            logger.warning("Cognito login rejected: email not on allow-list")
+            raise IdentityError("email not allowed")
+        return claims
 
 
 def get_gate() -> AuthorizeGate:

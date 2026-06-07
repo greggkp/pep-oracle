@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import time
 from urllib.parse import parse_qs, urlparse
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
 from pep_oracle import authorize_gate, config
 from pep_oracle.authorize_gate import CognitoGate, TrustedUpstreamGate
@@ -97,3 +103,99 @@ def test_cognito_from_config_whitespace_emails_raises(monkeypatch):
     monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "  ,  ")
     with pytest.raises(ValueError):
         authorize_gate.get_gate()
+
+
+# --- ID-token verification ------------------------------------------------
+
+_KID = "test-kid-1"
+
+
+def _rsa_keypair():
+    """Return (private_pem_str, jwks_dict) for signing/verifying test ID tokens."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("ascii")
+    jwk = json.loads(RSAAlgorithm.to_jwk(key.public_key()))
+    jwk.update({"kid": _KID, "alg": "RS256", "use": "sig"})
+    return priv_pem, {"keys": [jwk]}
+
+
+def _id_token(priv_pem, *, iss, aud, email, ttl=3600, kid=_KID):
+    now = int(time.time())
+    claims = {"sub": "u1", "iss": iss, "aud": aud, "email": email,
+              "iat": now, "exp": now + ttl}
+    return jwt.encode(claims, priv_pem, algorithm="RS256", headers={"kid": kid})
+
+
+def _verifying_gate(monkeypatch):
+    priv_pem, jwks = _rsa_keypair()
+    gate = _gate()
+    monkeypatch.setattr(gate, "_fetch_jwks", lambda: jwks)
+    return gate, priv_pem
+
+
+def test_verify_id_token_accepts_valid(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com")
+    claims = gate._verify_id_token(tok)
+    assert claims["email"] == "me@example.com"
+    assert "sub" in claims  # returns the full verified claims, not just email
+
+
+def test_verify_id_token_rejects_disallowed_email(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="intruder@evil.com")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_rejects_wrong_audience(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud="some-other-client", email="me@example.com")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_rejects_wrong_issuer(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss="https://evil.example", aud=gate.client_id, email="me@example.com")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_rejects_expired(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com", ttl=-10)
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_rejects_unknown_kid(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com", kid="other-kid")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_rejects_bad_signature(monkeypatch):
+    gate, _ = _verifying_gate(monkeypatch)
+    other_priv, _ = _rsa_keypair()  # signed by a key NOT in the gate's JWKS
+    tok = _id_token(other_priv, iss=gate.issuer, aud=gate.client_id, email="me@example.com")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_jwks_fetch_error_raises(monkeypatch):
+    priv_pem, _ = _rsa_keypair()
+    gate = _gate()
+
+    def boom():
+        raise authorize_gate.requests.RequestException("connreset")
+
+    monkeypatch.setattr(gate, "_fetch_jwks", boom)
+    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
