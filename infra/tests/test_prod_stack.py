@@ -129,13 +129,17 @@ def test_lambda_reserved_concurrency_default_off_and_configurable():
     )
 
 
-def test_function_url_is_public_app_auth():
-    # auth=NONE: OAC's SigV4 collides with the MCP viewer bearer; app-layer JWT/OAuth
-    # is the security boundary (see prod_stack ServeFn function-url comment).
+def test_http_api_proxies_to_lambda():
+    # HTTP API ($default proxy) instead of a Function URL (public function URLs are
+    # blocked on this account; APIGW passes the bearer through, no OAC/SigV4 conflict).
     t = _template()
-    t.has_resource_properties("AWS::Lambda::Url", Match.object_like({
-        "AuthType": "NONE",
+    t.resource_count_is("AWS::ApiGatewayV2::Api", 1)
+    t.has_resource_properties("AWS::ApiGatewayV2::Integration", Match.object_like({
+        "IntegrationType": "AWS_PROXY",
+        "PayloadFormatVersion": "2.0",
     }))
+    # No Lambda Function URL remains.
+    t.resource_count_is("AWS::Lambda::Url", 0)
 
 
 def test_lambda_role_has_bedrock_and_ssm():
