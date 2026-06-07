@@ -83,3 +83,43 @@ def test_cognito_client_is_confidential_auth_code():
         "CallbackURLs": ["https://pep-oracle.iicapn.com/oauth/authorize/callback"],
         "SupportedIdentityProviders": ["COGNITO"],
     }))
+
+
+def test_lambda_env_has_serving_contract():
+    t = _template()
+    t.has_resource_properties("AWS::Lambda::Function", Match.object_like({
+        "PackageType": "Image",
+        "ReservedConcurrentExecutions": 30,
+        "Environment": {"Variables": Match.object_like({
+            "PEP_ORACLE_SERVE_FROM_ARTIFACT": "1",
+            "PEP_ORACLE_EMBED_BACKEND": "bedrock",
+            "PEP_ORACLE_EMBED_MODEL": "amazon.titan-embed-text-v2:0",
+            "PEP_ORACLE_OAUTH_STORE": "dynamodb",
+            "PEP_ORACLE_OAUTH_DDB_TABLE": "pep-oracle-oauth",
+            "PEP_ORACLE_OAUTH_SIGNING_BACKEND": "ssm",
+            "PEP_ORACLE_OAUTH_SIGNING_SSM_PARAM": "/pep-oracle/oauth-signing-key",
+            "PEP_ORACLE_AUTHORIZE_GATE": "cognito",
+            "PEP_ORACLE_PUBLIC_URL": "https://pep-oracle.iicapn.com",
+            "PEP_ORACLE_CORPUS_URI": "s3://pep-oracle-corpus-test",
+        })},
+    }))
+
+
+def test_function_url_is_iam_auth():
+    t = _template()
+    t.has_resource_properties("AWS::Lambda::Url", Match.object_like({
+        "AuthType": "AWS_IAM",
+    }))
+
+
+def test_lambda_role_has_bedrock_and_ssm():
+    t = _template()
+    # Bedrock InvokeModel on the embed model + SSM GetParameter on the signing param
+    t.has_resource_properties("AWS::IAM::Policy", Match.object_like({
+        "PolicyDocument": Match.object_like({
+            "Statement": Match.array_with([
+                Match.object_like({"Action": "bedrock:InvokeModel"}),
+                Match.object_like({"Action": "ssm:GetParameter"}),
+            ])
+        })
+    }))

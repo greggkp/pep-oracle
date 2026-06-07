@@ -4,13 +4,17 @@ Route 53 alias. Resources are added in Tasks 4-7.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
+from aws_cdk import Duration
 from aws_cdk import RemovalPolicy
 from aws_cdk import Stack
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
@@ -103,4 +107,63 @@ class PepOracleProdStack(Stack):
         )
 
         # Task 6: Lambda (container) + Function URL + IAM
+        project_root = Path(__file__).resolve().parents[2]
+
+        env = {
+            "PEP_ORACLE_SERVE_FROM_ARTIFACT": "1",
+            "PEP_ORACLE_EMBED_BACKEND": "bedrock",
+            "PEP_ORACLE_BEDROCK_REGION": cfg.compute_region,
+            "PEP_ORACLE_EMBED_MODEL": cfg.embed_model,
+            "PEP_ORACLE_EMBED_DIMS": cfg.embed_dims,
+            "PEP_ORACLE_CORPUS_URI": f"s3://{cfg.corpus_bucket_name}",
+            "PEP_ORACLE_OAUTH_STORE": "dynamodb",
+            "PEP_ORACLE_OAUTH_DDB_TABLE": cfg.oauth_table_name,
+            "PEP_ORACLE_OAUTH_DDB_REGION": cfg.compute_region,
+            "PEP_ORACLE_OAUTH_SIGNING_BACKEND": "ssm",
+            "PEP_ORACLE_OAUTH_SIGNING_SSM_PARAM": cfg.signing_ssm_param,
+            "PEP_ORACLE_OAUTH_SIGNING_SSM_REGION": cfg.compute_region,
+            "PEP_ORACLE_AUTHORIZE_GATE": "cognito",
+            "PEP_ORACLE_COGNITO_DOMAIN": (
+                f"https://{cfg.cognito_domain_prefix}.auth.{cfg.compute_region}.amazoncognito.com"
+            ),
+            "PEP_ORACLE_COGNITO_CLIENT_ID": self.user_pool_client.user_pool_client_id,
+            "PEP_ORACLE_COGNITO_CLIENT_SECRET": (
+                self.user_pool_client.user_pool_client_secret.unsafe_unwrap()
+            ),
+            "PEP_ORACLE_COGNITO_USER_POOL_ID": self.user_pool.user_pool_id,
+            "PEP_ORACLE_COGNITO_REGION": cfg.compute_region,
+            "PEP_ORACLE_COGNITO_ALLOWED_EMAILS": cfg.allowed_email,
+            "PEP_ORACLE_PUBLIC_URL": cfg.public_url,
+        }
+
+        self.fn = lambda_.DockerImageFunction(
+            self, "ServeFn",
+            code=lambda_.DockerImageCode.from_image_asset(str(project_root)),
+            memory_size=2048,
+            timeout=Duration.seconds(30),
+            reserved_concurrent_executions=30,
+            environment=env,
+        )
+
+        # Least-privilege grants
+        self.corpus_bucket.grant_read(self.fn)
+        self.oauth_table.grant_read_write_data(self.fn)
+        self.kms_key.grant_decrypt(self.fn)  # SSM SecureString + S3/DDB CMK reads
+        self.fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["bedrock:InvokeModel"],
+            resources=[
+                f"arn:aws:bedrock:{cfg.compute_region}::foundation-model/{cfg.embed_model}"
+            ],
+        ))
+        self.fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["ssm:GetParameter"],
+            resources=[
+                f"arn:aws:ssm:{cfg.compute_region}:{self.account}:parameter{cfg.signing_ssm_param}"
+            ],
+        ))
+
+        self.fn_url = self.fn.add_function_url(
+            auth_type=lambda_.FunctionUrlAuthType.AWS_IAM
+        )
+
         # Task 7: CloudFront (cert cross-region) + Route 53 alias
