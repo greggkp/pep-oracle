@@ -38,7 +38,7 @@ prod = PepOracleProdStack(
 )
 prod.add_dependency(cert_stack)
 
-from pep_oracle_infra.ingest_stack import PepOracleIngestStack
+from pep_oracle_infra.ingest_stack import PepOracleIngestStack  # noqa: E402
 
 # Decoupled from PepOracleProdStack: the ingest stack imports the corpus bucket + data
 # key as external resources (see ingest_stack.py), so deploying it touches only the new

@@ -2,7 +2,6 @@
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 import chromadb
@@ -135,17 +134,6 @@ def test_topics_all_ingested(client_and_collection):
     _ingest(collection, 3)
     _ingest(collection, 4)
     _ingest(collection, 5)
-    _populate_topics_cache()
-    resp = client.get("/topics")
-    data = resp.json()
-    assert data["not_ingested_episodes"] == []
-
-
-def test_topics_all_ingested(client_and_collection):
-    """With all episodes ingested, not_ingested_episodes is empty."""
-    client, collection, _ = client_and_collection
-    for i in range(1, 6):
-        _ingest(collection, i)
     _populate_topics_cache()
     resp = client.get("/topics")
     data = resp.json()

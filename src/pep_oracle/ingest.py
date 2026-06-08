@@ -101,8 +101,6 @@ def episode_chunks_and_embeddings(
 
 def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> tuple[bool, dict | None]:
     """Ingest a single episode. Returns True on success."""
-    label = f"Ep {episode.episode_number or '?'}: {episode.title[:50]}"
-
     if force:
         delete_episode(collection, episode.guid)
 
@@ -113,7 +111,7 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
         episode, diarize=diarize, progress_callback=progress_callback
     )
     if not chunks:
-        click.echo(f"  Skipped (no excerpts produced)")
+        click.echo("  Skipped (no excerpts produced)")
         return False, None
 
     if progress_callback:

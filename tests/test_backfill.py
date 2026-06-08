@@ -1,4 +1,3 @@
-import json
 
 import pep_oracle.backfill as backfill
 from pep_oracle import corpus

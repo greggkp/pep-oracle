@@ -66,10 +66,10 @@ def test_get_freshness_returns_all_entries():
     assert result["b"]["stale"] is True
 
 
-import asyncio
-import pytest
+import asyncio  # noqa: E402
+import pytest  # noqa: E402
 
-from pep_oracle.cache import trigger_refresh
+from pep_oracle.cache import trigger_refresh  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,6 @@ async def test_trigger_refresh_deduplicates():
     def slow_fetcher():
         nonlocal call_count
         call_count += 1
-        import time
         time.sleep(0.1)
         return {"result": call_count}
 

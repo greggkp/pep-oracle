@@ -2,11 +2,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pep_oracle.chunking import (
-    OVERLAP_SECONDS,
-    TARGET_CHUNK_SECONDS,
     chunk_transcript,
 )
-from pep_oracle.models import Chunk, Episode, TranscriptSegment
+from pep_oracle.models import Episode, TranscriptSegment
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

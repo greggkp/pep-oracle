@@ -623,7 +623,7 @@ def test_ask_compare_speakers_dual_retrieval():
          patch("pep_oracle.query.get_fresh_collection"), \
          patch("pep_oracle.query.hybrid_search", side_effect=mock_store):
         from pep_oracle.query import ask
-        result = ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
+        ask("Chas vs Dave on immigration", anthropic_client=mock_anthropic)
 
     # Verify dual retrieval happened
     assert call_count["n"] == 2

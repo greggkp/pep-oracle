@@ -19,8 +19,6 @@ from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.query import ask as do_ask
 from pep_oracle.store import (
-    get_client,
-    get_collection,
     get_fresh_collection,
     get_ingested_guids,
     get_ingestion_stats,
