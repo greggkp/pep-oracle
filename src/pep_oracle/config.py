@@ -37,6 +37,9 @@ EMBED_DIMS = int(os.getenv("PEP_ORACLE_EMBED_DIMS", "1024"))
 # The artifact lives under <CORPUS_URI>/corpus/{vNNNN.parquet,vNNNN.manifest.json,current.json};
 # the "/corpus" prefix is appended by corpus.py, so this is the BASE, not the corpus dir itself.
 CORPUS_URI = os.getenv("PEP_ORACLE_CORPUS_URI", str(DATA_DIR))
+# Phase 3 ingestion: S3 (or local) location of the diarization speaker references,
+# downloaded at ingest time and passed as profile_path. Defaults under the corpus base.
+SPEAKER_PROFILES_URI = os.getenv("PEP_ORACLE_SPEAKER_PROFILES_URI", f"{CORPUS_URI}/refs/speaker_profiles.json")
 
 # --- Serving source (Phase 2a) ---
 # When "1", the MCP tool retrieves from the corpus artifact at CORPUS_URI via an
