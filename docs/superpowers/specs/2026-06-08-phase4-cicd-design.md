@@ -47,13 +47,13 @@ GitHub stores only the **role ARN** and **allowed email** as repo *variables* (n
 
 ### App change — version traceability (`semver`)
 
-Add a `semver` field to `DeployConfig` (context `-c semver=`), thread it to the serving Lambda env `PEP_ORACLE_SEMVER`, and surface it in `GET /version` alongside the existing `code_git_sha`. A release tag is then visible end-to-end: `git tag v1.0.0` → `/version` reports `"semver": "v1.0.0"`. Default `"unknown"` when unset (local/manual deploys unaffected). One-line additions in `infra/pep_oracle_infra/config.py`, `infra/pep_oracle_infra/prod_stack.py`, `src/pep_oracle/server.py`.
+`GET /version` already returns `code_semver`, but it's the static package version (`0.1.0`, never bumped) — meaningless for traceability. Make the **release tag override it** instead of adding a confusing second field: add a `semver` field to `DeployConfig` (context `-c semver=`), thread it to the serving Lambda env `PEP_ORACLE_SEMVER`, expose it as `config.SEMVER`, and have `_code_version()` return `config.SEMVER or _pkg_version("pep-oracle")`. A tagged release then shows `"code_semver": "v1.0.0"`; local/manual runs (no env) keep falling back to the package version. Additions in `infra/pep_oracle_infra/config.py`, `infra/pep_oracle_infra/prod_stack.py`, `src/pep_oracle/config.py`, `src/pep_oracle/server.py`.
 
 ### Post-deploy smoke (auth-free)
 
 A standalone script `scripts/smoke.py` (no pytest fixtures, so the deploy job just runs `python scripts/smoke.py`) the deploy job runs after `cdk deploy`, polling `https://pep-oracle.iicapn.com` (override via `PEP_ORACLE_SMOKE_URL`):
 - `GET /health` → 200
-- `GET /version` → `code_git_sha` == the deployed short SHA **and** `semver` == the tag (proves the new image is actually live, not a stale warm container)
+- `GET /version` → `code_git_sha` == the deployed short SHA **and** `code_semver` == the tag (proves the new image is actually live, not a stale warm container)
 - `GET /.well-known/oauth-authorization-server` → 200
 - `POST /mcp` with no token → 401
 
@@ -76,7 +76,8 @@ Tags are immutable, so rollback is "deploy the previous good tag": GitHub Action
 **Modified**
 - `infra/pep_oracle_infra/config.py` — add `semver` field + context read
 - `infra/pep_oracle_infra/prod_stack.py` — add `PEP_ORACLE_SEMVER` to the Lambda env
-- `src/pep_oracle/server.py` — add `semver` to the `/version` payload
+- `src/pep_oracle/config.py` — add `SEMVER = os.getenv("PEP_ORACLE_SEMVER", "")`
+- `src/pep_oracle/server.py` — `_code_version()` prefers `config.SEMVER` for `code_semver`
 - `infra/app.py` — instantiate `PepOracleCicdStack`
 - `pyproject.toml` — `[tool.ruff]` lenient config + a `dev` optional-dependency group with `ruff`
 - `CLAUDE.md` — Phase 4 bullet
