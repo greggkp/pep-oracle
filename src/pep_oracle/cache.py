@@ -30,8 +30,11 @@ class CacheEntry:
         self.updated_at_iso = datetime.now(timezone.utc).isoformat()
 
     def invalidate(self):
-        """Mark data as stale without clearing it."""
-        self.updated_at = 0  # Forces is_stale() to return True
+        """Mark data as stale without clearing it. Set updated_at to a monotonic time
+        already past the TTL (clock-independent) rather than 0 — `time.monotonic()`'s
+        epoch is arbitrary, so on a freshly-booted host (low uptime) `now - 0` can be
+        < ttl and 0 would NOT read as stale."""
+        self.updated_at = time.monotonic() - self.ttl_seconds - 1
 
     def freshness(self) -> dict:
         return {
