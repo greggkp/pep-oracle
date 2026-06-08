@@ -64,25 +64,22 @@ def _run_transcribe_and_diarize(
     return segments, source, speaker_segments, t_elapsed, d_elapsed
 
 
-def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> bool:
-    """Ingest a single episode. Returns True on success."""
-    label = f"Ep {episode.episode_number or '?'}: {episode.title[:50]}"
+def episode_chunks_and_embeddings(
+    episode,
+    *,
+    diarize: bool = False,
+    profile_path=None,
+    progress_callback=None,
+):
+    """Transcribe → (optionally) diarize → chunk → embed one episode.
 
-    if force:
-        delete_episode(collection, episode.guid)
-
-    if progress_callback:
-        progress_callback("transcribing")
-
-    segments, source, speaker_segments, t_elapsed, d_elapsed = _run_transcribe_and_diarize(
-        episode, diarize, progress_callback,
+    Returns (chunks, embeddings) — the per-episode work shared by the ChromaDB
+    ingest (_ingest_one) and the artifact ingest (ingest_artifact). Returns
+    ([], []) when the episode yields no chunks. No storage writes here.
+    """
+    segments, _source, speaker_segments, _t_elapsed, _d_elapsed = _run_transcribe_and_diarize(
+        episode, diarize, progress_callback
     )
-    logger.info(
-        "transcribe_elapsed=%.1fs diarize_elapsed=%.1fs (concurrent, critical path=%.1fs)",
-        t_elapsed, d_elapsed, max(t_elapsed, d_elapsed),
-    )
-    click.echo(f"  Transcript: {source} ({len(segments)} segments)")
-
     if diarize:
         from pep_oracle.transcripts.diarize import (
             apply_diarization,
@@ -93,19 +90,36 @@ def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool
         roster = host_roster_from_title(episode.title)
         clusters = load_cluster_info(episode.guid)
         segments = apply_diarization(
-            segments, speaker_segments, profile_path=None, roster=roster, clusters=clusters
+            segments, speaker_segments, profile_path=profile_path, roster=roster, clusters=clusters
         )
-
     chunks = chunk_transcript(segments, episode)
     if not chunks:
+        return [], []
+    embeddings = embed_texts([c.text for c in chunks])
+    return chunks, embeddings
+
+
+def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> tuple[bool, dict | None]:
+    """Ingest a single episode. Returns True on success."""
+    label = f"Ep {episode.episode_number or '?'}: {episode.title[:50]}"
+
+    if force:
+        delete_episode(collection, episode.guid)
+
+    if progress_callback:
+        progress_callback("transcribing")
+
+    chunks, embeddings = episode_chunks_and_embeddings(
+        episode, diarize=diarize, progress_callback=progress_callback
+    )
+    if not chunks:
         click.echo(f"  Skipped (no excerpts produced)")
-        return False
+        return False, None
 
     if progress_callback:
         progress_callback(f"embedding {len(chunks)} excerpts")
     click.echo(f"  Embedding {len(chunks)} excerpts...", nl=False)
     e_start = time.monotonic()
-    embeddings = embed_texts([c.text for c in chunks])
     e_elapsed = time.monotonic() - e_start
     click.echo(" done")
     logger.info("embed_elapsed=%.1fs (chunks=%d)", e_elapsed, len(chunks))

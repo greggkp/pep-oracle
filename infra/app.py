@@ -38,4 +38,17 @@ prod = PepOracleProdStack(
 )
 prod.add_dependency(cert_stack)
 
+from pep_oracle_infra.ingest_stack import PepOracleIngestStack
+
+ingest = PepOracleIngestStack(
+    app,
+    "PepOracleIngestStack",
+    cfg=cfg,
+    data_key=prod.kms_key,
+    corpus_bucket=prod.corpus_bucket,
+    cross_region_references=True,
+    env=cdk.Environment(account=account, region=cfg.compute_region),
+)
+ingest.add_dependency(prod)
+
 app.synth()

@@ -302,3 +302,23 @@ def test_ingest_runs_transcribe_and_diarize_concurrently(mock_embed, mock_fetch)
     assert result["processed"] == 1
     # Sequential would be ~0.6s; parallel should be ~0.3s. Allow 0.5s as the cap.
     assert elapsed < 0.5, f"expected parallel execution (<0.5s), got {elapsed:.2f}s"
+
+
+def test_episode_chunks_and_embeddings_returns_chunks_and_vectors(monkeypatch):
+    from pep_oracle import ingest
+    from pep_oracle.models import Chunk, Episode, TranscriptSegment
+    from datetime import datetime, timezone
+
+    ep = Episode(guid="g-new", title="Test (Ep 300, 1 Jan)", pub_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                 audio_url="http://x/a.mp3", description="d", episode_number=300)
+
+    monkeypatch.setattr(ingest, "_run_transcribe_and_diarize",
+                        lambda episode, diarize, cb: (
+                            [TranscriptSegment(text="hello world", start_time=0.0, end_time=5.0)],
+                            "whisper", [], 0.0, 0.0))
+    monkeypatch.setattr(ingest, "embed_texts", lambda texts: [[0.1] * 1024 for _ in texts])
+
+    chunks, embeddings = ingest.episode_chunks_and_embeddings(ep, diarize=False)
+    assert chunks and all(isinstance(c, Chunk) for c in chunks)
+    assert len(embeddings) == len(chunks) and len(embeddings[0]) == 1024
+    assert chunks[0].episode_guid == "g-new"
