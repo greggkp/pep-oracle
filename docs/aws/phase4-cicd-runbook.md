@@ -36,7 +36,7 @@ ref** — the OIDC trust subject is `repo:greggkp/pep-oracle:ref:refs/tags/v*`. 
 
 ## CI gate (no action needed — runs automatically)
 `ci.yml` runs on every PR and every push to `main`: `ruff check` + root `pytest` (via `uv`) + infra
-`pytest` + `cdk synth --all` + a docker build of both images. No AWS access (no OIDC, no creds). A
+`pytest` + `cdk synth '*'` (all stacks) + a docker build of both images. No AWS access (no OIDC, no creds). A
 red CI blocks the merge; fix before tagging a release.
 
 ## Notes

@@ -29,7 +29,7 @@ jobs:
       - name: CDK synth (all stacks)
         run: |
           npm install -g aws-cdk@2.1126.0
-          cd infra && cdk synth --all -c allowed_email=ci@example.com > /dev/null
+          cd infra && cdk synth '*' -c allowed_email=ci@example.com > /dev/null
       - name: Docker build (serving + ingest images)
         run: |
           docker build -f Dockerfile -t pep-oracle:ci .
