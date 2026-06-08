@@ -34,13 +34,17 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-southeast-2
       - name: CDK deploy (serving + ingest)
+        env:
+          ALLOWED_EMAIL: ${{ vars.ALLOWED_EMAIL }}
+          GIT_SHA: ${{ steps.ver.outputs.sha }}
+          SEMVER: ${{ steps.ver.outputs.semver }}
         run: |
           cd infra
           cdk deploy PepOracleProdStack PepOracleIngestStack \
             --require-approval never \
-            -c allowed_email=${{ vars.ALLOWED_EMAIL }} \
-            -c git_sha=${{ steps.ver.outputs.sha }} \
-            -c semver=${{ steps.ver.outputs.semver }}
+            -c "allowed_email=$ALLOWED_EMAIL" \
+            -c "git_sha=$GIT_SHA" \
+            -c "semver=$SEMVER"
       - name: Smoke test
         run: python scripts/smoke.py
         env:
