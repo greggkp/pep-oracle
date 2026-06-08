@@ -24,6 +24,11 @@ class DeployConfig:
     embed_dims: str = "1024"
     oauth_table_name: str = "pep-oracle-oauth"
     signing_ssm_param: str = "/pep-oracle/oauth-signing-key"
+    # KMS CMK id for the corpus bucket / data-at-rest. The ingest stack imports the
+    # key (and bucket) by id/name so its grants are identity-only — deploying ingest
+    # never forces a PepOracleProdStack update (which would redeploy the serving
+    # Lambda). Just the UUID, not the account: the ARN is built from the stack env.
+    data_key_id: str = "6b35e366-9e4b-4c6b-9b7e-8ee76e7d4ed4"
     # 0 = no reserved concurrency (default). A reservation needs the account's
     # unreserved pool to stay >= 10, so it's unusable on the default-10 account
     # limit; set via `-c lambda_reserved_concurrency=N` once the quota is raised.
@@ -48,4 +53,5 @@ class DeployConfig:
             allowed_email=ctx("allowed_email", "REPLACE_ME@example.com"),
             git_sha=ctx("git_sha", "unknown"),
             lambda_reserved_concurrency=int(ctx("lambda_reserved_concurrency", 0)),
+            data_key_id=ctx("data_key_id", cls.data_key_id),
         )

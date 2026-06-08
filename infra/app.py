@@ -40,15 +40,14 @@ prod.add_dependency(cert_stack)
 
 from pep_oracle_infra.ingest_stack import PepOracleIngestStack
 
-ingest = PepOracleIngestStack(
+# Decoupled from PepOracleProdStack: the ingest stack imports the corpus bucket + data
+# key as external resources (see ingest_stack.py), so deploying it touches only the new
+# ingest resources and never the live serving Lambda. No cross-stack ref → no dependency.
+PepOracleIngestStack(
     app,
     "PepOracleIngestStack",
     cfg=cfg,
-    data_key=prod.kms_key,
-    corpus_bucket=prod.corpus_bucket,
-    cross_region_references=True,
     env=cdk.Environment(account=account, region=cfg.compute_region),
 )
-ingest.add_dependency(prod)
 
 app.synth()

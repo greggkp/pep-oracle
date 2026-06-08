@@ -17,6 +17,26 @@ def _ep(guid, num):
                    audio_url=f"http://x/{guid}.mp3", description="d", episode_number=num)
 
 
+def _ep_unnumbered(guid):
+    # an "EXTRA" bonus episode whose title the episode-number regex can't parse
+    return Episode(guid=guid, title="PEP250 CORRESPONDENCE EXTRA",
+                   pub_date=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                   audio_url=f"http://x/{guid}.mp3", description="d", episode_number=None)
+
+
+def _fake_write(captured):
+    from pep_oracle.corpus import Manifest
+
+    def write(rows, *, dest, version, embed_model, dims, git_sha, built_at):
+        captured.update(rows=rows, version=version, dims=dims)
+        nums = sorted(r["metadata"].get("episode_number") for r in rows
+                      if r["metadata"].get("episode_number"))
+        rng = [nums[0], nums[-1]] if nums else [None, None]
+        return Manifest(1, embed_model, dims, rng, len(rows), git_sha, built_at, "sha")
+
+    return write
+
+
 def _existing_corpus():
     # one already-ingested episode (guid g1), one chunk
     metas = [{"episode_guid": "g1", "episode_title": "T (Ep 250)", "episode_date": "2026-01-01",
@@ -77,3 +97,31 @@ def test_no_new_episodes_is_noop(monkeypatch):
     assert result is None
     assert called["wrote"] is False
     assert processed == []
+
+
+def test_newest_forward_skips_old_gap_and_unnumbered(monkeypatch):
+    """Default mode: only numbered episodes NEWER than the corpus max (250). An old
+    missing episode (240, a back-catalogue gap) and an unnumbered EXTRA are left out —
+    so one permanent gap can't make every run a fragile all-or-nothing backfill."""
+    processed = []
+    feed = [_ep("g_old", 240), _ep("g1", 250), _ep("g2", 251), _ep_unnumbered("g_extra")]
+    _patch_common(monkeypatch, feed, processed)
+    captured = {}
+    monkeypatch.setattr(ingest_artifact, "write_artifact", _fake_write(captured))
+
+    ingest_artifact.ingest_artifact_incremental(dest="s3://b", diarize=True)
+    assert processed == ["g2"]                 # 240 (gap) + g_extra (unnumbered) skipped
+    assert [r["chunk_id"] for r in captured["rows"]] == ["g1_0000", "g2_0000"]
+
+
+def test_backfill_ingests_old_gap_and_unnumbered(monkeypatch):
+    """backfill=True: every feed episode the corpus lacks — old gap (240) + the
+    unnumbered EXTRA — but never the already-present g1/250."""
+    processed = []
+    feed = [_ep("g_old", 240), _ep("g1", 250), _ep("g2", 251), _ep_unnumbered("g_extra")]
+    _patch_common(monkeypatch, feed, processed)
+    captured = {}
+    monkeypatch.setattr(ingest_artifact, "write_artifact", _fake_write(captured))
+
+    ingest_artifact.ingest_artifact_incremental(dest="s3://b", diarize=True, backfill=True)
+    assert sorted(processed) == ["g2", "g_extra", "g_old"]  # all missing; g1 already present

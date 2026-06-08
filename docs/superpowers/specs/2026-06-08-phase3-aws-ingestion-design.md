@@ -1,7 +1,9 @@
 # Phase 3 — AWS-native ingestion (design)
 
-**Status:** design approved 2026-06-08 (brainstormed). Next: implementation plan.
+**Status:** design approved 2026-06-08 (brainstormed); deployed + refined 2026-06-08. Next: implementation plan.
 **Part of:** the AWS MCP migration (`docs/superpowers/specs/2026-06-02-aws-mcp-migration-design.md`). Phase 2 (serving) is live on AWS; this is Phase 3 (ingestion).
+
+**Deploy-time refinement (2026-06-08):** the first live run revealed the corpus is a partial snapshot with a permanent gap (eps 179–216 never transcribed) + missing EXTRA bonus episodes — so "new = any feed GUID not in the corpus" (below) selected 49 episodes, turning every daily run into a fragile, hours-long, all-or-nothing job. **Resolved:** the daily default is now **newest-forward** (only numbered episodes newer than the corpus max; old gaps + unnumbered EXTRAs skipped). The "all-missing-GUID" behavior below is preserved as an explicit, operator-run `--backfill` mode for a deliberate supervised catch-up. Also: the ingest stack imports the corpus bucket + KMS key as external resources, so deploying it never redeploys the serving Lambda. See `docs/aws/phase3-ingestion-runbook.md`.
 
 ## Goal
 

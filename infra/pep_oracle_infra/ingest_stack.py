@@ -33,11 +33,22 @@ class PepOracleIngestStack(Stack):
         cid: str,
         *,
         cfg: DeployConfig,
-        data_key: kms.IKey,
-        corpus_bucket: s3.IBucket,
         **kwargs,
     ) -> None:
         super().__init__(scope, cid, **kwargs)
+
+        # Import the corpus bucket + data key as EXTERNAL resources (by name / by ARN
+        # built from this stack's env) rather than consuming PepOracleProdStack's
+        # constructs. Grants on imported resources are identity-only — no cross-stack
+        # export — so deploying this stack never pulls PepOracleProdStack into the
+        # deploy set (which would rebuild + redeploy the live serving Lambda).
+        corpus_bucket = s3.Bucket.from_bucket_name(
+            self, "CorpusBucket", cfg.corpus_bucket_name
+        )
+        data_key = kms.Key.from_key_arn(
+            self, "DataKey",
+            f"arn:aws:kms:{self.region}:{self.account}:key/{cfg.data_key_id}",
+        )
 
         # Minimal VPC: 1 AZ, a public subnet, no NAT (scale-to-zero, public egress).
         vpc = ec2.Vpc(

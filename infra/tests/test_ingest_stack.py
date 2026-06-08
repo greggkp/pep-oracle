@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
 import aws_cdk as cdk
-from aws_cdk import aws_kms as kms
-from aws_cdk import aws_s3 as s3
 from aws_cdk.assertions import Match, Template
 
 from pep_oracle_infra.config import DeployConfig
@@ -18,20 +18,15 @@ def _cfg() -> DeployConfig:
         domain_name="pep-oracle.iicapn.com", compute_region="ap-southeast-2",
         cert_region="us-east-1", corpus_bucket_name="pep-oracle-corpus-test",
         cognito_domain_prefix="p", allowed_email="me@example.com",
+        data_key_id="abc-123",
     )
 
 
 def _template() -> Template:
+    # The stack imports the corpus bucket + data key as external resources from cfg
+    # (by name / by ARN), so it needs no cross-stack constructs passed in.
     app = cdk.App()
-    refs = cdk.Stack(app, "Refs", env=ENV)
-    bucket = s3.Bucket.from_bucket_name(refs, "B", "pep-oracle-corpus-test")
-    key = kms.Key.from_key_arn(
-        refs, "K", "arn:aws:kms:ap-southeast-2:111111111111:key/abc"
-    )
-    stack = PepOracleIngestStack(
-        app, "Ingest", cfg=_cfg(), data_key=key, corpus_bucket=bucket,
-        cross_region_references=True, env=ENV,
-    )
+    stack = PepOracleIngestStack(app, "Ingest", cfg=_cfg(), env=ENV)
     return Template.from_stack(stack)
 
 
@@ -92,6 +87,26 @@ def test_task_role_has_bedrock_and_s3_and_ssm():
             "Statement": Match.array_with([
                 Match.object_like({
                     "Action": Match.array_with(["kms:Decrypt"]),
+                }),
+            ])
+        })
+    }))
+
+
+def test_grants_use_imported_resources_not_cross_stack_exports():
+    """Decoupling guarantee: the corpus bucket + data key are imported as external
+    resources, so the grants reference LITERAL ARNs — never an Fn::ImportValue from
+    PepOracleProdStack. This is what keeps a deploy from redeploying the serving Lambda."""
+    t = _template()
+    # No cross-stack imports anywhere in the synthesized template.
+    assert "Fn::ImportValue" not in json.dumps(t.to_json())
+    # The KMS grant targets the literal key ARN built from the stack env + data_key_id.
+    t.has_resource_properties("AWS::IAM::Policy", Match.object_like({
+        "PolicyDocument": Match.object_like({
+            "Statement": Match.array_with([
+                Match.object_like({
+                    "Action": Match.array_with(["kms:Decrypt"]),
+                    "Resource": "arn:aws:kms:ap-southeast-2:111111111111:key/abc-123",
                 }),
             ])
         })
