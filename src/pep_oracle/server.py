@@ -295,10 +295,12 @@ def _code_version() -> tuple[str, str]:
             ).stdout.strip()
         except Exception:  # noqa: BLE001 — version info only; never fail the endpoint
             sha = "unknown"
-    try:
-        semver = _pkg_version("pep-oracle")
-    except PackageNotFoundError:
-        semver = "0.0.0"
+    semver = _config.SEMVER.strip()
+    if not semver:
+        try:
+            semver = _pkg_version("pep-oracle")
+        except PackageNotFoundError:
+            semver = "unknown"
     return semver, sha
 
 

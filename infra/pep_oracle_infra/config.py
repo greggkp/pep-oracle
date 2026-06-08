@@ -19,6 +19,7 @@ class DeployConfig:
     cognito_domain_prefix: str
     allowed_email: str
     git_sha: str = "unknown"  # code provenance for GET /version; pass `-c git_sha=...`
+    semver: str = "unknown"  # release tag for GET /version; pass `-c semver=...`
     # runtime contract (matches src/pep_oracle/config.py defaults)
     embed_model: str = "amazon.titan-embed-text-v2:0"
     embed_dims: str = "1024"
@@ -52,6 +53,7 @@ class DeployConfig:
             cognito_domain_prefix=ctx("cognito_domain_prefix", "pep-oracle-prod"),
             allowed_email=ctx("allowed_email", "REPLACE_ME@example.com"),
             git_sha=ctx("git_sha", "unknown"),
+            semver=ctx("semver", "unknown"),
             lambda_reserved_concurrency=int(ctx("lambda_reserved_concurrency", 0)),
             data_key_id=ctx("data_key_id", cls.data_key_id),
         )

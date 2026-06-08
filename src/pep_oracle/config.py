@@ -53,6 +53,7 @@ SERVE_FROM_ARTIFACT = os.getenv("PEP_ORACLE_SERVE_FROM_ARTIFACT", "0") == "1"
 CORPUS_REFRESH_TTL_SECONDS = int(os.getenv("PEP_ORACLE_CORPUS_REFRESH_TTL_SECONDS", "300"))
 # Baked into the image at build time (Phase 2c); reported by GET /version.
 GIT_SHA = os.getenv("PEP_ORACLE_GIT_SHA", "")
+SEMVER = os.getenv("PEP_ORACLE_SEMVER", "")  # release tag (set by CI); overrides code_semver
 
 
 # --- OAuth store backend (Phase 2b) ---
