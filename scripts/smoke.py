@@ -50,13 +50,19 @@ def check(base: str, expect_sha: str = "", expect_semver: str = "") -> list[str]
     if status != 200:
         failures.append(f"/version -> {status} (want 200)")
     else:
-        data = json.loads(body or b"{}")
-        if expect_sha and data.get("code_git_sha") != expect_sha:
-            failures.append(f"/version code_git_sha={data.get('code_git_sha')} (want {expect_sha})")
-        if expect_semver and data.get("code_semver") != expect_semver:
-            failures.append(f"/version code_semver={data.get('code_semver')} (want {expect_semver})")
-        if not data.get("corpus_version"):
-            failures.append("/version missing corpus_version")
+        try:
+            data = json.loads(body or b"{}")
+        except (json.JSONDecodeError, ValueError):
+            data = None
+        if data is None:
+            failures.append("/version returned a non-JSON body")
+        else:
+            if expect_sha and data.get("code_git_sha") != expect_sha:
+                failures.append(f"/version code_git_sha={data.get('code_git_sha')} (want {expect_sha})")
+            if expect_semver and data.get("code_semver") != expect_semver:
+                failures.append(f"/version code_semver={data.get('code_semver')} (want {expect_semver})")
+            if not data.get("corpus_version"):
+                failures.append("/version missing corpus_version")
 
     status, _ = _get(f"{base}/.well-known/oauth-authorization-server")
     if status != 200:

@@ -33,4 +33,16 @@ def test_check_flags_stale_version_and_open_mcp(monkeypatch):
     monkeypatch.setattr(smoke, "_post_no_token", lambda url, timeout=10.0: 200)  # open = bad
     fails = smoke.check("https://x", expect_sha="abc1234", expect_semver="v1.0.0")
     assert any("code_git_sha" in f for f in fails)
+    assert any("code_semver" in f for f in fails)
     assert any("/mcp" in f for f in fails)
+
+
+def test_check_flags_non_json_version_body(monkeypatch):
+    def html(url, timeout=10.0):
+        if url.endswith("/version"):
+            return 200, b"<html>gateway timeout</html>"
+        return 200, b"{}"
+    monkeypatch.setattr(smoke, "_get", html)
+    monkeypatch.setattr(smoke, "_post_no_token", lambda url, timeout=10.0: 401)
+    fails = smoke.check("https://x")
+    assert any("non-JSON" in f for f in fails)
