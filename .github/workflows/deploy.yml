@@ -1,0 +1,49 @@
+name: deploy
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install deploy deps
+        run: |
+          pip install -r infra/requirements.txt
+          npm install -g aws-cdk@2.1126.0
+      - name: Resolve version
+        id: ver
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "semver=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+      - name: Assume deploy role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - name: CDK deploy (serving + ingest)
+        run: |
+          cd infra
+          cdk deploy PepOracleProdStack PepOracleIngestStack \
+            --require-approval never \
+            -c allowed_email=${{ vars.ALLOWED_EMAIL }} \
+            -c git_sha=${{ steps.ver.outputs.sha }} \
+            -c semver=${{ steps.ver.outputs.semver }}
+      - name: Smoke test
+        run: python scripts/smoke.py
+        env:
+          PEP_ORACLE_SMOKE_URL: https://pep-oracle.iicapn.com
+          EXPECT_SHA: ${{ steps.ver.outputs.sha }}
+          EXPECT_SEMVER: ${{ steps.ver.outputs.semver }}
