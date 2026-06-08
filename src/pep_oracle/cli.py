@@ -212,6 +212,20 @@ def backfill_cmd(export_path: str, dest: str | None, version: str) -> None:
     )
 
 
+@cli.command(name="ingest-artifact")
+@click.option("--dest", default=None, help="Corpus base (local dir or s3:// URI). Default: PEP_ORACLE_CORPUS_URI.")
+@click.option("--no-diarize", is_flag=True, help="Skip speaker diarization.")
+def ingest_artifact_cmd(dest: str | None, no_diarize: bool) -> None:
+    """Incremental artifact ingest: publish a new corpus version with new feed episodes."""
+    from pep_oracle.ingest_artifact import ingest_artifact_incremental
+
+    manifest = ingest_artifact_incremental(dest=dest, diarize=not no_diarize)
+    if manifest is None:
+        click.echo("No new episodes; corpus unchanged.")
+    else:
+        click.echo(f"Published {manifest.chunk_count} chunks (episodes {manifest.episode_range}).")
+
+
 @cli.command(name="backup")
 @click.option("--keep-local", default=3, help="Number of local backup tarballs to retain.")
 def backup_cmd(keep_local: int) -> None:
