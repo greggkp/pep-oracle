@@ -41,6 +41,19 @@ def test_cache_entry_invalidate():
     assert entry.data == {"key": "value"}  # data preserved until refresh
 
 
+def test_cache_entry_invalidate_is_stale_on_fresh_monotonic_clock(monkeypatch):
+    # Regression: invalidate() must force staleness regardless of the absolute value
+    # of time.monotonic(). On a freshly-booted host (e.g. a CI runner) monotonic() can
+    # be < ttl_seconds; the old `updated_at = 0` then left the entry NOT stale.
+    from pep_oracle import cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.time, "monotonic", lambda: 10.0)
+    entry = CacheEntry(name="test", ttl_seconds=300)
+    entry.set({"key": "value"})
+    entry.invalidate()
+    assert entry.is_stale() is True
+
+
 def test_cache_entry_freshness_dict_empty():
     entry = CacheEntry(name="test", ttl_seconds=300)
     result = entry.freshness()
