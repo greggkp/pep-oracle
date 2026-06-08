@@ -155,6 +155,7 @@ class PepOracleProdStack(Stack):
             # Code provenance for GET /version; supply at deploy via `-c git_sha=...`
             # (defaults to "unknown" until the Phase 4 pipeline bakes it).
             "PEP_ORACLE_GIT_SHA": cfg.git_sha,
+            "PEP_ORACLE_SEMVER": cfg.semver,
         }
 
         fn_kwargs = dict(

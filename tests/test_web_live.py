@@ -15,8 +15,8 @@ pytestmark = pytest.mark.live
 
 pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 
-from pep_oracle.feed import fetch_episodes
-from pep_oracle.store import get_client, get_collection, get_ingested_guids
+from pep_oracle.feed import fetch_episodes  # noqa: E402
+from pep_oracle.store import get_client, get_collection, get_ingested_guids  # noqa: E402
 
 
 def _get_expected_ingestion_state():

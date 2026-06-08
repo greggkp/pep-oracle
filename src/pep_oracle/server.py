@@ -19,8 +19,6 @@ from pep_oracle.config import CHROMA_DIR, SERVER_HOST, SERVER_PORT, TOPICS_PATH
 from pep_oracle.feed import fetch_episodes
 from pep_oracle.query import ask as do_ask
 from pep_oracle.store import (
-    get_client,
-    get_collection,
     get_fresh_collection,
     get_ingested_guids,
     get_ingestion_stats,
@@ -297,10 +295,12 @@ def _code_version() -> tuple[str, str]:
             ).stdout.strip()
         except Exception:  # noqa: BLE001 — version info only; never fail the endpoint
             sha = "unknown"
-    try:
-        semver = _pkg_version("pep-oracle")
-    except PackageNotFoundError:
-        semver = "0.0.0"
+    semver = _config.SEMVER.strip()
+    if not semver:
+        try:
+            semver = _pkg_version("pep-oracle")
+        except PackageNotFoundError:
+            semver = "unknown"
     return semver, sha
 
 

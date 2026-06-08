@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -5,7 +6,8 @@ import chromadb
 
 from pep_oracle.ingest import estimate_whisper_cost, ingest_all, ingest_episode
 from pep_oracle.models import Episode, TranscriptSegment
-from pep_oracle.store import get_collection, get_ingested_guids
+from pep_oracle.store import get_ingested_guids
+from pep_oracle.transcripts.diarize import SpeakerSegment
 
 
 def _make_episode(num: int, guid: str | None = None, duration: int = 9000) -> Episode:
@@ -259,11 +261,6 @@ def test_ingest_all_calls_progress_callback(mock_embed, mock_transcript, mock_fe
     assert result["processed"] == 1
     assert any("Ep 1" in c for c in calls)
     assert any("embedding" in c.lower() or "storing" in c.lower() for c in calls)
-
-
-import time
-
-from pep_oracle.transcripts.diarize import SpeakerSegment
 
 
 @patch("pep_oracle.ingest.fetch_episodes")

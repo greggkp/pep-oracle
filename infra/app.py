@@ -38,7 +38,7 @@ prod = PepOracleProdStack(
 )
 prod.add_dependency(cert_stack)
 
-from pep_oracle_infra.ingest_stack import PepOracleIngestStack
+from pep_oracle_infra.ingest_stack import PepOracleIngestStack  # noqa: E402
 
 # Decoupled from PepOracleProdStack: the ingest stack imports the corpus bucket + data
 # key as external resources (see ingest_stack.py), so deploying it touches only the new
@@ -47,6 +47,15 @@ PepOracleIngestStack(
     app,
     "PepOracleIngestStack",
     cfg=cfg,
+    env=cdk.Environment(account=account, region=cfg.compute_region),
+)
+
+from pep_oracle_infra.cicd_stack import PepOracleCicdStack  # noqa: E402
+
+# One-time bootstrap (deploy manually with admin creds): GitHub OIDC + deploy role.
+PepOracleCicdStack(
+    app,
+    "PepOracleCicdStack",
     env=cdk.Environment(account=account, region=cfg.compute_region),
 )
 

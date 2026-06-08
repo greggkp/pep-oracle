@@ -172,3 +172,10 @@ def test_route53_alias_record_present():
         "Type": "A",
         "Name": "pep-oracle.iicapn.com.",
     }))
+
+
+def test_lambda_has_semver_env():
+    t = _template()
+    t.has_resource_properties("AWS::Lambda::Function", Match.object_like({
+        "Environment": {"Variables": Match.object_like({"PEP_ORACLE_SEMVER": Match.any_value()})},
+    }))

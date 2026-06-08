@@ -5,7 +5,6 @@ from pep_oracle.store import (
     add_chunks,
     delete_episode,
     get_client,
-    get_collection,
     get_ingested_guids,
     get_ingestion_stats,
     query,

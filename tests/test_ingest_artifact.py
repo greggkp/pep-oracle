@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
 
 from pep_oracle import ingest_artifact
 from pep_oracle.corpus import InMemoryCorpus
