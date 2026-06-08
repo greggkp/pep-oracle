@@ -84,6 +84,8 @@ def ingest_artifact_incremental(
 
     version = _next_version(corpus.version)
     built_at = now_iso or _dt.datetime.now(_dt.timezone.utc).isoformat()
+    # Single-run assumption: daily cadence won't self-overlap; the write-then-flip
+    # below is last-writer-wins, so avoid concurrent manual runs (see runbook).
     manifest = write_artifact(
         rows, dest=dest, version=version, embed_model=config.EMBED_MODEL,
         dims=config.EMBED_DIMS, git_sha=git_sha or getattr(config, "GIT_SHA", ""), built_at=built_at,

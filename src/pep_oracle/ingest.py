@@ -99,7 +99,7 @@ def episode_chunks_and_embeddings(
     return chunks, embeddings
 
 
-def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> bool:
+def _ingest_one(episode: Episode, collection, force: bool = False, diarize: bool = False, progress_callback=None) -> tuple[bool, dict | None]:
     """Ingest a single episode. Returns True on success."""
     label = f"Ep {episode.episode_number or '?'}: {episode.title[:50]}"
 

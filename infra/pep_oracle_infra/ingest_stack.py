@@ -83,6 +83,7 @@ class PepOracleIngestStack(Stack):
                 "PEP_ORACLE_EMBED_DIMS": cfg.embed_dims,
                 "PEP_ORACLE_CORPUS_URI": f"s3://{cfg.corpus_bucket_name}",
                 "PEP_ORACLE_DATA_DIR": "/tmp/pep-oracle",
+                "PEP_ORACLE_GIT_SHA": cfg.git_sha,
             },
             secrets={
                 "MODAL_TOKEN_ID": ecs.Secret.from_ssm_parameter(modal_id),

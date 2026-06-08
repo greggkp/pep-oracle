@@ -27,6 +27,8 @@ PATH="$PWD/.venv/bin:$PATH" ./node_modules/.bin/cdk deploy PepOracleIngestStack 
 (Builds + pushes the ingest image; creates the VPC, ECS cluster, Fargate task def, daily EventBridge rule, IAM.)
 
 ## 3. Verify with a manual run (before relying on the schedule)
+**Do not trigger a manual run if the daily schedule could fire concurrently** (two overlapping runs can leave `current.json` pointing at the other run's parquet → a transient sha-mismatch that self-heals on the next run). Disable the rule first if unsure: `aws events disable-rule --name <DailyIngest> --region ap-southeast-2`, re-enable after.
+
 Get the cluster + task-def names from the stack:
 ```bash
 aws cloudformation describe-stack-resources --stack-name PepOracleIngestStack --region ap-southeast-2 \
@@ -41,7 +43,9 @@ aws ecs run-task --cluster <cluster-name> --task-definition <task-def-arn> \
   --launch-type FARGATE \
   --network-configuration '{"awsvpcConfiguration":{"subnets":["<public-subnet>"],"assignPublicIp":"ENABLED"}}' \
   --region ap-southeast-2
-aws logs tail /aws/ecs/... --follow --region ap-southeast-2     # watch it run
+# find the log group (CDK auto-names it), then tail:
+aws logs describe-log-groups --query "logGroups[?contains(logGroupName,'Ingest')].logGroupName" --output text --region ap-southeast-2
+aws logs tail <that-log-group> --follow --region ap-southeast-2
 ```
 Confirm a new corpus version published + the live endpoint advanced (serving TTL ~5 min):
 ```bash

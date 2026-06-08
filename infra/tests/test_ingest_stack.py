@@ -67,10 +67,32 @@ def test_daily_eventbridge_rule_targets_ecs():
 
 def test_task_role_has_bedrock_and_s3_and_ssm():
     t = _template()
+    # Bedrock invoke permission (inline policy on the task role)
     t.has_resource_properties("AWS::IAM::Policy", Match.object_like({
         "PolicyDocument": Match.object_like({
             "Statement": Match.array_with([
                 Match.object_like({"Action": "bedrock:InvokeModel"}),
+            ])
+        })
+    }))
+    # S3 write: grant_read_write renders a list; confirm PutObject is present
+    t.has_resource_properties("AWS::IAM::Policy", Match.object_like({
+        "PolicyDocument": Match.object_like({
+            "Statement": Match.array_with([
+                Match.object_like({
+                    "Action": Match.array_with(["s3:PutObject"]),
+                }),
+            ])
+        })
+    }))
+    # KMS: grant_encrypt_decrypt renders a list; kms:Decrypt is the unambiguous literal
+    # (kms:GenerateDataKey* is also present but the trailing * confuses array_with matching)
+    t.has_resource_properties("AWS::IAM::Policy", Match.object_like({
+        "PolicyDocument": Match.object_like({
+            "Statement": Match.array_with([
+                Match.object_like({
+                    "Action": Match.array_with(["kms:Decrypt"]),
+                }),
             ])
         })
     }))
