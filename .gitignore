@@ -12,3 +12,4 @@ infra/cdk.out/
 infra/node_modules/
 infra/package.json
 infra/package-lock.json
+infra/cdk.context.json
