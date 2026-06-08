@@ -215,11 +215,17 @@ def backfill_cmd(export_path: str, dest: str | None, version: str) -> None:
 @cli.command(name="ingest-artifact")
 @click.option("--dest", default=None, help="Corpus base (local dir or s3:// URI). Default: PEP_ORACLE_CORPUS_URI.")
 @click.option("--no-diarize", is_flag=True, help="Skip speaker diarization.")
-def ingest_artifact_cmd(dest: str | None, no_diarize: bool) -> None:
-    """Incremental artifact ingest: publish a new corpus version with new feed episodes."""
+@click.option("--backfill", is_flag=True, help="Ingest EVERY feed episode the corpus lacks "
+              "(old gaps + unnumbered EXTRAs), not just newer-than-max. Expensive; operator-run.")
+def ingest_artifact_cmd(dest: str | None, no_diarize: bool, backfill: bool) -> None:
+    """Incremental artifact ingest: publish a new corpus version with new feed episodes.
+
+    Default is newest-forward (only numbered episodes newer than the corpus max). Use
+    --backfill for a deliberate, supervised catch-up of old gaps + EXTRA bonus episodes.
+    """
     from pep_oracle.ingest_artifact import ingest_artifact_incremental
 
-    manifest = ingest_artifact_incremental(dest=dest, diarize=not no_diarize)
+    manifest = ingest_artifact_incremental(dest=dest, diarize=not no_diarize, backfill=backfill)
     if manifest is None:
         click.echo("No new episodes; corpus unchanged.")
     else:

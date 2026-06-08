@@ -51,7 +51,9 @@ Confirm a new corpus version published + the live endpoint advanced (serving TTL
 ```bash
 curl -s https://pep-oracle.iicapn.com/version | jq '{corpus_version, corpus_episode_range}'
 ```
-Expect `corpus_version` to advance (e.g. v0002) and `corpus_episode_range` to include the newest episode.
+Expect `corpus_version` to advance (e.g. v0002) and `corpus_episode_range` max to include the newest episode.
+
+**Selection is newest-forward** (default): the run only ingests numbered episodes *newer* than the corpus's current max episode number. Old back-catalogue gaps and unnumbered "EXTRA" bonus episodes are skipped on purpose — otherwise a single permanent gap would make every daily run a fragile, hours-long all-or-nothing job (publish is one atomic flip after the whole loop, so any mid-run failure → nothing published). So a verify run normally processes just the one newest episode (quick + cheap).
 
 ## 4. Cut over (only after step 3 succeeds)
 On the OptiPlex:
@@ -66,3 +68,11 @@ AWS is now the sole ingest + publish path (no parallel run).
 ## Rollback
 - Stop AWS ingestion without data loss: `aws events disable-rule --name <DailyIngest rule> --region ap-southeast-2` (the job is idempotent — no half-published state).
 - Resume the OptiPlex: `sudo systemctl enable --now pep-oracle-ingest.timer` (and `pep-oracle-backup.service` if wanted).
+
+## Backfilling the back-catalogue gap (supervised, optional)
+The serving corpus has a real gap: **episodes 179–216 were never transcribed anywhere** (no Modal cache), plus the unnumbered "EXTRA" bonus episodes aren't in the artifact. Newest-forward ingestion (the daily default) will never pick these up — they're older than the corpus max. To fill them while they're still in the feed's rolling ~100-entry window, run a deliberate backfill:
+```bash
+# one-shot ECS task with --backfill (or run locally with EMBED_BACKEND=bedrock + CORPUS_URI=s3://pep-oracle-corpus-prod)
+aws ecs run-task ... --overrides '{"containerOverrides":[{"name":"ingest","command":["ingest-artifact","--backfill"]}]}'
+```
+This ingests EVERY feed episode the corpus lacks (49 as of 2026-06-08): ~3 hrs of fresh Modal GPU, all-or-nothing (one bad episode → nothing published, redo next run). **Disable the daily rule first** so it can't overlap, run supervised, then re-enable. Episodes that roll out of the 100-entry feed window before a successful backfill are unrecoverable via this path (they'd need a manual re-ingest with audio still available).

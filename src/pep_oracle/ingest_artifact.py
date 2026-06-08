@@ -1,9 +1,19 @@
 """Artifact-native incremental ingest (Phase 3, AWS-native).
 
-Load the current corpus artifact, diff its episode GUIDs against the RSS feed,
-transcribe/diarize/chunk/Bedrock-embed ONLY new episodes, merge rows, and publish
-a new corpus version (vN+1) to S3 — no ChromaDB. Idempotent: a failed run publishes
+Load the current corpus artifact, find new episodes in the RSS feed,
+transcribe/diarize/chunk/Bedrock-embed ONLY those, merge rows, and publish a new
+corpus version (vN+1) to S3 — no ChromaDB. Idempotent: a failed run publishes
 nothing (the current.json flip is atomic + last), so the next run retries.
+
+Two selection modes:
+  * **newest-forward** (default, the daily schedule): append only numbered episodes
+    *newer* than the corpus's current max episode number. This deliberately ignores
+    old gaps in the back-catalogue and unnumbered "EXTRA" bonus episodes, so a single
+    permanent gap can't turn every daily run into a fragile, hours-long all-or-nothing
+    job (publish happens once, after the whole loop).
+  * **backfill** (`backfill=True`, operator-run): ingest every feed episode the corpus
+    lacks — old gaps + unnumbered EXTRAs included. Expensive; meant for a deliberate,
+    supervised catch-up, not the schedule.
 """
 
 from __future__ import annotations
@@ -55,20 +65,37 @@ def ingest_artifact_incremental(
     diarize: bool = True,
     git_sha: str = "",
     now_iso: str | None = None,
+    backfill: bool = False,
 ):
-    """Publish a new corpus version with any episodes from the feed not already in
-    the current artifact. Returns the new Manifest, or None if there were none."""
+    """Publish a new corpus version with new episodes from the feed. By default appends
+    only numbered episodes newer than the corpus's max episode (newest-forward); with
+    ``backfill=True`` ingests every feed episode the corpus lacks. Returns the new
+    Manifest, or None if there were no episodes to add."""
     if config.EMBED_BACKEND != "bedrock":
         raise RuntimeError("ingest_artifact requires PEP_ORACLE_EMBED_BACKEND=bedrock")
     dest = dest or config.CORPUS_URI
 
     corpus = load_current(dest)
     existing_guids = {m["episode_guid"] for m in corpus.metas}
-    new_eps = [e for e in fetch_episodes() if e.guid not in existing_guids]
+    max_num = max((m.get("episode_number") or 0 for m in corpus.metas), default=0)
+    feed = fetch_episodes()
+    if backfill:
+        # Deliberate catch-up: every feed episode the corpus lacks (old gaps + EXTRAs).
+        new_eps = [e for e in feed if e.guid not in existing_guids]
+        mode = "backfill (all missing)"
+    else:
+        # Daily default: only numbered episodes newer than the corpus max. The
+        # episode_number>max_num guard is what keeps old gaps + unnumbered EXTRAs out.
+        new_eps = [
+            e for e in feed
+            if e.episode_number and e.episode_number > max_num and e.guid not in existing_guids
+        ]
+        mode = f"newest-forward (>{max_num})"
     if not new_eps:
-        logger.info("ingest_artifact: no new episodes; current=%s", corpus.version)
+        logger.info("ingest_artifact: no new episodes; current=%s [%s]", corpus.version, mode)
         return None
-    logger.info("ingest_artifact: %d new episode(s) on top of %s", len(new_eps), corpus.version)
+    logger.info("ingest_artifact: %d new episode(s) on top of %s [%s]",
+                len(new_eps), corpus.version, mode)
 
     profile_path = _download_profiles(dest)
     rows = _corpus_rows(corpus)
