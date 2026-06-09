@@ -82,6 +82,9 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/$VER" >/dev/null 2>&1; then
             echo "tag $VER already exists on origin — skipping (re-deploy of an existing version)"
           else
+            # Annotated tags need a committer identity, which the runner lacks by default.
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -a "$VER" -m "Release $VER"
             git push origin "refs/tags/$VER"
             echo "created and pushed tag $VER"
