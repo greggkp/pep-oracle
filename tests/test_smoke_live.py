@@ -1,10 +1,10 @@
 """End-to-end smoke tests against the *running* pep-oracle server.
 
-These exercise the real deployed process, real ChromaDB data, real RSS feed,
-and (for /ask) the real Anthropic API — the layers that unit tests mock and
-therefore can't protect. Every production failure we've hit (a stale ChromaDB
-client, a 421 Host-header rejection on /mcp, and a speaker+recency filter that
-dead-ended to "No relevant content found") would have been caught here.
+These exercise the real deployed process and the product surface that survives
+the AWS-only architecture: the MCP tool endpoint, the OAuth discovery doc, and
+the health/version routes. Every production failure we've hit (a 421
+Host-header rejection on /mcp and a stale ChromaDB client that broke the
+server) would have been caught here.
 
 Opt-in, never part of the default run:
 
@@ -22,7 +22,6 @@ import requests
 
 pytestmark = pytest.mark.live
 
-NO_CONTENT = "No relevant content found"
 TIMEOUT = 90
 
 
@@ -41,45 +40,33 @@ def base_url() -> str:
     return url
 
 
-# --- /episodes: the UI's source of truth (regresses the "empty UI" symptom) ---
+# --- /health: liveness check ---
 
 
-def test_episodes_listing_is_populated_and_current(base_url):
-    r = requests.get(f"{base_url}/episodes", timeout=TIMEOUT)
+def test_health(base_url):
+    r = requests.get(f"{base_url}/health", timeout=TIMEOUT)
     r.raise_for_status()
-    episodes = r.json()["episodes"]
-    assert episodes, "/episodes returned an empty list"
-    assert any(e["ingested"] for e in episodes), "no episode reports as ingested"
-    # The most recent episode by date must be present in the listing.
-    newest = max(episodes, key=lambda e: e["date"])
-    assert newest["date"], f"newest episode has no date: {newest}"
+    assert r.json().get("status") == "ok", f"unexpected /health response: {r.json()}"
 
 
-# --- /ask: must produce grounded answers, not dead-end (regresses the filter bug) ---
+# --- /version: code identity ---
 
 
-@pytest.mark.parametrize(
-    "question",
-    [
-        # Plain topic — exercises basic retrieval.
-        "What have Chas and Dave said about tariffs?",
-        # Speaker + recency — the exact shape that dead-ended: the preprocessor
-        # sets speaker='Chas' + an after_date floor, and recent episodes may
-        # carry unmapped diarization labels. Must relax filters, not give up.
-        "What does Chas say about Trump in the latest episode?",
-    ],
-)
-def test_ask_returns_grounded_answer(base_url, question):
-    r = requests.post(
-        f"{base_url}/ask",
-        json={"question": question, "top_k": 10},
-        timeout=TIMEOUT,
-    )
+def test_version(base_url):
+    r = requests.get(f"{base_url}/version", timeout=TIMEOUT)
     r.raise_for_status()
-    answer = r.json()["answer"]
-    assert answer.strip(), "empty answer"
-    assert NO_CONTENT not in answer, (
-        f"/ask dead-ended for {question!r}:\n{answer}"
+    data = r.json()
+    assert "code_semver" in data, f"/version missing code_semver: {data}"
+    assert "code_git_sha" in data, f"/version missing code_git_sha: {data}"
+
+
+# --- /.well-known/oauth-authorization-server: OAuth discovery doc present ---
+
+
+def test_oauth_discovery(base_url):
+    r = requests.get(f"{base_url}/.well-known/oauth-authorization-server", timeout=TIMEOUT)
+    assert r.status_code == 200, (
+        f"/.well-known/oauth-authorization-server -> {r.status_code} (want 200)"
     )
 
 
