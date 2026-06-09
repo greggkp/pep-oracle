@@ -23,6 +23,11 @@ Docker, `gh`, and `jq`, then runs `scripts/bootstrap.sh`.
     npx cdk synth '*' -c allowed_email=ci@example.com > /dev/null   # CDK synth (in infra/)
     cd .. && docker build -f Dockerfile . && docker build -f Dockerfile.ingest .
 
+> The two `docker build` lines are a CI/deploy check, **not** part of the dev loop:
+> they pull the AWS Lambda base image from `public.ecr.aws` (plus Docker Hub), so
+> they may fail in network-restricted dev environments. That's fine — CI builds both
+> images on every PR. The edit → test → `cdk synth` → tag loop needs no Docker.
+
 The commit-gate hook (`.claude/hooks/pre-commit.sh`, wired by `.claude/settings.json`)
 runs `pytest` + a CLAUDE.md-review check on every `git commit` in a Claude Code session.
 
