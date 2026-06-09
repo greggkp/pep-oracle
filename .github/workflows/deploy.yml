@@ -2,11 +2,16 @@ name: deploy
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag to create and deploy, e.g. v1.2.0"
+        required: true
+        type: string
 
 permissions:
   id-token: write
-  contents: read
+  contents: write   # push the release tag on workflow_dispatch
 
 jobs:
   deploy:
@@ -26,8 +31,19 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
+          # On a v* tag push the version is the tag; on manual dispatch it is the
+          # `version` input (GITHUB_REF_NAME would be the branch, e.g. "main").
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ inputs.version }}"
+          else
+            VER="${GITHUB_REF_NAME}"
+          fi
+          case "$VER" in
+            v[0-9]*) ;;
+            *) echo "::error::version must look like vX.Y.Z (got '$VER')"; exit 1 ;;
+          esac
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "semver=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "semver=$VER" >> "$GITHUB_OUTPUT"
       - name: Assume deploy role (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -51,3 +67,18 @@ jobs:
           PEP_ORACLE_SMOKE_URL: https://pep-oracle.iicapn.com
           EXPECT_SHA: ${{ steps.ver.outputs.sha }}
           EXPECT_SEMVER: ${{ steps.ver.outputs.semver }}
+      - name: Tag release
+        # Only on manual dispatch: stamp the verified, deployed commit with the
+        # release tag (a tag pushed here by GITHUB_TOKEN does NOT re-trigger this
+        # workflow, so there's no double deploy). Tag pushes already carry their tag.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VER: ${{ steps.ver.outputs.semver }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$VER" >/dev/null 2>&1; then
+            echo "tag $VER already exists on origin — skipping (re-deploy of an existing version)"
+          else
+            git tag -a "$VER" -m "Release $VER"
+            git push origin "refs/tags/$VER"
+            echo "created and pushed tag $VER"
+          fi
