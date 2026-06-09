@@ -1,19 +1,10 @@
+import pep_oracle.corpus as corpus
 import pep_oracle.hybrid as hybrid
 from pep_oracle.hybrid import hybrid_search
 from pep_oracle.models import Chunk
-from pep_oracle.store import add_chunks, get_client
+from pep_oracle.store import _chunk_metadata
 
 _counter = 0
-
-
-def _fresh_collection():
-    global _counter
-    _counter += 1
-    hybrid._CACHE.clear()  # avoid cross-test corpus cache bleed
-    client = get_client(persistent=False)
-    return client.get_or_create_collection(
-        name=f"test_hybrid_{_counter}", metadata={"hnsw:space": "cosine"}
-    )
 
 
 def _chunk(cid, text, ep=200, date="2026-01-01", speaker_turns=None):
@@ -25,8 +16,36 @@ def _chunk(cid, text, ep=200, date="2026-01-01", speaker_turns=None):
     )
 
 
-def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk():
-    col = _fresh_collection()
+def _row(chunk, embedding):
+    # Build a corpus row from a Chunk using the canonical prod metadata builder,
+    # so speaker (has_speaker_*) and time-sentinel fields match what ingest writes.
+    return {
+        "chunk_id": chunk.chunk_id,
+        "text": chunk.text,
+        "embedding": embedding,
+        "metadata": _chunk_metadata(chunk),
+    }
+
+
+def _corpus(tmp_path, chunks, embeddings, version="v0001"):
+    """Build an InMemoryCorpus (the prod serving type) from Chunks + embeddings.
+
+    Drop-in for hybrid_search, replacing the old ephemeral ChromaDB collection.
+    Clears the hybrid corpus cache to avoid cross-test bleed.
+    """
+    global _counter
+    _counter += 1
+    hybrid._CACHE.clear()
+    rows = [_row(c, e) for c, e in zip(chunks, embeddings)]
+    dest = tmp_path / f"c{_counter}"
+    corpus.write_artifact(
+        rows, dest=str(dest), version=version,
+        embed_model="m", dims=len(embeddings[0]), git_sha="s", built_at="t",
+    )
+    return corpus.load_current(str(dest))
+
+
+def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk(tmp_path):
     chunks = [
         _chunk("a", "the byrd rule reconciliation senate vote"),  # has query terms
         _chunk("b", "weather sports and general chit chat"),      # no query terms
@@ -34,7 +53,7 @@ def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk():
     ]
     # Embeddings: query is close to b/c, ORTHOGONAL to a -> semantic buries 'a'.
     embeddings = [[0.0, 1.0], [1.0, 0.1], [0.9, 0.2]]
-    add_chunks(col, chunks, embeddings)
+    col = _corpus(tmp_path, chunks, embeddings)
 
     # Exercise the fusion MECHANISM with balanced weights (the production
     # default leans semantic, validated separately by the eval harness): 'a' is
@@ -45,15 +64,14 @@ def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk():
     assert "a" in ids[:2]
 
 
-def test_filters_episode_date_speaker():
-    col = _fresh_collection()
+def test_filters_episode_date_speaker(tmp_path):
     chunks = [
         _chunk("e1", "tariffs talk", ep=260, date="2026-05-01",
                speaker_turns=[{"speaker": "Chas", "start": 0.0, "end": 10.0}]),
         _chunk("e2", "tariffs talk", ep=200, date="2025-01-01",
                speaker_turns=[{"speaker": "Dave", "start": 0.0, "end": 10.0}]),
     ]
-    add_chunks(col, chunks, [[1.0, 0.0], [1.0, 0.0]])
+    col = _corpus(tmp_path, chunks, [[1.0, 0.0], [1.0, 0.0]])
 
     by_ep = hybrid_search(col, "tariffs", [1.0, 0.0], top_k=5, episode_numbers=[260])
     assert [r["chunk_id"] for r in by_ep] == ["e1"]
@@ -65,9 +83,8 @@ def test_filters_episode_date_speaker():
     assert [r["chunk_id"] for r in by_speaker] == ["e2"]
 
 
-def test_result_shape_matches_store_query():
-    col = _fresh_collection()
-    add_chunks(col, [_chunk("x", "hello world")], [[1.0, 0.0]])
+def test_result_shape_matches_store_query(tmp_path):
+    col = _corpus(tmp_path, [_chunk("x", "hello world")], [[1.0, 0.0]])
     r = hybrid_search(col, "hello", [1.0, 0.0], top_k=1)[0]
     assert set(r) >= {"chunk_id", "text", "distance", "episode_guid",
                       "episode_title", "episode_date", "episode_number",
@@ -75,17 +92,28 @@ def test_result_shape_matches_store_query():
     assert r["start_time"] == 0.0
 
 
-def test_corpus_cache_rebuilds_when_count_changes():
-    col = _fresh_collection()
-    add_chunks(col, [_chunk("a", "tariffs")], [[1.0, 0.0]])
-    assert len(hybrid_search(col, "tariffs", [1.0, 0.0], top_k=5)) == 1
-    add_chunks(col, [_chunk("b", "tariffs again", ep=201)], [[1.0, 0.0]])
-    # count changed -> cache rebuilt -> new chunk visible
-    assert len(hybrid_search(col, "tariffs", [1.0, 0.0], top_k=5)) == 2
+def test_corpus_cache_rebuilds_on_new_version(tmp_path):
+    # The hybrid cache is keyed on (name, version); publishing v0002 (which the
+    # InMemoryCorpus carries as .version) forces a fresh BM25 index, so the new
+    # chunk is visible — the InMemoryCorpus analogue of ChromaDB's count change.
+    chunks1 = [_chunk("a", "tariffs")]
+    col1 = _corpus(tmp_path, chunks1, [[1.0, 0.0]], version="v0001")
+    assert len(hybrid_search(col1, "tariffs", [1.0, 0.0], top_k=5)) == 1
+
+    chunks2 = [_chunk("a", "tariffs"), _chunk("b", "tariffs again", ep=201)]
+    col2 = _corpus(tmp_path, chunks2, [[1.0, 0.0], [1.0, 0.0]], version="v0002")
+    # new version -> cache rebuilt -> the added chunk is visible
+    assert len(hybrid_search(col2, "tariffs", [1.0, 0.0], top_k=5)) == 2
 
 
-def test_empty_collection_returns_empty():
-    col = _fresh_collection()
+def test_empty_collection_returns_empty(tmp_path):
+    hybrid._CACHE.clear()
+    corpus.write_artifact(
+        [], dest=str(tmp_path), version="v0001",
+        embed_model="m", dims=2, git_sha="s", built_at="t",
+    )
+    col = corpus.load_current(str(tmp_path))
+    assert col.count() == 0
     assert hybrid_search(col, "anything", [1.0, 0.0], top_k=5) == []
 
 
