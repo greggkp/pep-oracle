@@ -22,7 +22,12 @@ def _fresh_collection():
 
 @pytest.fixture
 def patched(monkeypatch):
-    """Patch embed_texts and store accessors to use an in-memory collection."""
+    """Patch embed_texts and the serving seam to use an in-memory collection.
+
+    An ephemeral ChromaDB collection satisfies the same hybrid_search +
+    get_ingestion_stats interface the InMemoryCorpus artifact does, so it's a
+    faithful stand-in for the serving corpus without an artifact on disk.
+    """
     col = _fresh_collection()
 
     # Fixed embedding — must match dimension of seeded chunks.
@@ -31,7 +36,7 @@ def patched(monkeypatch):
     monkeypatch.setattr(
         mcp_server, "embed_texts", lambda texts: [fixed_embedding for _ in texts]
     )
-    monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: col)
+    monkeypatch.setattr(mcp_server, "get_serving_corpus", lambda: col)
     return col
 
 
@@ -536,7 +541,9 @@ def test_mcp_case_insensitive_bearer_scheme(monkeypatch, tmp_path):
         assert resp.status_code != 401
 
 
-def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
+def test_get_serving_corpus_loads_artifact(tmp_path, monkeypatch):
+    """Serving is artifact-only: get_serving_corpus loads the current corpus
+    artifact into an InMemoryCorpus (ChromaDB serving was removed)."""
     import pep_oracle.config as config
     import pep_oracle.corpus as corpus
     import pep_oracle.hybrid as hybrid
@@ -553,7 +560,6 @@ def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
         dest=str(tmp_path), version="v0001",
         embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
     )
-    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", True)
     monkeypatch.setattr(config, "CORPUS_URI", str(tmp_path))
     monkeypatch.setattr(config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
@@ -563,16 +569,6 @@ def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
     c = mcp_server.get_serving_corpus()
     assert c.__class__.__name__ == "InMemoryCorpus"
     assert c.version == "v0001"
-
-
-def test_get_serving_corpus_uses_chroma_by_default(monkeypatch):
-    import pep_oracle.config as config
-    import pep_oracle.mcp_server as mcp_server
-
-    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", False)
-    sentinel = object()
-    monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: sentinel)
-    assert mcp_server.get_serving_corpus() is sentinel
 
 
 def test_mcp_is_stateless_http():

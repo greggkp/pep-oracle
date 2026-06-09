@@ -16,8 +16,15 @@ from mcp.server.fastmcp import FastMCP
 from pep_oracle import config, corpus as corpus_mod, temporal
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.hybrid import hybrid_search
-from pep_oracle.query import format_timestamp
-from pep_oracle.store import get_fresh_collection, get_ingestion_stats
+from pep_oracle.store import get_ingestion_stats
+
+
+def format_timestamp(seconds: float | None) -> str:
+    if seconds is None:
+        return "?"
+    h, remainder = divmod(int(seconds), 3600)
+    m, s = divmod(remainder, 60)
+    return f"{h}:{m:02d}:{s:02d}"
 
 # NOTE: This string is load-bearing AND front-loaded on purpose. MCP clients
 # (iOS Claude, Claude.ai) defer tools — they see only the tool *name* and a
@@ -88,15 +95,12 @@ def format_citation(result: dict) -> dict:
 
 
 def get_serving_corpus():
-    """Retrieval source seam: the corpus artifact (InMemoryCorpus) when
-    PEP_ORACLE_SERVE_FROM_ARTIFACT=1 (the Lambda path), else the live ChromaDB
-    collection (the OptiPlex default). Both satisfy hybrid_search +
-    get_ingestion_stats; the artifact path validates dims + embedder at load."""
-    if config.SERVE_FROM_ARTIFACT:
-        return corpus_mod.current_corpus(
-            config.CORPUS_URI, ttl_seconds=config.CORPUS_REFRESH_TTL_SECONDS
-        )
-    return get_fresh_collection()
+    """Retrieval source: the corpus artifact (InMemoryCorpus), TTL-refreshed and
+    version-swapped atomically. Validates dims + embedder against the manifest at
+    load. The only serving path (ChromaDB serving was removed in the AWS-only cut)."""
+    return corpus_mod.current_corpus(
+        config.CORPUS_URI, ttl_seconds=config.CORPUS_REFRESH_TTL_SECONDS
+    )
 
 
 @mcp.tool(name=SEARCH_TOOL_NAME, description=SEARCH_PEP_DESCRIPTION)
