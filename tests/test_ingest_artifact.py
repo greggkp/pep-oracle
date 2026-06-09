@@ -51,8 +51,6 @@ def _new_chunk(guid, num):
 
 
 def _patch_common(monkeypatch, feed_eps, new_guids_processed):
-    from pep_oracle import config
-    monkeypatch.setattr(config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(ingest_artifact, "load_current", lambda base: _existing_corpus())
     monkeypatch.setattr(ingest_artifact, "fetch_episodes", lambda: feed_eps)
     monkeypatch.setattr(ingest_artifact, "_download_profiles", lambda dest: None)  # no S3 in tests

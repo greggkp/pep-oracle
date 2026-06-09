@@ -579,7 +579,6 @@ def test_get_serving_corpus_loads_artifact(tmp_path, monkeypatch):
         embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
     )
     monkeypatch.setattr(config, "CORPUS_URI", str(tmp_path))
-    monkeypatch.setattr(config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     corpus.reset_serving_cache()
     hybrid._CACHE.clear()

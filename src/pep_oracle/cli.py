@@ -20,8 +20,8 @@ def cli(verbose: bool) -> None:
 def eval_retrieval_cmd(corpus_uri: str) -> None:
     """Score hybrid retrieval quality (recall@k, MRR) on a labeled query set.
 
-    Evaluates against a corpus artifact. Use PEP_ORACLE_EMBED_BACKEND=bedrock so the
-    query embedder matches the Titan artifact.
+    Evaluates against a corpus artifact. The query embedder uses Bedrock (Titan v2)
+    to match the artifact vectors.
     """
     from pep_oracle import eval_retrieval
     from pep_oracle.corpus import load_current

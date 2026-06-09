@@ -125,8 +125,8 @@ def _hybrid_retriever(collection, embed=None):
 def evaluate_corpus(corpus, embed=None, cases=CASES, ks=(5, 10)) -> dict:
     """Run the hybrid retrieval eval over an InMemoryCorpus (a parquet artifact).
 
-    NOTE: the query embedder MUST match the corpus embedder (same vector space) —
-    i.e. run with PEP_ORACLE_EMBED_BACKEND=bedrock, or pass `embed` explicitly.
+    NOTE: the query embedder MUST match the corpus embedder (same vector space).
+    Both use Bedrock Titan v2 by default; pass `embed` explicitly to override.
     Mismatched query/corpus embedders are meaningless.
     """
     got = corpus.get(include=["documents", "metadatas"])

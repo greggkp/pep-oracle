@@ -4,24 +4,6 @@ from pep_oracle import embeddings
 from pep_oracle.embeddings import embed_texts
 
 
-def test_embed_texts_returns_expected_shape_and_distinct_vectors():
-    """Integration test: loads bge-large-en-v1.5 (≈1.3 GB on first run, cached).
-
-    First run downloads the model into ~/.cache/fastembed and may take
-    10-30s. Subsequent runs are fast (sub-second).
-    """
-    result = embed_texts(["hello world", "goodbye world"])
-
-    assert len(result) == 2
-    assert len(result[0]) == 1024
-    assert len(result[1]) == 1024
-    # Non-zero embeddings
-    assert any(v != 0.0 for v in result[0])
-    assert any(v != 0.0 for v in result[1])
-    # Distinct inputs produce distinct embeddings
-    assert result[0] != result[1]
-
-
 class _FakeBody:
     def __init__(self, payload):
         self._payload = payload
@@ -44,12 +26,12 @@ class _FakeBedrock:
         return {"body": _FakeBody({"embedding": [float(len(text))] * 1024})}
 
 
-def test_bedrock_backend_calls_invoke_model_with_titan_body(monkeypatch):
+def test_embed_texts_calls_bedrock_and_returns_expected_shape(monkeypatch):
+    """embed_texts delegates to _embed_one_bedrock for each text."""
     fake = _FakeBedrock()
     monkeypatch.setattr(embeddings, "_bedrock_client", lambda: fake)
-    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "bedrock")
 
-    out = embeddings.embed_texts(["hello", "hello world"])
+    out = embed_texts(["hello", "hello world"])
 
     assert len(out) == 2
     assert len(out[0]) == 1024
@@ -59,7 +41,7 @@ def test_bedrock_backend_calls_invoke_model_with_titan_body(monkeypatch):
     assert fake.calls[0]["body"] == {"inputText": "hello", "dimensions": 1024, "normalize": True}
 
 
-def test_bedrock_backend_retries_on_throttling(monkeypatch):
+def test_bedrock_retries_on_throttling(monkeypatch):
     attempts = {"n": 0}
 
     class _Throttler:
@@ -70,10 +52,9 @@ def test_bedrock_backend_retries_on_throttling(monkeypatch):
             return {"body": _FakeBody({"embedding": [0.1] * 1024})}
 
     monkeypatch.setattr(embeddings, "_bedrock_client", lambda: _Throttler())
-    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(embeddings.time, "sleep", lambda _s: None)  # no real backoff wait
 
-    out = embeddings.embed_texts(["x"])
+    out = embed_texts(["x"])
 
     assert attempts["n"] == 3  # two failures, third succeeds
     assert len(out[0]) == 1024

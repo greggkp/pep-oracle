@@ -1,12 +1,9 @@
-"""Text embedding with a pluggable backend.
+"""Text embedding via AWS Bedrock.
 
-`embed_texts()` keeps a single public signature (list[str] -> list[list[float]]).
-The backend is selected by config.EMBED_BACKEND:
-  - "fastembed": local BAAI/bge-large-en-v1.5 (1024-d) — the original path.
-  - "bedrock":   AWS Bedrock amazon.titan-embed-text-v2:0 (configurable dims),
-                 used by the AWS migration. One InvokeModel call per text.
-Query and corpus vectors must come from the SAME backend+model (one vector
-space) — see corpus manifest `embed_model`.
+`embed_texts()` embeds a list of strings using the configured Bedrock model
+(default: amazon.titan-embed-text-v2:0, 1024-d). One InvokeModel call per text.
+Query and corpus vectors must come from the same model — see corpus manifest
+`embed_model`.
 """
 
 from __future__ import annotations
@@ -16,22 +13,10 @@ import time
 
 from pep_oracle import config
 
-MODEL_NAME = "BAAI/bge-large-en-v1.5"
-
-_model = None        # fastembed singleton
 _bedrock = None      # boto3 bedrock-runtime singleton
 
 _MAX_RETRIES = 6
 _BASE_BACKOFF = 0.5  # seconds; doubled each retry
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        from fastembed import TextEmbedding
-
-        _model = TextEmbedding(MODEL_NAME)
-    return _model
 
 
 def _bedrock_client():
@@ -72,6 +57,4 @@ def _embed_one_bedrock(text: str) -> list[float]:
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    if config.EMBED_BACKEND == "bedrock":
-        return [_embed_one_bedrock(t) for t in texts]
-    return [v.tolist() for v in _get_model().embed(texts)]
+    return [_embed_one_bedrock(t) for t in texts]
