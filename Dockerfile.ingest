@@ -8,9 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY pyproject.toml ./
 COPY src/ ./src/
 
-# Base deps (modal, feedparser, requests, chromadb, fastembed) + the aws extra (boto3,
-# pyarrow). The artifact/bedrock path doesn't USE chromadb/fastembed, but they're base
-# deps so they install; trimming them to slim the image is a future cleanup.
+# Base deps (modal, feedparser, requests) + the aws extra (boto3, pyarrow).
 RUN python -m pip install --no-cache-dir ".[aws]"
 
 ENTRYPOINT ["pep-oracle"]

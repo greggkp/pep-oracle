@@ -145,7 +145,6 @@ def test_validate_serving_passes_when_dims_and_model_match(tmp_path, monkeypatch
         rows, dest=str(tmp_path), version="v0001",
         embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
     )
-    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     c = corpus.load_current(str(tmp_path))
     corpus._validate_serving(c, str(tmp_path))  # no raise
@@ -157,8 +156,7 @@ def test_validate_serving_raises_on_embed_model_mismatch(tmp_path, monkeypatch):
         rows, dest=str(tmp_path), version="v0001",
         embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
     )
-    monkeypatch.setattr(_config, "EMBED_BACKEND", "fastembed")  # bge-large queries vs Titan corpus
-    monkeypatch.setattr(_config, "EMBED_MODEL", "BAAI/bge-large-en-v1.5")
+    monkeypatch.setattr(_config, "EMBED_MODEL", "some-other-model")  # wrong model vs Titan corpus
     c = corpus.load_current(str(tmp_path))
     try:
         corpus._validate_serving(c, str(tmp_path))
@@ -173,7 +171,6 @@ def test_validate_serving_raises_on_dims_mismatch(tmp_path, monkeypatch):
         rows, dest=str(tmp_path), version="v0001",
         embed_model="amazon.titan-embed-text-v2:0", dims=99, git_sha="s", built_at="t",  # manifest lies: 99 != 2
     )
-    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     c = corpus.load_current(str(tmp_path))
     try:
@@ -192,7 +189,6 @@ def _publish(tmp_path, version, ep, text):
 
 
 def _serving_config(monkeypatch):
-    monkeypatch.setattr(_config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
 
 

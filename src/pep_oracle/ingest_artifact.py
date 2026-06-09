@@ -71,8 +71,6 @@ def ingest_artifact_incremental(
     only numbered episodes newer than the corpus's max episode (newest-forward); with
     ``backfill=True`` ingests every feed episode the corpus lacks. Returns the new
     Manifest, or None if there were no episodes to add."""
-    if config.EMBED_BACKEND != "bedrock":
-        raise RuntimeError("ingest_artifact requires PEP_ORACLE_EMBED_BACKEND=bedrock")
     dest = dest or config.CORPUS_URI
 
     corpus = load_current(dest)

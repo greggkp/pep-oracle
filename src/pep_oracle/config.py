@@ -15,21 +15,14 @@ DATA_DIR = Path(os.getenv("PEP_ORACLE_DATA_DIR", Path.home() / ".pep-oracle"))
 CACHE_DIR = DATA_DIR / "cache"
 TRANSCRIPT_CACHE_DIR = CACHE_DIR / "transcripts"
 DIARIZATION_CACHE_DIR = CACHE_DIR / "diarization"
-CHROMA_DIR = DATA_DIR / "chroma"
-TOPICS_PATH = DATA_DIR / "topics.json"
 SPEAKER_PROFILES_PATH = DATA_DIR / "speaker_profiles.json"
 
+# Name carried by the InMemoryCorpus (originally the ChromaDB collection name).
 CHROMA_COLLECTION = "pep_oracle"
-QUERY_MODEL = "claude-sonnet-4-20250514"
 
-# --- Embedding backend (fastembed local | AWS Bedrock) ---
-# Default stays "fastembed" so existing local ingestion/CLI/tests are unchanged;
-# the AWS migration opts in with PEP_ORACLE_EMBED_BACKEND=bedrock.
-EMBED_BACKEND = os.getenv("PEP_ORACLE_EMBED_BACKEND", "fastembed")
+# --- Embedding (AWS Bedrock) ---
 # Sydney — operator default; Bedrock Titan v2 isn't in ap-southeast-4 (Melbourne).
 BEDROCK_REGION = os.getenv("PEP_ORACLE_BEDROCK_REGION", "ap-southeast-2")
-# EMBED_MODEL / EMBED_DIMS apply when EMBED_BACKEND=bedrock (the fastembed model
-# name lives in embeddings.MODEL_NAME).
 EMBED_MODEL = os.getenv("PEP_ORACLE_EMBED_MODEL", "amazon.titan-embed-text-v2:0")
 EMBED_DIMS = int(os.getenv("PEP_ORACLE_EMBED_DIMS", "1024"))
 
@@ -41,13 +34,6 @@ CORPUS_URI = os.getenv("PEP_ORACLE_CORPUS_URI", str(DATA_DIR))
 # downloaded at ingest time and passed as profile_path. Defaults under the corpus base.
 SPEAKER_PROFILES_URI = os.getenv("PEP_ORACLE_SPEAKER_PROFILES_URI", f"{CORPUS_URI}/refs/speaker_profiles.json")
 
-# --- Serving source (Phase 2a) ---
-# When "1", the MCP tool retrieves from the corpus artifact at CORPUS_URI via an
-# in-memory InMemoryCorpus (the Lambda path); otherwise it uses the live ChromaDB
-# collection (the OptiPlex default — nothing rebuilds the artifact on ingest until
-# Phase 3). Serving from the artifact REQUIRES EMBED_BACKEND=bedrock with a model
-# matching the artifact's manifest (validated at load).
-SERVE_FROM_ARTIFACT = os.getenv("PEP_ORACLE_SERVE_FROM_ARTIFACT", "0") == "1"
 # How often a warm process re-checks current.json for a new corpus version (a cheap
 # small-object GET). New episodes reach a warm container within this window.
 CORPUS_REFRESH_TTL_SECONDS = int(os.getenv("PEP_ORACLE_CORPUS_REFRESH_TTL_SECONDS", "300"))
@@ -88,5 +74,5 @@ COGNITO_ALLOWED_EMAILS = os.getenv("PEP_ORACLE_COGNITO_ALLOWED_EMAILS", "")  # c
 
 
 def ensure_dirs() -> None:
-    for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
+    for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR):
         d.mkdir(parents=True, exist_ok=True)

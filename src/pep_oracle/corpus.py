@@ -181,11 +181,10 @@ def _validate_serving(corpus: "InMemoryCorpus", base: str) -> None:
             raise ValueError(
                 f"corpus dims mismatch: manifest={manifest.dims} but vectors are {actual_dims}-d"
             )
-    if config.EMBED_BACKEND != "bedrock" or config.EMBED_MODEL != manifest.embed_model:
+    if config.EMBED_MODEL != manifest.embed_model:
         raise ValueError(
             f"query embedder mismatch: serving a {manifest.embed_model} corpus requires "
-            f"EMBED_BACKEND=bedrock + EMBED_MODEL={manifest.embed_model}, but config has "
-            f"backend={config.EMBED_BACKEND!r} model={config.EMBED_MODEL!r}"
+            f"EMBED_MODEL={manifest.embed_model}, but config has model={config.EMBED_MODEL!r}"
         )
 
 

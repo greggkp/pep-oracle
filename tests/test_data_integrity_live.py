@@ -1,4 +1,4 @@
-"""Data-integrity checks over the real ChromaDB collection.
+"""Data-integrity checks over the published corpus artifact.
 
 These catch ingestion defects that unit tests (which seed clean fixtures)
 cannot see. The motivating bug: a batch of episodes was ingested with raw
@@ -6,6 +6,9 @@ diarization labels (has_speaker_speaker_5, has_speaker_speaker_14, ...) instead
 of mapped host names (has_speaker_chas / has_speaker_dave). Speaker-filtered
 queries then silently matched nothing. This asserts the mapping actually ran,
 turning that into an ingest-time failure instead of a query-time mystery.
+
+Reads metadata from the current corpus artifact (config.CORPUS_URI) — the same
+InMemoryCorpus the MCP tool serves — since ChromaDB is no longer in the stack.
 
 Opt-in, never part of the default run:
 
@@ -26,9 +29,10 @@ _RAW_LABEL = re.compile(r"^has_speaker_speaker_\d+$")
 def _episodes_with_speaker_metadata():
     """Return {episode_label: set(has_speaker_* keys)} for every ingested
     episode that carries any diarization speaker metadata at all."""
-    from pep_oracle.store import get_fresh_collection
+    import pep_oracle.corpus as corpus
+    from pep_oracle import config
 
-    collection = get_fresh_collection()
+    collection = corpus.load_current(config.CORPUS_URI)
     got = collection.get(include=["metadatas"])
     by_episode: dict[str, set[str]] = defaultdict(set)
     for meta in got["metadatas"]:

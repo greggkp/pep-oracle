@@ -2,28 +2,50 @@ import json
 
 import pytest
 
+import pep_oracle.corpus as corpus
+import pep_oracle.hybrid as hybrid
 from pep_oracle import mcp_server
 from pep_oracle.models import Chunk
-from pep_oracle.store import add_chunks, get_client
+from pep_oracle.store import _chunk_metadata
 
 
 _counter = 0
 
 
-def _fresh_collection():
-    global _counter
-    _counter += 1
-    client = get_client(persistent=False)
-    return client.get_or_create_collection(
-        name=f"test_mcp_{_counter}",
-        metadata={"hnsw:space": "cosine"},
-    )
+class _CorpusHolder:
+    """Mutable handle the fixture hands tests. `_seed_chunks` (re)builds an
+    InMemoryCorpus — the prod serving type — and stamps it on `.corpus`, which
+    the monkeypatched get_serving_corpus returns. Starts as an empty corpus so a
+    test that never seeds still exercises the empty-result path."""
+
+    def __init__(self, tmp_path):
+        self._tmp_path = tmp_path
+        self._n = 0
+        self.corpus = None
+        self.build([])  # empty corpus until seeded
+
+    def build(self, rows):
+        global _counter
+        _counter += 1
+        self._n += 1
+        hybrid._CACHE.clear()  # avoid cross-build corpus cache bleed
+        dest = self._tmp_path / f"mcp{_counter}"
+        corpus.write_artifact(
+            rows, dest=str(dest), version=f"v{self._n:04d}",
+            embed_model="m", dims=10, git_sha="s", built_at="t",
+        )
+        self.corpus = corpus.load_current(str(dest))
 
 
 @pytest.fixture
-def patched(monkeypatch):
-    """Patch embed_texts and store accessors to use an in-memory collection."""
-    col = _fresh_collection()
+def patched(monkeypatch, tmp_path):
+    """Patch embed_texts and the serving seam to use an InMemoryCorpus.
+
+    The InMemoryCorpus artifact is the real production serving type; it satisfies
+    the same hybrid_search + get_ingestion_stats interface, so it's a faithful
+    stand-in for the serving corpus.
+    """
+    holder = _CorpusHolder(tmp_path)
 
     # Fixed embedding — must match dimension of seeded chunks.
     fixed_embedding = [1.0] + [0.0] * 9
@@ -31,13 +53,12 @@ def patched(monkeypatch):
     monkeypatch.setattr(
         mcp_server, "embed_texts", lambda texts: [fixed_embedding for _ in texts]
     )
-    monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: col)
-    return col
+    monkeypatch.setattr(mcp_server, "get_serving_corpus", lambda: holder.corpus)
+    return holder
 
 
-def _seed_chunks(col, count: int = 3, with_speakers: bool = False):
-    chunks = []
-    embeddings = []
+def _seed_chunks(holder, count: int = 3, with_speakers: bool = False):
+    rows = []
     for i in range(count):
         speaker_text = None
         speaker_turns = None
@@ -47,23 +68,25 @@ def _seed_chunks(col, count: int = 3, with_speakers: bool = False):
                 {"speaker": "Chas", "start": float(i * 240), "end": float(i * 240 + 120)},
                 {"speaker": "Dave", "start": float(i * 240 + 120), "end": float((i + 1) * 240)},
             ]
-        chunks.append(
-            Chunk(
-                chunk_id=f"ep-1_{i:04d}",
-                episode_guid="ep-1",
-                text=f"Chunk {i} content",
-                episode_title="Test Episode",
-                episode_date="2026-04-01",
-                start_time=float(i * 240),
-                end_time=float((i + 1) * 240),
-                episode_number=251,
-                speaker_text=speaker_text,
-                speaker_turns=speaker_turns,
-            )
+        chunk = Chunk(
+            chunk_id=f"ep-1_{i:04d}",
+            episode_guid="ep-1",
+            text=f"Chunk {i} content",
+            episode_title="Test Episode",
+            episode_date="2026-04-01",
+            start_time=float(i * 240),
+            end_time=float((i + 1) * 240),
+            episode_number=251,
+            speaker_text=speaker_text,
+            speaker_turns=speaker_turns,
         )
-        emb = [1.0] + [0.0] * 9
-        embeddings.append(emb)
-    add_chunks(col, chunks, embeddings)
+        rows.append({
+            "chunk_id": chunk.chunk_id,
+            "text": chunk.text,
+            "embedding": [1.0] + [0.0] * 9,
+            "metadata": _chunk_metadata(chunk),
+        })
+    holder.build(rows)
 
 
 # --- (a) format_citation shape ---
@@ -536,7 +559,9 @@ def test_mcp_case_insensitive_bearer_scheme(monkeypatch, tmp_path):
         assert resp.status_code != 401
 
 
-def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
+def test_get_serving_corpus_loads_artifact(tmp_path, monkeypatch):
+    """Serving is artifact-only: get_serving_corpus loads the current corpus
+    artifact into an InMemoryCorpus (ChromaDB serving was removed)."""
     import pep_oracle.config as config
     import pep_oracle.corpus as corpus
     import pep_oracle.hybrid as hybrid
@@ -553,9 +578,7 @@ def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
         dest=str(tmp_path), version="v0001",
         embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
     )
-    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", True)
     monkeypatch.setattr(config, "CORPUS_URI", str(tmp_path))
-    monkeypatch.setattr(config, "EMBED_BACKEND", "bedrock")
     monkeypatch.setattr(config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     corpus.reset_serving_cache()
     hybrid._CACHE.clear()
@@ -563,16 +586,6 @@ def test_get_serving_corpus_uses_artifact_when_flagged(tmp_path, monkeypatch):
     c = mcp_server.get_serving_corpus()
     assert c.__class__.__name__ == "InMemoryCorpus"
     assert c.version == "v0001"
-
-
-def test_get_serving_corpus_uses_chroma_by_default(monkeypatch):
-    import pep_oracle.config as config
-    import pep_oracle.mcp_server as mcp_server
-
-    monkeypatch.setattr(config, "SERVE_FROM_ARTIFACT", False)
-    sentinel = object()
-    monkeypatch.setattr(mcp_server, "get_fresh_collection", lambda: sentinel)
-    assert mcp_server.get_serving_corpus() is sentinel
 
 
 def test_mcp_is_stateless_http():

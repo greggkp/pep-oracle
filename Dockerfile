@@ -7,8 +7,7 @@ COPY pyproject.toml ${LAMBDA_TASK_ROOT}/
 COPY src/ ${LAMBDA_TASK_ROOT}/src/
 
 # Install the package + the server and aws extras (fastapi, mcp, pyjwt, mangum, boto3, pyarrow).
-# fastembed/chromadb come via base deps but are NOT used on the artifact serve path; they
-# stay importable. --no-cache-dir keeps the image lean.
+# --no-cache-dir keeps the image lean.
 RUN python -m pip install --no-cache-dir "${LAMBDA_TASK_ROOT}[server,aws]"
 
 # Mangum adapter exported at module import.
