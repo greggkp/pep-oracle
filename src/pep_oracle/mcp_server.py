@@ -17,6 +17,7 @@ from pep_oracle import config, corpus as corpus_mod, temporal
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.hybrid import hybrid_search
 from pep_oracle.store import get_ingestion_stats
+from pep_oracle.timing import timed
 
 
 def format_timestamp(seconds: float | None) -> str:
@@ -112,23 +113,28 @@ def search_pep(
     after_date: str | None = None,
     before_date: str | None = None,
 ) -> dict:
-    embedding = embed_texts([query])[0]
-    # Fresh collection: the API server is long-lived but episodes are written
-    # by a separate ingest process, so a cached client would serve stale data.
-    collection = get_serving_corpus()
-    # Pull a candidate pool via hybrid (semantic+BM25) retrieval, then let the
-    # shared temporal layer select + order the final top_k for the caller intent.
-    candidates = hybrid_search(
-        collection, query, embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
-        episode_numbers=[episode_number] if episode_number else None,
-        after_date=after_date, before_date=before_date,
-    )
-    results, order = temporal.select_for_intent(candidates, intent, top_k, date.today())
-    results = sorted(
-        results, key=lambda r: r.get("episode_date", ""),
-        reverse=(order != temporal.CHRONOLOGICAL),
-    )
-    stats = get_ingestion_stats(collection)
+    with timed("search.total"):
+        with timed("search.embed"):
+            embedding = embed_texts([query])[0]
+        # Fresh collection: the API server is long-lived but episodes are written
+        # by a separate ingest process, so a cached client would serve stale data.
+        with timed("search.corpus_fetch"):
+            collection = get_serving_corpus()
+        # Pull a candidate pool via hybrid (semantic+BM25) retrieval, then let the
+        # shared temporal layer select + order the final top_k for the caller intent.
+        with timed("search.hybrid"):
+            candidates = hybrid_search(
+                collection, query, embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
+                episode_numbers=[episode_number] if episode_number else None,
+                after_date=after_date, before_date=before_date,
+            )
+        results, order = temporal.select_for_intent(candidates, intent, top_k, date.today())
+        results = sorted(
+            results, key=lambda r: r.get("episode_date", ""),
+            reverse=(order != temporal.CHRONOLOGICAL),
+        )
+        with timed("search.stats"):
+            stats = get_ingestion_stats(collection)
     # Corpus summary lets the caller answer "latest episode" questions: results
     # are ranked by relevance, not recency, so the newest episode may be absent.
     return {

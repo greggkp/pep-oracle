@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 from pep_oracle import _storage as storage
 from pep_oracle import config
 from pep_oracle.config import CHROMA_COLLECTION
+from pep_oracle.timing import timed
 
 
 @dataclasses.dataclass
@@ -139,7 +140,11 @@ class InMemoryCorpus:
         table = pq.read_table(io.BytesIO(data))
         ids = table.column("chunk_id").to_pylist()
         docs = table.column("text").to_pylist()
-        embeddings = table.column("embedding").to_pylist()
+        # to_pylist() on the embedding column explodes a (N x dims) arrow array into
+        # ~N*dims Python float objects — timed separately because it is the prime
+        # suspect for cold-start / refresh CPU cost (see docs cold-path measurement).
+        with timed("corpus.parse_embeddings", chunks=table.num_rows):
+            embeddings = table.column("embedding").to_pylist()
         metas = [json.loads(m) for m in table.column("metadata").to_pylist()]
         return cls(ids, docs, embeddings, metas, version=version)
 
@@ -150,13 +155,15 @@ def load_current(base: str) -> InMemoryCorpus:
     prefix = str(base).rstrip("/") + "/corpus"
     cur = json.loads(storage.get_text(f"{prefix}/current.json"))
     version = cur["version"]
-    data = storage.get_bytes(f"{prefix}/{version}.parquet")
+    with timed("corpus.download"):
+        data = storage.get_bytes(f"{prefix}/{version}.parquet")
     actual = hashlib.sha256(data).hexdigest()
     if actual != cur["sha256"]:
         raise ValueError(
             f"corpus sha256 mismatch for {version}: current.json={cur['sha256']} actual={actual}"
         )
-    return InMemoryCorpus.from_parquet_bytes(data, version=version)
+    with timed("corpus.parse", bytes=len(data)):
+        return InMemoryCorpus.from_parquet_bytes(data, version=version)
 
 
 def load_manifest(base: str) -> tuple[str, Manifest]:
@@ -225,8 +232,9 @@ def current_corpus(base: str, ttl_seconds: int = 300, now=time.monotonic):
         _SERVING["checked_at"] = t
         return cached
 
-    fresh = load_current(base)
-    _validate_serving(fresh, base)
+    with timed("corpus.load_and_validate"):
+        fresh = load_current(base)
+        _validate_serving(fresh, base)
     with _SERVING_LOCK:
         _SERVING["corpus"] = fresh
         _SERVING["version"] = fresh.version

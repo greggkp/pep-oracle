@@ -12,6 +12,7 @@ import json
 import time
 
 from pep_oracle import config
+from pep_oracle.timing import timed
 
 _bedrock = None      # boto3 bedrock-runtime singleton
 
@@ -22,9 +23,12 @@ _BASE_BACKOFF = 0.5  # seconds; doubled each retry
 def _bedrock_client():
     global _bedrock
     if _bedrock is None:
-        import boto3
+        # One-time, cold-only: boto3 import + client construction (credential +
+        # endpoint resolution). Timed to separate it from the embed round-trip.
+        with timed("embed.client_init"):
+            import boto3
 
-        _bedrock = boto3.client("bedrock-runtime", region_name=config.BEDROCK_REGION)
+            _bedrock = boto3.client("bedrock-runtime", region_name=config.BEDROCK_REGION)
     return _bedrock
 
 
