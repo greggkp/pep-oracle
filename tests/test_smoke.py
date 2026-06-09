@@ -46,3 +46,21 @@ def test_check_flags_non_json_version_body(monkeypatch):
     monkeypatch.setattr(smoke, "_post_no_token", lambda url, timeout=10.0: 401)
     fails = smoke.check("https://x")
     assert any("non-JSON" in f for f in fails)
+
+
+def test_get_treats_timeout_as_retryable_not_raise(monkeypatch):
+    # Regression: a Lambda cold start can exceed the read timeout; the resulting
+    # TimeoutError (an OSError) must become a retryable sentinel, not crash the run.
+    def boom(req, timeout=15.0):
+        raise TimeoutError("read operation timed out")
+    monkeypatch.setattr(smoke.urllib.request, "urlopen", boom)
+    assert smoke._get("https://x/health") == (0, b"")
+    assert smoke._post_no_token("https://x/mcp") == 0
+
+
+def test_check_treats_timeout_as_failure_not_crash(monkeypatch):
+    # With every fetch timing out, check() returns failures (retryable) — never raises.
+    monkeypatch.setattr(smoke, "_get", lambda url, timeout=15.0: (0, b""))
+    monkeypatch.setattr(smoke, "_post_no_token", lambda url, timeout=15.0: 0)
+    fails = smoke.check("https://x")
+    assert any("/health" in f for f in fails)  # all checks flagged, no exception

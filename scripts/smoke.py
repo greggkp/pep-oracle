@@ -5,8 +5,9 @@ Env:
   PEP_ORACLE_SMOKE_URL  base URL (default https://pep-oracle.iicapn.com)
   EXPECT_SHA            if set, /version code_git_sha must equal it
   EXPECT_SEMVER         if set, /version code_semver must equal it
-Exits non-zero on any failed check (fails the CI release). Retries ~90s so a
-cold start after deploy has time to serve the new image."""
+Exits non-zero on any failed check (fails the CI release). Retries ~2min so a
+cold start after deploy has time to serve the new image — a network/timeout
+error is treated as a retryable failure (status 0), not a crash."""
 
 from __future__ import annotations
 
@@ -18,16 +19,21 @@ import urllib.error
 import urllib.request
 
 
-def _get(url: str, timeout: float = 10.0):
+def _get(url: str, timeout: float = 15.0):
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+    except OSError:
+        # Timeout / connection error (e.g. a Lambda cold start exceeding the read
+        # timeout) — return a retryable sentinel so the loop retries, not crashes.
+        # (TimeoutError, socket.timeout, urllib URLError all subclass OSError.)
+        return 0, b""
 
 
-def _post_no_token(url: str, timeout: float = 10.0):
+def _post_no_token(url: str, timeout: float = 15.0):
     req = urllib.request.Request(url, data=b"{}", method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
@@ -35,6 +41,8 @@ def _post_no_token(url: str, timeout: float = 10.0):
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
+    except OSError:
+        return 0
 
 
 def check(base: str, expect_sha: str = "", expect_semver: str = "") -> list[str]:
@@ -79,7 +87,7 @@ def main() -> int:
     base = os.getenv("PEP_ORACLE_SMOKE_URL", "https://pep-oracle.iicapn.com")
     expect_sha = os.getenv("EXPECT_SHA", "")
     expect_semver = os.getenv("EXPECT_SEMVER", "")
-    waited, deadline = 0.0, 90.0
+    waited, deadline = 0.0, 120.0
     while True:
         failures = check(base, expect_sha, expect_semver)
         if not failures:
