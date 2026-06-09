@@ -1,6 +1,6 @@
 """Assertions for PepOracleCicdStack — GitHub OIDC provider + a deploy role whose
-trust is restricted to this repo's v* tag refs and whose only power is to assume
-the CDK bootstrap roles."""
+trust is restricted to this repo's v* tag refs and its `production` environment,
+and whose only power is to assume the CDK bootstrap roles."""
 from __future__ import annotations
 
 import json
@@ -22,7 +22,7 @@ def test_oidc_provider_present():
     _template().resource_count_is("Custom::AWSCDKOpenIdConnectProvider", 1)
 
 
-def test_deploy_role_trust_scoped_to_repo_tag_refs():
+def test_deploy_role_trust_scoped_to_repo_tag_refs_and_environment():
     t = _template()
     t.has_resource_properties("AWS::IAM::Role", Match.object_like({
         "AssumeRolePolicyDocument": Match.object_like({
@@ -34,8 +34,10 @@ def test_deploy_role_trust_scoped_to_repo_tag_refs():
                             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
                         },
                         "StringLike": {
-                            "token.actions.githubusercontent.com:sub":
-                                "repo:greggkp/pep-oracle:ref:refs/tags/v*"
+                            "token.actions.githubusercontent.com:sub": [
+                                "repo:greggkp/pep-oracle:ref:refs/tags/v*",
+                                "repo:greggkp/pep-oracle:environment:production",
+                            ]
                         },
                     },
                 }),

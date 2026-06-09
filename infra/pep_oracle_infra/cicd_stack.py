@@ -1,7 +1,8 @@
 """CI/CD bootstrap stack (Phase 4): a GitHub OIDC provider + a least-privilege
-deploy role assumable ONLY by this repo's v* tag refs. Deployed once, manually,
-with admin creds (the pipeline can't create its own trust). The GitHub Actions
-deploy workflow then assumes the role keylessly — no long-lived AWS secrets.
+deploy role assumable ONLY from this repo's v* tag refs or its `production`
+GitHub Environment. Deployed once, manually, with admin creds (the pipeline
+can't create its own trust). The GitHub Actions deploy workflow then assumes the
+role keylessly — no long-lived AWS secrets.
 
 The role's only power is to assume the CDK bootstrap roles (cdk-hnb659fds-*);
 CDK performs all resource mutations through those, so this role needs nothing
@@ -16,8 +17,19 @@ from constructs import Construct
 
 GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com"
 GITHUB_REPO = "greggkp/pep-oracle"
-# Only v* TAG refs may assume the deploy role (tag push or workflow_dispatch on a tag).
-SUBJECT = f"repo:{GITHUB_REPO}:ref:refs/tags/v*"
+DEPLOY_ENVIRONMENT = "production"
+# The deploy role is assumable from exactly two scopes (never refs/heads/*):
+#   1. v* TAG ref pushes — the original tag-push release path.
+#   2. the `production` GitHub Environment — so a workflow_dispatch release cut
+#      from main (which the session CAN trigger) can assume the role without
+#      trusting arbitrary main-branch runs.
+# The deploy job declares `environment: production`, so a run from EITHER trigger
+# presents an allowed `sub`. Keeping the tag pattern means tag-push deploys still
+# work even on GitHub plans where Environments are unavailable on private repos.
+SUBJECTS = [
+    f"repo:{GITHUB_REPO}:ref:refs/tags/v*",
+    f"repo:{GITHUB_REPO}:environment:{DEPLOY_ENVIRONMENT}",
+]
 
 
 class PepOracleCicdStack(Stack):
@@ -37,7 +49,7 @@ class PepOracleCicdStack(Stack):
                     "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                 },
                 "StringLike": {
-                    "token.actions.githubusercontent.com:sub": SUBJECT,
+                    "token.actions.githubusercontent.com:sub": SUBJECTS,
                 },
             },
         )
