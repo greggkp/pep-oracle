@@ -16,6 +16,10 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Scopes the OIDC token's `sub` to repo:…:environment:production, which the
+    # deploy role trusts — so a workflow_dispatch release from main can assume it
+    # without trusting arbitrary main-branch runs. (Tag pushes are trusted too.)
+    environment: production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
