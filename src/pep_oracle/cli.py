@@ -101,47 +101,6 @@ def eval_retrieval_cmd(corpus_uri: str | None) -> None:
         click.echo(format_report(run_comparison()))
 
 
-@cli.command(name="build-references")
-def build_references_cmd() -> None:
-    """Auto-derive Chas/Dave voice references from diarized episodes (no manual
-    labeling). Chas = the intro speaker; Dave = the 2nd voice on Dr-Dave episodes.
-    Requires episodes diarized with embeddings (re-diarize first if needed)."""
-    from pep_oracle.config import SPEAKER_PROFILES_PATH
-    from pep_oracle.references import build_references, diarized_episodes_from_collection
-    from pep_oracle.store import get_client, get_collection
-    from pep_oracle.transcripts.diarize import save_speaker_profiles
-
-    episodes = diarized_episodes_from_collection(get_collection(get_client()))
-    refs = build_references(episodes)
-    if not refs:
-        raise click.ClickException(
-            "No diarized episodes with cluster embeddings found. Re-diarize first."
-        )
-    save_speaker_profiles(refs)
-    click.echo(
-        f"Built references for {list(refs)} from {len(episodes)} episode(s) "
-        f"-> {SPEAKER_PROFILES_PATH}"
-    )
-
-
-@cli.command(name="remap-speakers")
-def remap_speakers_cmd() -> None:
-    """Re-process diarized episodes through the current speaker mapping.
-
-    Rebuilds chunks from cached transcript + diarization, applies the
-    substantive-speaker mapping (top clusters -> Chas/Dave/guest, tail skipped),
-    and reuses stored embeddings (no re-embed). Idempotent.
-    """
-    from pep_oracle.remap_speakers import reprocess_diarized_episodes
-    from pep_oracle.store import get_client, get_collection
-
-    collection = get_collection(get_client())
-    summary = reprocess_diarized_episodes(collection)
-    for info in sorted(summary.values(), key=lambda x: x["title"]):
-        click.echo(f"  {info['title'][:55]}: {info['speakers']} ({info['chunks']} chunks)")
-    click.echo(f"Re-processed {len(summary)} episode(s).")
-
-
 @cli.command(name="export")
 @click.argument("output", type=click.Path())
 @click.option("--episode", "episode_nums", type=int, multiple=True, help="Episode number(s) to export (default: all).")
@@ -183,35 +142,6 @@ def import_cmd(input_file: str) -> None:
     click.echo(f"Done — {count} chunks upserted into {collection.name}")
 
 
-@cli.command(name="backfill")
-@click.option("--export", "export_path", type=click.Path(exists=True), required=True,
-              help="Path to a `pep-oracle export` JSON file to re-embed.")
-@click.option("--out", "dest", default=None,
-              help="Destination base (local dir or s3:// URI). Default: PEP_ORACLE_CORPUS_URI.")
-@click.option("--version", default="v0001", help="Artifact version label (vNNNN).")
-def backfill_cmd(export_path: str, dest: str | None, version: str) -> None:
-    """Re-embed an exported corpus via Bedrock and publish a versioned artifact.
-
-    Requires PEP_ORACLE_EMBED_BACKEND=bedrock so the published vectors (and the
-    manifest's embed_model) are Titan, not the local bge-large model.
-    """
-    from pep_oracle import config
-    from pep_oracle.backfill import backfill as run_backfill
-
-    if config.EMBED_BACKEND != "bedrock":
-        raise click.ClickException(
-            "Set PEP_ORACLE_EMBED_BACKEND=bedrock before backfill so the artifact "
-            "is Titan-embedded (the manifest records embed_model from config)."
-        )
-    dest = dest or config.CORPUS_URI
-    manifest = run_backfill(export_path=export_path, dest=dest, version=version)
-    click.echo(
-        f"Published {version}: {manifest.chunk_count} chunks "
-        f"(episodes {manifest.episode_range}) via {manifest.embed_model} "
-        f"-> {dest}/corpus/{version}.parquet (sha256 {manifest.sha256[:12]}…)"
-    )
-
-
 @cli.command(name="ingest-artifact")
 @click.option("--dest", default=None, help="Corpus base (local dir or s3:// URI). Default: PEP_ORACLE_CORPUS_URI.")
 @click.option("--no-diarize", is_flag=True, help="Skip speaker diarization.")
@@ -230,24 +160,6 @@ def ingest_artifact_cmd(dest: str | None, no_diarize: bool, backfill: bool) -> N
         click.echo("No new episodes; corpus unchanged.")
     else:
         click.echo(f"Published {manifest.chunk_count} chunks (episodes {manifest.episode_range}).")
-
-
-@cli.command(name="backup")
-@click.option("--keep-local", default=3, help="Number of local backup tarballs to retain.")
-def backup_cmd(keep_local: int) -> None:
-    """Bundle the corpus (export JSON + speaker profiles + topics + Modal
-    caches) into a tarball and push it to the rclone remote named in
-    PEP_ORACLE_BACKUP_REMOTE (e.g. b2:pep-oracle-backup)."""
-    import os
-    from pep_oracle.backup import run_backup
-
-    remote = os.getenv("PEP_ORACLE_BACKUP_REMOTE", "")
-    if not remote:
-        raise click.ClickException(
-            "Set PEP_ORACLE_BACKUP_REMOTE to an rclone remote (e.g. b2:pep-oracle-backup)."
-        )
-    tarball = run_backup(remote, keep_local=keep_local)
-    click.echo(f"Backed up {tarball.name} -> {remote}")
 
 
 @cli.command()
