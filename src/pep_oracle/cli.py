@@ -15,28 +15,21 @@ def cli(verbose: bool) -> None:
 
 
 @cli.command(name="eval-retrieval")
-@click.option("--corpus", "corpus_uri", default=None,
-              help="Eval hybrid retrieval over a corpus artifact (local dir or s3:// base) "
-                   "instead of the live ChromaDB. Use PEP_ORACLE_EMBED_BACKEND=bedrock so the "
-                   "query embedder matches a Titan artifact.")
-def eval_retrieval_cmd(corpus_uri: str | None) -> None:
-    """Score retrieval quality (recall@k, MRR) on a labeled query set.
+@click.option("--corpus", "corpus_uri", required=True,
+              help="Base URI of the corpus artifact to evaluate (s3://… or a local path).")
+def eval_retrieval_cmd(corpus_uri: str) -> None:
+    """Score hybrid retrieval quality (recall@k, MRR) on a labeled query set.
 
-    Default: compare semantic-only vs hybrid over the live ChromaDB (bge-large).
-    With --corpus: score hybrid over the parquet artifact (Bedrock-embedded), to
-    confirm no regression vs the bge-large baseline before promoting the artifact.
+    Evaluates against a corpus artifact. Use PEP_ORACLE_EMBED_BACKEND=bedrock so the
+    query embedder matches the Titan artifact.
     """
-    from pep_oracle.eval_retrieval import (
-        evaluate_corpus, format_report, format_single, run_comparison,
-    )
+    from pep_oracle import eval_retrieval
+    from pep_oracle.corpus import load_current
+    from pep_oracle.embeddings import embed_texts
 
-    if corpus_uri:
-        from pep_oracle.corpus import load_current
-
-        corpus = load_current(corpus_uri)
-        click.echo(format_single(f"hybrid({corpus.version})", evaluate_corpus(corpus)))
-    else:
-        click.echo(format_report(run_comparison()))
+    corpus = load_current(corpus_uri)
+    res = eval_retrieval.evaluate_corpus(corpus, embed=lambda ts: embed_texts(ts))
+    click.echo(eval_retrieval.format_single(f"hybrid({corpus.version})", res))
 
 
 @cli.command(name="ingest-artifact")

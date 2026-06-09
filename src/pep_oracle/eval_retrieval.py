@@ -108,15 +108,6 @@ def evaluate(retriever_fn, docs, metas, cases=CASES, ks=(5, 10)) -> dict:
     }
 
 
-def _semantic_retriever(collection):
-    from pep_oracle.embeddings import embed_texts
-    from pep_oracle.store import query as store_query
-
-    def fn(query, top_k):
-        return store_query(collection, embed_texts([query])[0], top_k=top_k)
-    return fn
-
-
 def _hybrid_retriever(collection, embed=None):
     from pep_oracle.hybrid import hybrid_search
 
@@ -131,28 +122,12 @@ def _hybrid_retriever(collection, embed=None):
     return fn
 
 
-def run_comparison(ks=(5, 10)) -> dict:
-    """Evaluate semantic-only vs hybrid on the live corpus. Returns
-    {retriever_name: evaluate(...)}."""
-    from pep_oracle.store import get_fresh_collection
-
-    collection = get_fresh_collection()
-    got = collection.get(include=["documents", "metadatas"])
-    docs, metas = got["documents"], got["metadatas"]
-    return {
-        "semantic": evaluate(_semantic_retriever(collection), docs, metas, ks=ks),
-        "hybrid": evaluate(_hybrid_retriever(collection), docs, metas, ks=ks),
-    }
-
-
 def evaluate_corpus(corpus, embed=None, cases=CASES, ks=(5, 10)) -> dict:
-    """Run the hybrid retrieval eval over an InMemoryCorpus (a parquet artifact),
-    so retrieval quality can be measured for a Bedrock-embedded corpus and
-    compared against the bge-large ChromaDB baseline from run_comparison().
+    """Run the hybrid retrieval eval over an InMemoryCorpus (a parquet artifact).
 
-    NOTE: when measuring a Titan artifact for real, the query embedder MUST also
-    be Titan (same vector space) — i.e. run with PEP_ORACLE_EMBED_BACKEND=bedrock,
-    or pass `embed` explicitly. Mismatched query/corpus embedders are meaningless.
+    NOTE: the query embedder MUST match the corpus embedder (same vector space) —
+    i.e. run with PEP_ORACLE_EMBED_BACKEND=bedrock, or pass `embed` explicitly.
+    Mismatched query/corpus embedders are meaningless.
     """
     got = corpus.get(include=["documents", "metadatas"])
     return evaluate(
