@@ -5,8 +5,8 @@ old-but-relevant content statistically unretrievable (the "temporal event
 horizon"), which would break 'historical', 'evolution', and 'prediction'
 questions — so those keep pure relevance and differ only in presentation order.
 
-Shared by both query paths: `/ask` supplies the intent from its Haiku
-preprocessor; the MCP tool supplies it as a caller-set parameter.
+The intent is supplied by the MCP tool's caller (a frontier model) as a
+caller-set parameter.
 """
 
 from datetime import date

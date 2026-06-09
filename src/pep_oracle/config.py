@@ -15,12 +15,10 @@ DATA_DIR = Path(os.getenv("PEP_ORACLE_DATA_DIR", Path.home() / ".pep-oracle"))
 CACHE_DIR = DATA_DIR / "cache"
 TRANSCRIPT_CACHE_DIR = CACHE_DIR / "transcripts"
 DIARIZATION_CACHE_DIR = CACHE_DIR / "diarization"
-CHROMA_DIR = DATA_DIR / "chroma"
-TOPICS_PATH = DATA_DIR / "topics.json"
 SPEAKER_PROFILES_PATH = DATA_DIR / "speaker_profiles.json"
 
+# Name carried by the InMemoryCorpus (originally the ChromaDB collection name).
 CHROMA_COLLECTION = "pep_oracle"
-QUERY_MODEL = "claude-sonnet-4-20250514"
 
 # --- Embedding (AWS Bedrock) ---
 # Sydney — operator default; Bedrock Titan v2 isn't in ap-southeast-4 (Melbourne).
@@ -76,5 +74,5 @@ COGNITO_ALLOWED_EMAILS = os.getenv("PEP_ORACLE_COGNITO_ALLOWED_EMAILS", "")  # c
 
 
 def ensure_dirs() -> None:
-    for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR, CHROMA_DIR):
+    for d in (TRANSCRIPT_CACHE_DIR, DIARIZATION_CACHE_DIR):
         d.mkdir(parents=True, exist_ok=True)

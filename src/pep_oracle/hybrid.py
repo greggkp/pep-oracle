@@ -6,9 +6,10 @@ and paraphrases BM25 misses), so we rank with both and merge by Reciprocal Rank
 Fusion — scale-invariant (no need to normalize cosine vs BM25 scores) and robust
 (a chunk both retrievers like floats up).
 
-The BM25 index + corpus is cached in-process and rebuilt when the chunk count
-changes (the only writer is the periodic ingest process). Exhaustive local
-ranking is used because the corpus is small (≤ ~10k chunks); revisit if it grows.
+The BM25 index + corpus is cached in-process keyed on the corpus version and
+rebuilt on each version swap (the only writer is the periodic ingest job).
+Exhaustive local ranking is used because the corpus is small (≤ ~10k chunks);
+revisit if it grows.
 """
 
 import math
@@ -26,15 +27,14 @@ RRF_K = 60  # Reciprocal Rank Fusion damping constant (standard default)
 SEMANTIC_WEIGHT = 0.8
 
 # Per-corpus cache keyed by (name, version) + invalidated on chunk-count change.
-# ChromaDB collections have no `.version` (-> None), so the live /ask+MCP-over-Chroma
-# behavior is unchanged; InMemoryCorpus carries `.version` so a new artifact swap
-# gets a fresh BM25 index instead of colliding with the previous one.
+# The InMemoryCorpus carries `.version`, so a new artifact swap gets a fresh BM25
+# index instead of colliding with the previous version's.
 _CACHE: dict = {}  # (name, version) -> {count, ids, docs, embeddings, metas, bm25}
 
 
 def _load_corpus(collection) -> dict:
     name = collection.name
-    version = getattr(collection, "version", None)  # InMemoryCorpus carries a version; Chroma doesn't
+    version = getattr(collection, "version", None)  # InMemoryCorpus carries a version
     count = collection.count()
     key = (name, version)
     cached = _CACHE.get(key)
