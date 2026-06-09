@@ -1,8 +1,6 @@
 [Unit]
 Description=PEP Oracle episode ingestion
 After=network.target
-# Run the off-site backup only after a successful ingest (the corpus only changes here).
-OnSuccess=pep-oracle-backup.service
 
 [Service]
 Type=oneshot

@@ -5,7 +5,7 @@ quietly regresses retrieval fails here. Opt-in:
 
     pytest tests/test_eval_retrieval_live.py -v -m live
 
-Requires PEP_ORACLE_CORPUS_URI (or pass explicitly) and EMBED_BACKEND=bedrock.
+Requires PEP_ORACLE_CORPUS_URI (or pass explicitly).
 """
 
 import os
