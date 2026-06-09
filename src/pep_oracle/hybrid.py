@@ -16,6 +16,7 @@ import math
 
 from pep_oracle.lexical import BM25, normalize_numbers
 from pep_oracle.store import SENTINEL_NO_TIME
+from pep_oracle.timing import timed
 
 RRF_K = 60  # Reciprocal Rank Fusion damping constant (standard default)
 # Fusion weight on the semantic ranker (BM25 gets 1 - this). Leaning semantic
@@ -42,13 +43,17 @@ def _load_corpus(collection) -> dict:
         return cached
     got = collection.get(include=["documents", "embeddings", "metadatas"])
     docs = got["documents"]
+    # BM25 build (tokenize every doc + idf/tf) is a cache-miss-only cost paid on
+    # cold start and on each corpus-version swap — timed to size it on the cold path.
+    with timed("hybrid.bm25_build", chunks=count):
+        bm25 = BM25([normalize_numbers(d or "") for d in docs])
     corpus = {
         "count": count,
         "ids": got["ids"],
         "docs": docs,
         "embeddings": got["embeddings"],
         "metas": got["metadatas"],
-        "bm25": BM25([normalize_numbers(d or "") for d in docs]),
+        "bm25": bm25,
     }
     _CACHE[key] = corpus
     return corpus
