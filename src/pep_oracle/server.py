@@ -9,7 +9,12 @@ from fastapi import FastAPI
 from pep_oracle import authorize_gate, config as _config, corpus as _corpus, oauth
 from pep_oracle.config import SERVER_HOST, SERVER_PORT
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
+# force=True: the Lambda Python runtime pre-installs a root handler, which makes a
+# plain basicConfig a silent no-op — the root level stays WARNING and every INFO
+# line (incl. the pep_oracle.timing instrumentation) is dropped from CloudWatch.
+logging.basicConfig(
+    level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s", force=True
+)
 logger = logging.getLogger(__name__)
 
 
