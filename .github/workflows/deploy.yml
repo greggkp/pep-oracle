@@ -21,13 +21,13 @@ jobs:
     # without trusting arbitrary main-branch runs. (Tag pushes are trusted too.)
     environment: production
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Install deploy deps
         run: |
           pip install -r infra/requirements.txt
@@ -49,7 +49,7 @@ jobs:
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "semver=$VER" >> "$GITHUB_OUTPUT"
       - name: Assume deploy role (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-southeast-2
