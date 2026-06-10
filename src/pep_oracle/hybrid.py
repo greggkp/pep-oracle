@@ -12,7 +12,7 @@ Exhaustive local ranking is used because the corpus is small (≤ ~10k chunks);
 revisit if it grows.
 """
 
-import math
+import numpy as np
 
 from pep_oracle.lexical import BM25, normalize_numbers
 from pep_oracle.store import SENTINEL_NO_TIME
@@ -30,7 +30,7 @@ SEMANTIC_WEIGHT = 0.8
 # Per-corpus cache keyed by (name, version) + invalidated on chunk-count change.
 # The InMemoryCorpus carries `.version`, so a new artifact swap gets a fresh BM25
 # index instead of colliding with the previous version's.
-_CACHE: dict = {}  # (name, version) -> {count, ids, docs, embeddings, metas, bm25}
+_CACHE: dict = {}  # (name, version) -> {count, ids, docs, embeddings, norms, metas, bm25}
 
 
 def _load_corpus(collection) -> dict:
@@ -43,6 +43,14 @@ def _load_corpus(collection) -> dict:
         return cached
     got = collection.get(include=["documents", "embeddings", "metadatas"])
     docs = got["documents"]
+    # Embeddings as a (N x dims) float32 matrix with precomputed row norms, so the
+    # per-query cosine is one matrix-vector product instead of a Python loop.
+    # InMemoryCorpus already hands us the matrix (asarray is a no-op); list-of-lists
+    # sources pay one cache-miss-only conversion here.
+    embeddings = np.asarray(got["embeddings"], dtype=np.float32)
+    if count == 0:
+        embeddings = embeddings.reshape(0, 0)
+    norms = np.linalg.norm(embeddings, axis=1)
     # BM25 build (tokenize every doc + idf/tf) is a cache-miss-only cost paid on
     # cold start and on each corpus-version swap — timed to size it on the cold path.
     with timed("hybrid.bm25_build", chunks=count):
@@ -51,7 +59,8 @@ def _load_corpus(collection) -> dict:
         "count": count,
         "ids": got["ids"],
         "docs": docs,
-        "embeddings": got["embeddings"],
+        "embeddings": embeddings,
+        "norms": norms,
         "metas": got["metadatas"],
         "bm25": bm25,
     }
@@ -72,13 +81,6 @@ def _passes(meta, episode_numbers, after_date, before_date, speaker) -> bool:
         if not meta.get(key):
             return False
     return True
-
-
-def _cos(a, b) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    return dot / (na * nb) if na and nb else 0.0
 
 
 def _rrf(orders: list[list[int]], weights: list[float] | None = None, k: int = RRF_K) -> list[int]:
@@ -127,15 +129,20 @@ def hybrid_search(
     so the downstream temporal layer treats the fused rank as the relevance
     signal."""
     c = _load_corpus(collection)
-    ids, docs, embs, metas, bm25 = c["ids"], c["docs"], c["embeddings"], c["metas"], c["bm25"]
+    ids, docs, metas, bm25 = c["ids"], c["docs"], c["metas"], c["bm25"]
 
     cand = [i for i in range(len(ids))
             if _passes(metas[i], episode_numbers, after_date, before_date, speaker)]
     if not cand:
         return []
 
-    sem = {i: _cos(query_embedding, embs[i]) for i in cand}
-    sem_order = sorted(cand, key=lambda i: sem[i], reverse=True)
+    q = np.asarray(query_embedding, dtype=np.float32)
+    cand_idx = np.asarray(cand, dtype=np.intp)
+    denom = c["norms"][cand_idx] * np.linalg.norm(q)
+    sims = c["embeddings"][cand_idx] @ q
+    # Zero-norm vectors score 0.0 (matching the old per-pair cosine) instead of NaN.
+    sims = np.divide(sims, denom, out=np.zeros_like(sims), where=denom != 0)
+    sem_order = [cand[j] for j in np.argsort(-sims, kind="stable")]
     bm_scores = bm25.scores(normalize_numbers(query_text))
     bm_order = sorted(cand, key=lambda i: bm_scores[i], reverse=True)
 

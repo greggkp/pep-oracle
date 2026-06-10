@@ -83,7 +83,7 @@ def test_inmemory_corpus_roundtrip_and_get_shape(tmp_path):
     got = c.get(include=["documents", "embeddings", "metadatas"])
     assert got["ids"] == ["a", "b"]
     assert got["documents"][0] == "byrd rule reconciliation"
-    assert got["embeddings"][0] == [1.0, 0.0]
+    assert list(got["embeddings"][0]) == [1.0, 0.0]
     assert got["metadatas"][0]["episode_number"] == 251
     # include is honored: omit a key -> absent
     assert "documents" not in c.get(include=["metadatas"])

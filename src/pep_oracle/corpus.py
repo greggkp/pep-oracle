@@ -20,6 +20,7 @@ import json
 import threading
 import time
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -130,7 +131,10 @@ class InMemoryCorpus:
         if "documents" in include:
             out["documents"] = list(self.docs)
         if "embeddings" in include:
-            out["embeddings"] = list(self.embeddings)
+            # Returned as-is: a (N x dims) numpy matrix when loaded from parquet
+            # (matching ChromaDB, which also returns an ndarray here). Copying into
+            # a Python list would undo the cheap arrow→numpy load.
+            out["embeddings"] = self.embeddings
         if "metadatas" in include:
             out["metadatas"] = list(self.metas)
         return out
@@ -140,11 +144,19 @@ class InMemoryCorpus:
         table = pq.read_table(io.BytesIO(data))
         ids = table.column("chunk_id").to_pylist()
         docs = table.column("text").to_pylist()
-        # to_pylist() on the embedding column explodes a (N x dims) arrow array into
-        # ~N*dims Python float objects — timed separately because it is the prime
-        # suspect for cold-start / refresh CPU cost (see docs cold-path measurement).
+        # Load embeddings as one (N x dims) float32 numpy matrix, near-zero-copy from
+        # arrow. The previous to_pylist() exploded the column into ~N*dims Python float
+        # objects and dominated cold-start / refresh CPU (see docs cold-path measurement).
         with timed("corpus.parse_embeddings", chunks=table.num_rows):
-            embeddings = table.column("embedding").to_pylist()
+            if table.num_rows:
+                flat = table.column("embedding").combine_chunks().flatten()
+                embeddings = (
+                    flat.to_numpy(zero_copy_only=False)
+                    .astype(np.float32, copy=False)
+                    .reshape(table.num_rows, -1)
+                )
+            else:
+                embeddings = np.zeros((0, 0), dtype=np.float32)
         metas = [json.loads(m) for m in table.column("metadata").to_pylist()]
         return cls(ids, docs, embeddings, metas, version=version)
 
@@ -182,7 +194,7 @@ def _validate_serving(corpus: "InMemoryCorpus", base: str) -> None:
          else queries would be embedded in a different vector space than the corpus.
     Raises ValueError on either mismatch."""
     _version, manifest = load_manifest(base)
-    if corpus.embeddings:
+    if len(corpus.embeddings):
         actual_dims = len(corpus.embeddings[0])
         if actual_dims != manifest.dims:
             raise ValueError(

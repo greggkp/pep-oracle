@@ -12,7 +12,7 @@ the instrumentation added for that and how to read it.
    instrumentation needed.
 2. **First-request init** — the corpus loads **lazily on the first `/mcp`
    search**, so the first request also pays: S3 download of the parquet, parquet
-   parse (incl. the `to_pylist()` embedding materialization), a second S3 round
+   parse (incl. the arrow→numpy embedding load), a second S3 round
    trip for manifest validation, the BM25 index build, and the first Bedrock
    `InvokeModel` (incl. boto3 client construction). This is the part the timing
    logs below break down.
@@ -38,7 +38,7 @@ only `search.*`, since corpus/BM25 are cached):
 | `corpus.load_and_validate` | `corpus.current_corpus` | cold/refresh | download + parse + manifest validate |
 | `corpus.download` | `corpus.load_current` | cold/refresh | S3 GET of the parquet |
 | `corpus.parse` | `corpus.load_current` | cold/refresh | `bytes=` = parquet size |
-| `corpus.parse_embeddings` | `corpus.from_parquet_bytes` | cold/refresh | the `to_pylist()` suspect; `chunks=` = row count |
+| `corpus.parse_embeddings` | `corpus.from_parquet_bytes` | cold/refresh | arrow→numpy float32 matrix load; `chunks=` = row count |
 | `search.hybrid` | `mcp_server.search_pep` | no | candidate retrieval (cosine + BM25 + RRF) |
 | `hybrid.bm25_build` | `hybrid._load_corpus` | cold/refresh | BM25 tokenize + idf/tf; `chunks=` = row count |
 | `search.stats` | `mcp_server.search_pep` | no | `get_ingestion_stats` (full-corpus rescan per request) |
@@ -82,9 +82,11 @@ Once the data is in, compare the dominant phase against the candidate fixes:
   `.zip` package so **SnapStart** (container images are unsupported) can snapshot
   the warmed runtime, or **provisioned concurrency** (continuous cost; account
   concurrency limit is 10).
-- `corpus.parse_embeddings` / `corpus.parse` dominate → load embeddings as a
+- `corpus.parse_embeddings` / `corpus.parse` dominate → ~~load embeddings as a
   numpy `float32` matrix instead of `to_pylist()` (near-zero-copy from arrow);
-  this also unlocks warm-path cosine vectorization.
+  this also unlocks warm-path cosine vectorization~~ — **done** (2026-06-10):
+  parse dropped ~2.3s→~0.1s and warm `search.hybrid` ~390ms→~18ms (6,020 chunks,
+  local measurement).
 - `hybrid.bm25_build` dominates → ship a prebuilt index in the artifact, or
   build it lazily off the request path.
 - `corpus.*` / `bm25_build` show up on otherwise-warm requests → that's the TTL
