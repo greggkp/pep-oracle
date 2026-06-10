@@ -141,9 +141,16 @@ class InMemoryCorpus:
 
     @classmethod
     def from_parquet_bytes(cls, data: bytes, version: str | None = None) -> "InMemoryCorpus":
-        table = pq.read_table(io.BytesIO(data))
-        ids = table.column("chunk_id").to_pylist()
-        docs = table.column("text").to_pylist()
+        # Sub-phase timing: in-Lambda corpus.parse runs ~18x slower than local while
+        # pure-Python BM25 is only ~3x, and local profiling can't explain the gap
+        # (read_table is ~60ms locally even single-threaded). These split decompress
+        # from object materialization so CloudWatch shows where the cold cost lives
+        # (first-touch page faults on a cold microVM are the prime suspect).
+        with timed("corpus.parse_read_table", bytes=len(data)):
+            table = pq.read_table(io.BytesIO(data))
+        with timed("corpus.parse_columns", chunks=table.num_rows):
+            ids = table.column("chunk_id").to_pylist()
+            docs = table.column("text").to_pylist()
         # Load embeddings as one (N x dims) float32 numpy matrix, near-zero-copy from
         # arrow. The previous to_pylist() exploded the column into ~N*dims Python float
         # objects and dominated cold-start / refresh CPU (see docs cold-path measurement).
@@ -157,7 +164,8 @@ class InMemoryCorpus:
                 )
             else:
                 embeddings = np.zeros((0, 0), dtype=np.float32)
-        metas = [json.loads(m) for m in table.column("metadata").to_pylist()]
+        with timed("corpus.parse_metadata", chunks=table.num_rows):
+            metas = [json.loads(m) for m in table.column("metadata").to_pylist()]
         return cls(ids, docs, embeddings, metas, version=version)
 
 

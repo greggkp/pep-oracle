@@ -38,7 +38,10 @@ only `search.*`, since corpus/BM25 are cached):
 | `corpus.load_and_validate` | `corpus.current_corpus` | cold/refresh | download + parse + manifest validate |
 | `corpus.download` | `corpus.load_current` | cold/refresh | S3 GET of the parquet |
 | `corpus.parse` | `corpus.load_current` | cold/refresh | `bytes=` = parquet size |
+| `corpus.parse_read_table` | `corpus.from_parquet_bytes` | cold/refresh | parquet decode (zstd decompress + arrow buffers) |
+| `corpus.parse_columns` | `corpus.from_parquet_bytes` | cold/refresh | ids + docs `to_pylist` |
 | `corpus.parse_embeddings` | `corpus.from_parquet_bytes` | cold/refresh | arrow→numpy float32 matrix load; `chunks=` = row count |
+| `corpus.parse_metadata` | `corpus.from_parquet_bytes` | cold/refresh | metadata `to_pylist` + per-row `json.loads` |
 | `search.hybrid` | `mcp_server.search_pep` | no | candidate retrieval (cosine + BM25 + RRF) |
 | `hybrid.bm25_build` | `hybrid._load_corpus` | cold/refresh | BM25 tokenize + idf/tf; `chunks=` = row count |
 | `search.stats` | `mcp_server.search_pep` | no | `get_ingestion_stats` (full-corpus rescan per request) |
