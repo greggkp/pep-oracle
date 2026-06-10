@@ -141,13 +141,14 @@ class InMemoryCorpus:
 
     @classmethod
     def from_parquet_bytes(cls, data: bytes, version: str | None = None) -> "InMemoryCorpus":
-        # Sub-phase timing: in-Lambda corpus.parse runs ~18x slower than local while
-        # pure-Python BM25 is only ~3x, and local profiling can't explain the gap
-        # (read_table is ~60ms locally even single-threaded). These split decompress
-        # from object materialization so CloudWatch shows where the cold cost lives
-        # (first-touch page faults on a cold microVM are the prime suspect).
+        # use_threads=False: arrow sizes its decode pool from os.cpu_count(), which on
+        # Lambda reports the host's cores while the function only holds ~1 vCPU of
+        # cgroup quota — the extra threads exhaust the quota early in each scheduling
+        # period and stall (in-Lambda read_table measured 3.3s vs ~60ms local,
+        # 2026-06-10, v1.2.2 sub-phase timing). Single-threaded is also faster locally
+        # at this file size (~66ms vs ~158ms; thread coordination outweighs the gain).
         with timed("corpus.parse_read_table", bytes=len(data)):
-            table = pq.read_table(io.BytesIO(data))
+            table = pq.read_table(io.BytesIO(data), use_threads=False)
         with timed("corpus.parse_columns", chunks=table.num_rows):
             ids = table.column("chunk_id").to_pylist()
             docs = table.column("text").to_pylist()
