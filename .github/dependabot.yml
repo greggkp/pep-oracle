@@ -1,0 +1,50 @@
+version: 2
+# Security-only posture: `open-pull-requests-limit: 0` disables routine version-bump
+# PRs while leaving Dependabot *security* updates (CVE-driven) on. Each ecosystem
+# groups its security fixes into a single PR so multiple CVEs => one CI run / one deploy.
+# Dependabot auto-labels every PR `dependencies`; the auto-merge and release
+# workflows key off that label.
+updates:
+  # Root application deps (pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    groups:
+      app-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # CDK infra Python deps (infra/requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/infra"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    groups:
+      infra-py-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # CDK toolchain npm deps (infra/package.json + package-lock.json)
+  - package-ecosystem: "npm"
+    directory: "/infra"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    groups:
+      infra-npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # GitHub Actions used by ci.yml / deploy.yml
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
