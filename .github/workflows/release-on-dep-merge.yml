@@ -1,0 +1,49 @@
+name: release-on-dep-merge
+# When a Dependabot PR auto-merges into main, cut the next patch release by
+# dispatching the existing deploy.yml with a bumped version. deploy.yml's
+# `environment: production` gate then pauses for a one-click human approval
+# before anything reaches prod (set a required reviewer on that Environment).
+#
+# Why dispatch instead of pushing a v* tag here: a tag pushed with GITHUB_TOKEN
+# does NOT re-trigger deploy.yml's `push: tags` event (GitHub's recursion guard),
+# but a `workflow_dispatch` invoked with GITHUB_TOKEN *does* run. deploy.yml's
+# dispatch path resolves the semver from the input and self-tags the verified
+# commit after a successful deploy.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+# Serialize so two near-simultaneous merges don't race on version computation.
+concurrency: release-on-dep-merge
+
+permissions:
+  contents: read
+  actions: write   # dispatch deploy.yml
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'dependencies')
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # need all tags to compute the next version
+
+      - name: Compute next patch version
+        id: ver
+        run: |
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          LATEST=${LATEST:-v0.0.0}
+          IFS=. read -r MAJ MIN PAT <<< "${LATEST#v}"
+          NEXT="v${MAJ}.${MIN}.$((PAT + 1))"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Bumping $LATEST -> $NEXT"
+
+      - name: Dispatch deploy (gated by production environment approval)
+        run: gh workflow run deploy.yml --ref main -f version="$NEXT"
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

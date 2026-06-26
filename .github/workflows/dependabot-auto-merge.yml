@@ -1,0 +1,31 @@
+name: dependabot-auto-merge
+# Enables GitHub native auto-merge on Dependabot security PRs. Auto-merge only
+# completes once the required `ci` checks pass (configured in branch protection),
+# so tests still gate every merge. We auto-merge patch and minor security fixes;
+# majors are left for a human to review (they may carry breaking changes).
+on:
+  pull_request:
+    # Reacts to the PR Dependabot opens (and to its later pushes/rebases).
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write       # enable auto-merge
+  pull-requests: write  # approve + comment
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Enable auto-merge for patch/minor security updates
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
