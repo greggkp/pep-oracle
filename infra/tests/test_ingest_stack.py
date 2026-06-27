@@ -93,6 +93,74 @@ def test_task_role_has_bedrock_and_s3_and_ssm():
     }))
 
 
+def test_sns_topic_emails_the_alert_address():
+    t = _template()
+    t.resource_count_is("AWS::SNS::Topic", 1)
+    t.has_resource_properties("AWS::SNS::Subscription", Match.object_like({
+        "Protocol": "email",
+        "Endpoint": "me@example.com",  # falls back to allowed_email when alert_email unset
+    }))
+
+
+def test_task_failure_rule_notifies_sns():
+    t = _template()
+    t.has_resource_properties("AWS::Events::Rule", Match.object_like({
+        "EventPattern": Match.object_like({
+            "source": ["aws.ecs"],
+            "detail-type": ["ECS Task State Change"],
+            "detail": Match.object_like({
+                "lastStatus": ["STOPPED"],
+                "containers": {"exitCode": [{"anything-but": 0}]},
+            }),
+        }),
+        "Targets": Match.array_with([
+            Match.object_like({"Arn": {"Ref": Match.string_like_regexp("IngestAlerts.*")}}),
+        ]),
+    }))
+
+
+def test_daily_target_has_retry_and_dlq():
+    t = _template()
+    # SQS DLQ for failed launches.
+    t.resource_count_is("AWS::SQS::Queue", 1)
+    # The scheduled rule's ECS target carries a retry policy + dead-letter config.
+    t.has_resource_properties("AWS::Events::Rule", Match.object_like({
+        "ScheduleExpression": "rate(1 day)",
+        "Targets": Match.array_with([Match.object_like({
+            "RetryPolicy": Match.object_like({"MaximumRetryAttempts": 2}),
+            "DeadLetterConfig": Match.any_value(),
+        })]),
+    }))
+
+
+def test_stale_corpus_lambda_and_alarm():
+    t = _template()
+    t.has_resource_properties("AWS::Lambda::Function", Match.object_like({
+        "Handler": "index.handler",
+        "Runtime": "python3.12",
+        "Environment": Match.object_like({
+            "Variables": Match.object_like({"CORPUS_BUCKET": "pep-oracle-corpus-test"}),
+        }),
+    }))
+    t.has_resource_properties("AWS::CloudWatch::Alarm", Match.object_like({
+        "MetricName": "CorpusAgeHours",
+        "Namespace": "PepOracle/Ingest",
+        "Threshold": 240,
+        "ComparisonOperator": "GreaterThanThreshold",
+    }))
+
+
+def test_alarms_action_to_sns():
+    t = _template()
+    # Both the stale-corpus and DLQ alarms wire their AlarmActions to the SNS topic.
+    t.resource_count_is("AWS::CloudWatch::Alarm", 2)
+    t.has_resource_properties("AWS::CloudWatch::Alarm", Match.object_like({
+        "AlarmActions": Match.array_with([
+            Match.object_like({"Ref": Match.string_like_regexp("IngestAlerts.*")}),
+        ]),
+    }))
+
+
 def test_grants_use_imported_resources_not_cross_stack_exports():
     """Decoupling guarantee: the corpus bucket + data key are imported as external
     resources, so the grants reference LITERAL ARNs — never an Fn::ImportValue from
