@@ -62,5 +62,7 @@ def _resolve_ssm(param_name: str, region: str) -> str:
     value = resp["Parameter"]["Value"].strip()
     if not value:
         raise RuntimeError(f"SSM signing-key parameter {param_name!r} is empty")
-    logger.info("Loaded OAuth signing key from SSM parameter %s", param_name)
+    # Deliberately log neither the key nor the parameter name (avoid disclosing
+    # the secret's location in clear-text logs).
+    logger.info("Loaded OAuth signing key from SSM (decrypted SecureString)")
     return value
