@@ -62,6 +62,10 @@ jobs:
       - name: CDK deploy (serving + ingest)
         env:
           ALLOWED_EMAIL: ${{ vars.ALLOWED_EMAIL }}
+          # Optional: where ingest alarms are emailed. If the ALERT_EMAIL repo
+          # variable is unset this is empty, and the stack falls back to
+          # allowed_email (cfg.alert_email or cfg.allowed_email).
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
           GIT_SHA: ${{ steps.ver.outputs.sha }}
           SEMVER: ${{ steps.ver.outputs.semver }}
         run: |
@@ -69,6 +73,7 @@ jobs:
           cdk deploy PepOracleProdStack PepOracleIngestStack \
             --require-approval never \
             -c "allowed_email=$ALLOWED_EMAIL" \
+            -c "alert_email=$ALERT_EMAIL" \
             -c "git_sha=$GIT_SHA" \
             -c "semver=$SEMVER"
       - name: Smoke test
