@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+# Least privilege: CI only reads the repo (checkout) and needs no write scopes.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -430,8 +430,10 @@ def test_mount_extends_transport_security_allowed_hosts(monkeypatch, tmp_path):
     )
     assert mounted is True
     ts = global_mcp.settings.transport_security
-    assert "pep-oracle.iicapn.com" in ts.allowed_hosts
-    assert "https://pep-oracle.iicapn.com" in ts.allowed_origins
+    # Exact-match membership (not substring) so the host check can't be fooled by
+    # a lookalike like "pep-oracle.iicapn.com.evil.test".
+    assert any(h == "pep-oracle.iicapn.com" for h in ts.allowed_hosts)
+    assert any(o == "https://pep-oracle.iicapn.com" for o in ts.allowed_origins)
     # Localhost defaults still present (don't break dev / tests)
     assert any("localhost" in h for h in ts.allowed_hosts)
 
