@@ -34,11 +34,17 @@ jobs:
           npm install -g aws-cdk@2.1126.0
       - name: Resolve version
         id: ver
+        # Pass GitHub context through env vars rather than interpolating ${{ }}
+        # directly into the shell, so a crafted `version` input can't inject
+        # commands into the run step (the case-glob below validates the format).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           # On a v* tag push the version is the tag; on manual dispatch it is the
           # `version` input (GITHUB_REF_NAME would be the branch, e.g. "main").
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VER="${{ inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VER="$INPUT_VERSION"
           else
             VER="${GITHUB_REF_NAME}"
           fi
