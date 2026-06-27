@@ -1,8 +1,16 @@
 name: dependabot-auto-merge
-# Enables GitHub native auto-merge on Dependabot security PRs. Auto-merge only
-# completes once the required `ci` checks pass (configured in branch protection),
-# so tests still gate every merge. We auto-merge patch and minor security fixes;
-# majors are left for a human to review (they may carry breaking changes).
+# Enables GitHub native auto-merge on Dependabot PRs. Auto-merge only completes
+# once the required `ci` checks pass (configured in branch protection), so tests
+# still gate every merge. We auto-merge:
+#   - single updates that are patch or minor (majors are left for a human, since
+#     they may carry breaking changes), and
+#   - grouped updates (e.g. the `app-security` group). For a grouped PR,
+#     dependabot/fetch-metadata can't collapse the group to one bump, so it
+#     reports update-type="" (null) and sets dependency-group instead. The old
+#     condition only checked update-type, so it was ALWAYS false for grouped PRs
+#     and auto-merge never got enabled. We can't single out a major hidden inside
+#     a group from the metadata, so — because these are curated security groups
+#     and CI gates them — we let the whole group through.
 on:
   pull_request:
     # Reacts to the PR Dependabot opens (and to its later pushes/rebases).
@@ -21,10 +29,11 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@v2
 
-      - name: Enable auto-merge for patch/minor security updates
+      - name: Enable auto-merge for patch/minor or grouped updates
         if: >-
           steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'
+          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+          steps.meta.outputs.dependency-group != ''
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
