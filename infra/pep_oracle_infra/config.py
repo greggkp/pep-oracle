@@ -18,6 +18,10 @@ class DeployConfig:
     corpus_bucket_name: str
     cognito_domain_prefix: str
     allowed_email: str
+    # Where ingest monitoring alarms are emailed. Defaults to allowed_email (set in
+    # from_node) so a single -c allowed_email=... covers both; override with
+    # -c alert_email=... to send alerts somewhere other than the Cognito allow-list.
+    alert_email: str = ""
     git_sha: str = "unknown"  # code provenance for GET /version; pass `-c git_sha=...`
     semver: str = "unknown"  # release tag for GET /version; pass `-c semver=...`
     # runtime contract (matches src/pep_oracle/config.py defaults)
@@ -52,6 +56,7 @@ class DeployConfig:
             corpus_bucket_name=ctx("corpus_bucket_name", "pep-oracle-corpus-prod"),
             cognito_domain_prefix=ctx("cognito_domain_prefix", "pep-oracle-prod"),
             allowed_email=ctx("allowed_email", "REPLACE_ME@example.com"),
+            alert_email=ctx("alert_email", ctx("allowed_email", "REPLACE_ME@example.com")),
             git_sha=ctx("git_sha", "unknown"),
             semver=ctx("semver", "unknown"),
             lambda_reserved_concurrency=int(ctx("lambda_reserved_concurrency", 0)),
