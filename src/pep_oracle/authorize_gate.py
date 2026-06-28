@@ -146,7 +146,7 @@ class CognitoGate:
             public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
             claims = jwt.decode(
                 id_token,
-                public_key,
+                public_key,  # type: ignore[arg-type]
                 algorithms=["RS256"],
                 audience=self.client_id,
                 issuer=self.issuer,

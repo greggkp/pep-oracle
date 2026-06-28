@@ -73,7 +73,7 @@ def episode_chunks_and_embeddings(
         roster = host_roster_from_title(episode.title)
         clusters = load_cluster_info(episode.guid)
         segments = apply_diarization(
-            segments, speaker_segments, profile_path=profile_path, roster=roster, clusters=clusters
+            segments, speaker_segments, profile_path=profile_path, roster=roster, clusters=clusters  # type: ignore[arg-type]
         )
     chunks = chunk_transcript(segments, episode)
     if not chunks:
