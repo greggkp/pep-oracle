@@ -214,6 +214,7 @@ def _code_version() -> tuple[str, str]:
 async def api_version():
     semver, sha = _code_version()
     import typing
+
     out: dict[str, typing.Any] = {"code_semver": semver, "code_git_sha": sha}
     try:
         version, manifest = _corpus.load_manifest(_config.CORPUS_URI)
