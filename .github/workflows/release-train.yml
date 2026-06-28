@@ -1,0 +1,58 @@
+name: release-train
+# Daily release train. Once a day, if main has new commits since the latest v*
+# tag, cut the next patch release by dispatching deploy.yml (which deploys,
+# smoke-tests, and self-tags the verified commit). If nothing has changed since
+# the last release, this is a no-op.
+#
+# UNATTENDED: this only runs without a human if the `production` GitHub
+# Environment has NO required reviewer. With a reviewer set, the dispatched
+# deploy.yml pauses for approval (the train still fires, it just waits).
+#
+# Replaces the old per-merge release-on-dep-merge.yml: changes (Dependabot
+# auto-merges + anything else) accumulate on main through the day and ship in
+# one batched release.
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC daily (16:00 AEST). Change this to retime.
+  workflow_dispatch: {}    # allow a manual kick of the train
+
+# Serialize so a manual kick can't race the scheduled run on version computation.
+concurrency: release-train
+
+permissions:
+  contents: read
+  actions: write   # dispatch deploy.yml
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # need all tags + history to compute the next version
+
+      - name: Compute next patch version (skip if nothing new)
+        id: ver
+        run: |
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          LATEST=${LATEST:-v0.0.0}
+          # If the latest tag exists and points at HEAD's history with no commits
+          # beyond it, there's nothing to release today.
+          if git rev-parse -q --verify "refs/tags/${LATEST}" >/dev/null \
+             && [ -z "$(git rev-list "refs/tags/${LATEST}..HEAD")" ]; then
+            echo "No new commits since ${LATEST} — nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          IFS=. read -r MAJ MIN PAT <<< "${LATEST#v}"
+          NEXT="v${MAJ}.${MIN}.$((PAT + 1))"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${LATEST} -> ${NEXT}"
+
+      - name: Dispatch deploy
+        if: steps.ver.outputs.release == 'true'
+        run: gh workflow run deploy.yml --ref main -f version="$NEXT"
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
