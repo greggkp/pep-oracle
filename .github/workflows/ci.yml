@@ -24,8 +24,10 @@ jobs:
           python -m pip install --upgrade pip uv
           uv sync --extra server --extra aws --extra dev
           pip install -r infra/requirements.txt
-      - name: Ruff
+      - name: Ruff Check
         run: uv run ruff check .
+      - name: Ruff Format Check
+        run: uv run ruff format --check .
       - name: Pytest (root)
         run: uv run pytest -q
       - name: Pytest (infra)

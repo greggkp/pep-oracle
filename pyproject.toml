@@ -36,9 +36,7 @@ line-length = 100
 extend-exclude = ["infra/cdk.out", ".worktrees", "infra/.venv", ".venv"]
 
 [tool.ruff.lint]
-# Default-ish lenient set: pyflakes (F) + error-class pycodestyle (E4 imports,
-# E7 statement errors, E9 syntax). No E501 (line length).
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM"]
 
 [dependency-groups]
 dev = [
