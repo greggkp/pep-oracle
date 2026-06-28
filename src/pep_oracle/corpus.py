@@ -50,12 +50,8 @@ def _build_table(rows: list[dict]) -> pa.Table:
         {
             "chunk_id": pa.array([r["chunk_id"] for r in rows], pa.string()),
             "text": pa.array([r["text"] for r in rows], pa.string()),
-            "embedding": pa.array(
-                [r["embedding"] for r in rows], pa.list_(pa.float32())
-            ),
-            "metadata": pa.array(
-                [json.dumps(r["metadata"]) for r in rows], pa.string()
-            ),
+            "embedding": pa.array([r["embedding"] for r in rows], pa.list_(pa.float32())),
+            "metadata": pa.array([json.dumps(r["metadata"]) for r in rows], pa.string()),
         }
     )
 
@@ -67,9 +63,7 @@ def _table_bytes(table: pa.Table) -> bytes:
 
 
 def _episode_range(rows: list[dict]) -> list:
-    nums = sorted(
-        n for r in rows if (n := r["metadata"].get("episode_number"))
-    )
+    nums = sorted(n for r in rows if (n := r["metadata"].get("episode_number")))
     return [nums[0], nums[-1]] if nums else [None, None]
 
 
@@ -99,9 +93,9 @@ def write_artifact(
 
     base = str(dest).rstrip("/") + "/corpus"
     manifest_uri = f"{base}/{version}.manifest.json"
-    storage.put_bytes(f"{base}/{version}.parquet", data)              # immutable
+    storage.put_bytes(f"{base}/{version}.parquet", data)  # immutable
     storage.put_text(manifest_uri, json.dumps(manifest.to_dict(), indent=2))  # immutable
-    storage.put_text(                                                # flip LAST
+    storage.put_text(  # flip LAST
         f"{base}/current.json",
         json.dumps({"version": version, "sha256": sha, "manifest_url": manifest_uri}),
     )
@@ -140,7 +134,7 @@ class InMemoryCorpus:
         return out
 
     @classmethod
-    def from_parquet_bytes(cls, data: bytes, version: str | None = None) -> "InMemoryCorpus":
+    def from_parquet_bytes(cls, data: bytes, version: str | None = None) -> InMemoryCorpus:
         # use_threads=False: arrow sizes its decode pool from os.cpu_count(), which on
         # Lambda reports the host's cores while the function only holds ~1 vCPU of
         # cgroup quota — the extra threads exhaust the quota early in each scheduling
@@ -196,7 +190,7 @@ def load_manifest(base: str) -> tuple[str, Manifest]:
     return version, Manifest(**m)
 
 
-def _validate_serving(corpus: "InMemoryCorpus", base: str) -> None:
+def _validate_serving(corpus: InMemoryCorpus, base: str) -> None:
     """Guard the serving path against a corpus/embedder mismatch:
       1. The manifest dims must match the loaded vectors' width.
       2. The active query embedder (config) must match the artifact's embed_model,
@@ -209,7 +203,7 @@ def _validate_serving(corpus: "InMemoryCorpus", base: str) -> None:
             raise ValueError(
                 f"corpus dims mismatch: manifest={manifest.dims} but vectors are {actual_dims}-d"
             )
-    if config.EMBED_MODEL != manifest.embed_model:
+    if manifest.embed_model != config.EMBED_MODEL:
         raise ValueError(
             f"query embedder mismatch: serving a {manifest.embed_model} corpus requires "
             f"EMBED_MODEL={manifest.embed_model}, but config has model={config.EMBED_MODEL!r}"

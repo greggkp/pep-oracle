@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from pep_oracle.models import Episode, TranscriptSegment
@@ -9,7 +9,7 @@ def _make_episode(**overrides) -> Episode:
     defaults = dict(
         guid="test-guid-123",
         title="TEST EPISODE (Ep 1, 1 Jan)",
-        pub_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        pub_date=datetime(2026, 1, 1, tzinfo=UTC),
         audio_url="https://example.com/test.mp3",
         description="Test episode",
     )
@@ -79,9 +79,7 @@ def test_transcribe_cache_round_trip(tmp_path, monkeypatch):
     monkeypatch.setattr("pep_oracle.transcripts.manager.TRANSCRIPT_CACHE_DIR", tmp_path)
 
     cache_path = tmp_path / "test-guid-123.whisper.json"
-    cache_path.write_text(
-        '[{"text": "Cached", "start_time": 0.0, "end_time": 1.0}]'
-    )
+    cache_path.write_text('[{"text": "Cached", "start_time": 0.0, "end_time": 1.0}]')
 
     class ExplodingModal:
         class Function:

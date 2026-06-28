@@ -87,7 +87,7 @@ def _rrf(orders: list[list[int]], weights: list[float] | None = None, k: int = R
     if weights is None:
         weights = [1.0] * len(orders)
     score: dict[int, float] = {}
-    for order, w in zip(orders, weights):
+    for order, w in zip(orders, weights, strict=False):
         for rank, i in enumerate(order):
             score[i] = score.get(i, 0.0) + w / (k + rank + 1)
     return sorted(score, key=lambda i: score[i], reverse=True)
@@ -131,8 +131,11 @@ def hybrid_search(
     c = _load_corpus(collection)
     ids, docs, metas, bm25 = c["ids"], c["docs"], c["metas"], c["bm25"]
 
-    cand = [i for i in range(len(ids))
-            if _passes(metas[i], episode_numbers, after_date, before_date, speaker)]
+    cand = [
+        i
+        for i in range(len(ids))
+        if _passes(metas[i], episode_numbers, after_date, before_date, speaker)
+    ]
     if not cand:
         return []
 
@@ -148,5 +151,7 @@ def hybrid_search(
 
     fused = _rrf([sem_order, bm_order], weights=[semantic_weight, 1.0 - semantic_weight])
     n = len(fused) or 1
-    return [_to_result(ids[i], docs[i], metas[i], distance=rank / n)
-            for rank, i in enumerate(fused[:top_k])]
+    return [
+        _to_result(ids[i], docs[i], metas[i], distance=rank / n)
+        for rank, i in enumerate(fused[:top_k])
+    ]

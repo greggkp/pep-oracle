@@ -14,7 +14,7 @@ import time
 from pep_oracle import config
 from pep_oracle.timing import timed
 
-_bedrock = None      # boto3 bedrock-runtime singleton
+_bedrock = None  # boto3 bedrock-runtime singleton
 
 _MAX_RETRIES = 6
 _BASE_BACKOFF = 0.5  # seconds; doubled each retry
@@ -45,16 +45,14 @@ def _is_throttling(exc: Exception) -> bool:
 
 
 def _embed_one_bedrock(text: str) -> list[float]:
-    body = json.dumps(
-        {"inputText": text, "dimensions": config.EMBED_DIMS, "normalize": True}
-    )
+    body = json.dumps({"inputText": text, "dimensions": config.EMBED_DIMS, "normalize": True})
     for attempt in range(_MAX_RETRIES):
         try:
             resp = _bedrock_client().invoke_model(modelId=config.EMBED_MODEL, body=body)
             return json.loads(resp["body"].read())["embedding"]
         except Exception as exc:  # noqa: BLE001 — retry only throttling, re-raise the rest
             if _is_throttling(exc) and attempt < _MAX_RETRIES - 1:
-                time.sleep(_BASE_BACKOFF * (2 ** attempt))
+                time.sleep(_BASE_BACKOFF * (2**attempt))
                 continue
             raise
     raise RuntimeError("unreachable")  # pragma: no cover

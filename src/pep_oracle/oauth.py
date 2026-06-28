@@ -14,20 +14,20 @@ import logging
 import secrets
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlencode, urlparse
 
 import jwt
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from pep_oracle.oauth_store import OAuthStore, REFRESH_TTL_SECONDS
 from pep_oracle.authorize_gate import (
     CALLBACK_PATH,
     AuthorizeGate,
     IdentityError,
     TrustedUpstreamGate,
 )
+from pep_oracle.oauth_store import REFRESH_TTL_SECONDS, OAuthStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _pkce_s256(code_verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
-def _validate_redirect_uri(uri: str) -> Optional[str]:
+def _validate_redirect_uri(uri: str) -> str | None:
     """Structural validation per OAuth 2.1 / RFC 8252.
 
     Returns an error message string on failure, None on success.
@@ -125,7 +125,7 @@ def _encode_login_state(
     client_id: str,
     redirect_uri: str,
     code_challenge: str,
-    client_state: Optional[str],
+    client_state: str | None,
 ) -> str:
     """Short-lived HS256 JWT carrying the original MCP authorize params across the
     Cognito leg (stateless -- no store row). Verified on the callback."""
@@ -154,8 +154,13 @@ def _decode_login_state(signing_key: str, issuer: str, blob: str) -> dict[str, A
         issuer=issuer,
         options={
             "require": [
-                "exp", "iat", "iss", "aud",
-                "mcp_client_id", "mcp_redirect_uri", "mcp_code_challenge",
+                "exp",
+                "iat",
+                "iss",
+                "aud",
+                "mcp_client_id",
+                "mcp_redirect_uri",
+                "mcp_code_challenge",
             ]
         },
     )
@@ -173,14 +178,15 @@ def _issue_token_pair(
     signing_key: str,
     issuer: str,
     client_id: str,
-    family_id: Optional[str] = None,
+    family_id: str | None = None,
 ) -> dict[str, Any]:
     access = mint_access_token(signing_key, client_id, issuer=issuer)
     refresh = secrets.token_urlsafe(32)
     if family_id is None:
         family_id = secrets.token_urlsafe(16)
-    store.put_refresh(refresh, client_id=client_id, family_id=family_id,
-                      ttl_seconds=REFRESH_TTL_SECONDS)
+    store.put_refresh(
+        refresh, client_id=client_id, family_id=family_id, ttl_seconds=REFRESH_TTL_SECONDS
+    )
     return {
         "access_token": access,
         "token_type": "Bearer",
@@ -195,7 +201,7 @@ def register_oauth_routes(
     signing_key: str,
     public_url: str,
     store: OAuthStore,
-    gate: Optional[AuthorizeGate] = None,
+    gate: AuthorizeGate | None = None,
 ) -> None:
     """Register OAuth 2.1 + DCR endpoints on a FastAPI app.
 
@@ -208,12 +214,15 @@ def register_oauth_routes(
         gate = TrustedUpstreamGate()
 
     def _issue_code_and_redirect(
-        *, client_id: str, redirect_uri: str, code_challenge: str, client_state: Optional[str]
+        *, client_id: str, redirect_uri: str, code_challenge: str, client_state: str | None
     ) -> Response:
         code = secrets.token_urlsafe(32)
         store.put_auth_code(
-            code, client_id=client_id, code_challenge=code_challenge,
-            redirect_uri=redirect_uri, ttl_seconds=AUTH_CODE_TTL_SECONDS,
+            code,
+            client_id=client_id,
+            code_challenge=code_challenge,
+            redirect_uri=redirect_uri,
+            ttl_seconds=AUTH_CODE_TTL_SECONDS,
         )
         logger.info("authorize: issued code for client_id=%s", client_id)
         params = {"code": code}
@@ -252,7 +261,9 @@ def register_oauth_routes(
             or not all(isinstance(u, str) and u for u in redirect_uris)
         ):
             logger.warning("DCR rejected: missing/invalid redirect_uris")
-            return _err(400, "invalid_redirect_uri", "redirect_uris must be a non-empty list of strings")
+            return _err(
+                400, "invalid_redirect_uri", "redirect_uris must be a non-empty list of strings"
+            )
         for u in redirect_uris:
             err = _validate_redirect_uri(u)
             if err is not None:
@@ -319,8 +330,12 @@ def register_oauth_routes(
 
         if gate.requires_identity():
             login_state = _encode_login_state(
-                signing_key, issuer, client_id=client_id, redirect_uri=redirect_uri,
-                code_challenge=code_challenge, client_state=state,
+                signing_key,
+                issuer,
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                code_challenge=code_challenge,
+                client_state=state,
             )
             callback_uri = f"{issuer}{CALLBACK_PATH}"
             logger.info("authorize: redirecting to identity provider for client_id=%s", client_id)
@@ -329,18 +344,20 @@ def register_oauth_routes(
                 status_code=302,
             )
         return _issue_code_and_redirect(
-            client_id=client_id, redirect_uri=redirect_uri,
-            code_challenge=code_challenge, client_state=state,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            code_challenge=code_challenge,
+            client_state=state,
         )
 
     @app.post("/oauth/token")
     async def token(
         grant_type: str = Form(...),
-        code: Optional[str] = Form(None),
-        redirect_uri: Optional[str] = Form(None),
-        client_id: Optional[str] = Form(None),
-        code_verifier: Optional[str] = Form(None),
-        refresh_token: Optional[str] = Form(None),
+        code: str | None = Form(None),
+        redirect_uri: str | None = Form(None),
+        client_id: str | None = Form(None),
+        code_verifier: str | None = Form(None),
+        refresh_token: str | None = Form(None),
     ) -> Response:
         if grant_type == "authorization_code":
             if not (code and redirect_uri and client_id and code_verifier):
@@ -373,7 +390,8 @@ def register_oauth_routes(
                 store.revoke_family(rec.family_id)
                 logger.warning(
                     "Refresh token reuse detected — revoking family family_id=%s client_id=%s",
-                    rec.family_id, client_id,
+                    rec.family_id,
+                    client_id,
                 )
                 return _err(400, "invalid_grant", "refresh_token revoked")
             if rec.expires_at <= int(time.time()):
@@ -388,15 +406,16 @@ def register_oauth_routes(
                 logger.info("refresh: lost rotation race for client_id=%s", client_id)
                 return _err(400, "invalid_grant", "refresh_token already rotated")
             logger.info("refresh: rotated refresh_token for client_id=%s", client_id)
-            return JSONResponse(_issue_token_pair(store, signing_key, issuer, client_id,
-                                                  family_id=rec.family_id))
+            return JSONResponse(
+                _issue_token_pair(store, signing_key, issuer, client_id, family_id=rec.family_id)
+            )
 
         return _err(400, "unsupported_grant_type")
 
     @app.post("/oauth/revoke")
     async def revoke(
         token: str = Form(...),
-        token_type_hint: Optional[str] = Form(None),
+        token_type_hint: str | None = Form(None),
     ) -> Response:
         # RFC 7009: always 200, don't leak existence. Access tokens are
         # stateless JWTs and can't be revoked here.
@@ -446,8 +465,10 @@ def register_oauth_routes(
                 return _err(403, "access_denied", "identity verification failed")
 
             return _issue_code_and_redirect(
-                client_id=mcp_client_id, redirect_uri=mcp_redirect_uri,
-                code_challenge=mcp_code_challenge, client_state=mcp_state,
+                client_id=mcp_client_id,
+                redirect_uri=mcp_redirect_uri,
+                code_challenge=mcp_code_challenge,
+                client_state=mcp_state,
             )
 
     logger.info("OAuth provider routes registered (issuer=%s)", issuer)

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlencode
 
 import jwt
@@ -65,10 +65,10 @@ class CognitoGate:
         self.user_pool_id = user_pool_id
         self.region = region
         self.allowed_emails = [e.strip().lower() for e in allowed_emails if e.strip()]
-        self._jwks_cache: Optional[dict[str, Any]] = None
+        self._jwks_cache: dict[str, Any] | None = None
 
     @classmethod
-    def from_config(cls) -> "CognitoGate":
+    def from_config(cls) -> CognitoGate:
         missing = [
             name
             for name, val in (
@@ -121,9 +121,7 @@ class CognitoGate:
         TTL / refresh-on-unknown-kid if the gate runs long-lived outside Lambda.
         """
         if self._jwks_cache is None:
-            resp = requests.get(
-                f"{self.issuer}/.well-known/jwks.json", timeout=_HTTP_TIMEOUT
-            )
+            resp = requests.get(f"{self.issuer}/.well-known/jwks.json", timeout=_HTTP_TIMEOUT)
             resp.raise_for_status()
             self._jwks_cache = resp.json()
         return self._jwks_cache

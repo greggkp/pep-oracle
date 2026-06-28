@@ -11,8 +11,8 @@ caller-set parameter.
 
 from datetime import date
 
-HALF_LIFE_DAYS = 21          # recency half-life for 'current' (tune via eval)
-CANDIDATE_MULTIPLIER = 4     # candidate pool = top_k * this, then reranked here
+HALF_LIFE_DAYS = 21  # recency half-life for 'current' (tune via eval)
+CANDIDATE_MULTIPLIER = 4  # candidate pool = top_k * this, then reranked here
 CURRENT_RECENCY_WEIGHT = 0.5  # blend of recency vs similarity for 'current'
 MAX_PER_EPISODE_EVOLUTION = 2
 
@@ -58,10 +58,12 @@ def select_for_intent(
         return [], NEWEST_FIRST
 
     if intent == "current":
+
         def blended(c):
             sim = 1.0 - c.get("distance", 1.0)
             rec = recency_score(c.get("episode_date", ""), today, half_life_days)
             return (1 - CURRENT_RECENCY_WEIGHT) * sim + CURRENT_RECENCY_WEIGHT * rec
+
         ranked = sorted(cands, key=blended, reverse=True)
         return ranked[:top_k], NEWEST_FIRST
 

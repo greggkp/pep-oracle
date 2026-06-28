@@ -1,20 +1,21 @@
 import logging
 import os
 import subprocess
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
 
-from pep_oracle import authorize_gate, config as _config, corpus as _corpus, oauth
+from pep_oracle import authorize_gate, oauth
+from pep_oracle import config as _config
+from pep_oracle import corpus as _corpus
 from pep_oracle.config import SERVER_HOST, SERVER_PORT
 
 # force=True: the Lambda Python runtime pre-installs a root handler, which makes a
 # plain basicConfig a silent no-op — the root level stays WARNING and every INFO
 # line (incl. the pep_oracle.timing instrumentation) is dropped from CloudWatch.
-logging.basicConfig(
-    level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s", force=True
-)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s", force=True)
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +38,9 @@ class _BearerAuthASGIWrapper:
         if scope["type"] != "http":
             await self._inner(scope, receive, send)
             return
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
+        }
         scheme, _, rest = headers.get("authorization", "").partition(" ")
         token = rest if scheme.lower() == "bearer" and rest else None
         if token is None:
@@ -52,14 +55,16 @@ class _BearerAuthASGIWrapper:
 
     @staticmethod
     async def _reject(send) -> None:
-        await send({
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"www-authenticate", b'Bearer realm="pep-oracle-mcp"'),
-            ],
-        })
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"www-authenticate", b'Bearer realm="pep-oracle-mcp"'),
+                ],
+            }
+        )
         await send({"type": "http.response.body", "body": b'{"detail":"unauthorized"}'})
 
 
@@ -94,7 +99,9 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
         try:
             gate = authorize_gate.get_gate()
         except ValueError as e:
-            logger.error("AUTHORIZE_GATE=cognito but misconfigured (%s) — refusing to mount /mcp.", e)
+            logger.error(
+                "AUTHORIZE_GATE=cognito but misconfigured (%s) — refusing to mount /mcp.", e
+            )
             return False
     elif gate_name == "trusted_upstream":
         if os.environ.get("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "") != "1":
@@ -108,9 +115,7 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
             return False
         gate = authorize_gate.get_gate()  # TrustedUpstreamGate
     else:
-        logger.error(
-            "unknown PEP_ORACLE_AUTHORIZE_GATE=%r — refusing to mount /mcp.", gate_name
-        )
+        logger.error("unknown PEP_ORACLE_AUTHORIZE_GATE=%r — refusing to mount /mcp.", gate_name)
         return False
 
     signing_key = _resolve_signing_key()
@@ -188,7 +193,9 @@ def _code_version() -> tuple[str, str]:
         try:
             sha = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout.strip()
         except Exception:  # noqa: BLE001 — version info only; never fail the endpoint
             sha = "unknown"

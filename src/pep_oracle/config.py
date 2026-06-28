@@ -32,7 +32,9 @@ EMBED_DIMS = int(os.getenv("PEP_ORACLE_EMBED_DIMS", "1024"))
 CORPUS_URI = os.getenv("PEP_ORACLE_CORPUS_URI", str(DATA_DIR))
 # Phase 3 ingestion: S3 (or local) location of the diarization speaker references,
 # downloaded at ingest time and passed as profile_path. Defaults under the corpus base.
-SPEAKER_PROFILES_URI = os.getenv("PEP_ORACLE_SPEAKER_PROFILES_URI", f"{CORPUS_URI}/refs/speaker_profiles.json")
+SPEAKER_PROFILES_URI = os.getenv(
+    "PEP_ORACLE_SPEAKER_PROFILES_URI", f"{CORPUS_URI}/refs/speaker_profiles.json"
+)
 
 # How often a warm process re-checks current.json for a new corpus version (a cheap
 # small-object GET). New episodes reach a warm container within this window.
@@ -68,7 +70,9 @@ AUTHORIZE_GATE = os.getenv("PEP_ORACLE_AUTHORIZE_GATE", "trusted_upstream")
 COGNITO_DOMAIN = os.getenv("PEP_ORACLE_COGNITO_DOMAIN", "")
 COGNITO_CLIENT_ID = os.getenv("PEP_ORACLE_COGNITO_CLIENT_ID", "")
 COGNITO_CLIENT_SECRET = os.getenv("PEP_ORACLE_COGNITO_CLIENT_SECRET", "")
-COGNITO_USER_POOL_ID = os.getenv("PEP_ORACLE_COGNITO_USER_POOL_ID", "")  # e.g. ap-southeast-2_abc123
+COGNITO_USER_POOL_ID = os.getenv(
+    "PEP_ORACLE_COGNITO_USER_POOL_ID", ""
+)  # e.g. ap-southeast-2_abc123
 COGNITO_REGION = os.getenv("PEP_ORACLE_COGNITO_REGION", BEDROCK_REGION)
 COGNITO_ALLOWED_EMAILS = os.getenv("PEP_ORACLE_COGNITO_ALLOWED_EMAILS", "")  # comma-separated
 

@@ -14,7 +14,7 @@ import json
 import sqlite3
 import threading
 import time
-from typing import Optional, Protocol
+from typing import Protocol
 
 from pep_oracle import config
 
@@ -49,12 +49,15 @@ class RefreshRecord:
 
 class OAuthStore(Protocol):
     def put_client(self, client_id: str, client_name: str, redirect_uris: list[str]) -> int: ...
-    def get_client(self, client_id: str) -> Optional[ClientRecord]: ...
-    def put_auth_code(self, code: str, *, client_id: str, code_challenge: str,
-                      redirect_uri: str, ttl_seconds: int) -> None: ...
-    def pop_auth_code(self, code: str) -> Optional[AuthCodeRecord]: ...
-    def put_refresh(self, token: str, *, client_id: str, family_id: str, ttl_seconds: int) -> None: ...
-    def get_refresh(self, token: str) -> Optional[RefreshRecord]: ...
+    def get_client(self, client_id: str) -> ClientRecord | None: ...
+    def put_auth_code(
+        self, code: str, *, client_id: str, code_challenge: str, redirect_uri: str, ttl_seconds: int
+    ) -> None: ...
+    def pop_auth_code(self, code: str) -> AuthCodeRecord | None: ...
+    def put_refresh(
+        self, token: str, *, client_id: str, family_id: str, ttl_seconds: int
+    ) -> None: ...
+    def get_refresh(self, token: str) -> RefreshRecord | None: ...
     def revoke_refresh(self, token: str) -> bool: ...
     def revoke_family(self, family_id: str) -> None: ...
 
@@ -103,7 +106,7 @@ class SqliteStore:
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
-        self._shared: Optional[sqlite3.Connection] = None
+        self._shared: sqlite3.Connection | None = None
         self._lock = threading.Lock()
         if db_path == ":memory:":
             self._shared = _connect(db_path)
@@ -141,7 +144,7 @@ class SqliteStore:
             self._release(conn)
         return now
 
-    def get_client(self, client_id: str) -> Optional[ClientRecord]:
+    def get_client(self, client_id: str) -> ClientRecord | None:
         conn = self._conn()
         try:
             row = conn.execute("SELECT * FROM clients WHERE client_id = ?", (client_id,)).fetchone()
@@ -149,12 +152,17 @@ class SqliteStore:
             self._release(conn)
         if row is None:
             return None
-        return ClientRecord(row["client_id"], row["client_name"] or "",
-                            json.loads(row["redirect_uris"]), row["created_at"])
+        return ClientRecord(
+            row["client_id"],
+            row["client_name"] or "",
+            json.loads(row["redirect_uris"]),
+            row["created_at"],
+        )
 
     # --- auth codes ---
-    def put_auth_code(self, code: str, *, client_id: str, code_challenge: str,
-                      redirect_uri: str, ttl_seconds: int) -> None:
+    def put_auth_code(
+        self, code: str, *, client_id: str, code_challenge: str, redirect_uri: str, ttl_seconds: int
+    ) -> None:
         conn = self._conn()
         try:
             conn.execute(
@@ -165,7 +173,7 @@ class SqliteStore:
         finally:
             self._release(conn)
 
-    def pop_auth_code(self, code: str) -> Optional[AuthCodeRecord]:
+    def pop_auth_code(self, code: str) -> AuthCodeRecord | None:
         conn = self._conn()
         try:
             row = conn.execute(
@@ -177,8 +185,9 @@ class SqliteStore:
             self._release(conn)
         if row is None or row["expires_at"] <= time.time():
             return None
-        return AuthCodeRecord(row["client_id"], row["code_challenge"],
-                             row["redirect_uri"], row["expires_at"])
+        return AuthCodeRecord(
+            row["client_id"], row["code_challenge"], row["redirect_uri"], row["expires_at"]
+        )
 
     # --- refresh tokens ---
     def put_refresh(self, token: str, *, client_id: str, family_id: str, ttl_seconds: int) -> None:
@@ -193,7 +202,7 @@ class SqliteStore:
         finally:
             self._release(conn)
 
-    def get_refresh(self, token: str) -> Optional[RefreshRecord]:
+    def get_refresh(self, token: str) -> RefreshRecord | None:
         conn = self._conn()
         try:
             row = conn.execute("SELECT * FROM refresh_tokens WHERE token = ?", (token,)).fetchone()
@@ -201,8 +210,14 @@ class SqliteStore:
             self._release(conn)
         if row is None:
             return None
-        return RefreshRecord(row["token"], row["client_id"], row["issued_at"],
-                            row["expires_at"], bool(row["revoked"]), row["family_id"])
+        return RefreshRecord(
+            row["token"],
+            row["client_id"],
+            row["issued_at"],
+            row["expires_at"],
+            bool(row["revoked"]),
+            row["family_id"],
+        )
 
     def revoke_refresh(self, token: str) -> bool:
         conn = self._conn()
@@ -261,41 +276,57 @@ class DynamoDbStore:
                 {"AttributeName": "family_id", "AttributeType": "S"},
             ],
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
-            GlobalSecondaryIndexes=[{
-                "IndexName": self.GSI,
-                "KeySchema": [{"AttributeName": "family_id", "KeyType": "HASH"}],
-                "Projection": {"ProjectionType": "KEYS_ONLY"},
-            }],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": self.GSI,
+                    "KeySchema": [{"AttributeName": "family_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "KEYS_ONLY"},
+                }
+            ],
         )
 
     # --- clients ---
     def put_client(self, client_id: str, client_name: str, redirect_uris: list[str]) -> int:
         now = int(time.time())
-        self._table.put_item(Item={
-            "pk": f"client#{client_id}", "client_id": client_id,
-            "client_name": client_name or "", "redirect_uris": redirect_uris,
-            "created_at": now,
-        })
+        self._table.put_item(
+            Item={
+                "pk": f"client#{client_id}",
+                "client_id": client_id,
+                "client_name": client_name or "",
+                "redirect_uris": redirect_uris,
+                "created_at": now,
+            }
+        )
         return now
 
-    def get_client(self, client_id: str) -> Optional[ClientRecord]:
+    def get_client(self, client_id: str) -> ClientRecord | None:
         item = self._table.get_item(Key={"pk": f"client#{client_id}"}).get("Item")
         if item is None:
             return None
-        return ClientRecord(item["client_id"], item.get("client_name", ""),
-                            list(item["redirect_uris"]), int(item["created_at"]))
+        return ClientRecord(
+            item["client_id"],
+            item.get("client_name", ""),
+            list(item["redirect_uris"]),
+            int(item["created_at"]),
+        )
 
     # --- auth codes ---
-    def put_auth_code(self, code: str, *, client_id: str, code_challenge: str,
-                      redirect_uri: str, ttl_seconds: int) -> None:
+    def put_auth_code(
+        self, code: str, *, client_id: str, code_challenge: str, redirect_uri: str, ttl_seconds: int
+    ) -> None:
         expires_at = time.time() + ttl_seconds
-        self._table.put_item(Item={
-            "pk": f"code#{code}", "client_id": client_id,
-            "code_challenge": code_challenge, "redirect_uri": redirect_uri,
-            "expires_at": str(expires_at), "ttl": int(expires_at) + 5,
-        })
+        self._table.put_item(
+            Item={
+                "pk": f"code#{code}",
+                "client_id": client_id,
+                "code_challenge": code_challenge,
+                "redirect_uri": redirect_uri,
+                "expires_at": str(expires_at),
+                "ttl": int(expires_at) + 5,
+            }
+        )
 
-    def pop_auth_code(self, code: str) -> Optional[AuthCodeRecord]:
+    def pop_auth_code(self, code: str) -> AuthCodeRecord | None:
         from botocore.exceptions import ClientError
 
         try:
@@ -313,15 +344,19 @@ class DynamoDbStore:
         expires_at = float(item["expires_at"])
         if expires_at <= time.time():
             return None
-        return AuthCodeRecord(item["client_id"], item["code_challenge"],
-                             item["redirect_uri"], expires_at)
+        return AuthCodeRecord(
+            item["client_id"], item["code_challenge"], item["redirect_uri"], expires_at
+        )
 
     # --- refresh tokens ---
     def put_refresh(self, token: str, *, client_id: str, family_id: str, ttl_seconds: int) -> None:
         now = int(time.time())
         item: dict = {
-            "pk": f"refresh#{token}", "client_id": client_id,
-            "issued_at": now, "expires_at": now + ttl_seconds, "revoked": 0,
+            "pk": f"refresh#{token}",
+            "client_id": client_id,
+            "issued_at": now,
+            "expires_at": now + ttl_seconds,
+            "revoked": 0,
             "ttl": now + ttl_seconds + 5,
         }
         # DynamoDB rejects empty strings as GSI key values; omit family_id when
@@ -330,13 +365,18 @@ class DynamoDbStore:
             item["family_id"] = family_id
         self._table.put_item(Item=item)
 
-    def get_refresh(self, token: str) -> Optional[RefreshRecord]:
+    def get_refresh(self, token: str) -> RefreshRecord | None:
         item = self._table.get_item(Key={"pk": f"refresh#{token}"}).get("Item")
         if item is None:
             return None
-        return RefreshRecord(token, item["client_id"], int(item["issued_at"]),
-                            int(item["expires_at"]), bool(int(item["revoked"])),
-                            item.get("family_id", ""))
+        return RefreshRecord(
+            token,
+            item["client_id"],
+            int(item["issued_at"]),
+            int(item["expires_at"]),
+            bool(int(item["revoked"])),
+            item.get("family_id", ""),
+        )
 
     def revoke_refresh(self, token: str) -> bool:
         from botocore.exceptions import ClientError

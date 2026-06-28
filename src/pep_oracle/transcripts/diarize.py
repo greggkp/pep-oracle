@@ -43,12 +43,13 @@ class DiarizationData:
     centroid voice embeddings keyed by raw label
     ({label: {"embedding", "seconds", "intro_seconds"}}). ``clusters`` is None
     for legacy caches produced before embeddings were captured."""
+
     segments: list[SpeakerSegment]
     clusters: dict[str, dict] | None = None
 
 
 def cos_dist(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0 or nb == 0:
@@ -91,12 +92,14 @@ def align_speakers(
     result = []
     for ts in transcript_segments:
         if ts.start_time is None or ts.end_time is None:
-            result.append(TranscriptSegment(
-                text=ts.text,
-                start_time=ts.start_time,
-                end_time=ts.end_time,
-                speaker=None,
-            ))
+            result.append(
+                TranscriptSegment(
+                    text=ts.text,
+                    start_time=ts.start_time,
+                    end_time=ts.end_time,
+                    speaker=None,
+                )
+            )
             continue
 
         best_speaker = None
@@ -110,12 +113,14 @@ def align_speakers(
                 best_overlap = overlap
                 best_speaker = ss.speaker
 
-        result.append(TranscriptSegment(
-            text=ts.text,
-            start_time=ts.start_time,
-            end_time=ts.end_time,
-            speaker=best_speaker,
-        ))
+        result.append(
+            TranscriptSegment(
+                text=ts.text,
+                start_time=ts.start_time,
+                end_time=ts.end_time,
+                speaker=best_speaker,
+            )
+        )
     return result
 
 
@@ -125,10 +130,7 @@ def load_speaker_profiles(profile_path: Path | None = None) -> dict[str, list[fl
     if not path.exists():
         return {}
     data = json.loads(path.read_text())
-    return {
-        name: info["embedding"]
-        for name, info in data.get("speakers", {}).items()
-    }
+    return {name: info["embedding"] for name, info in data.get("speakers", {}).items()}
 
 
 def save_speaker_profiles(
@@ -138,12 +140,7 @@ def save_speaker_profiles(
     """Save speaker profiles to disk."""
     path = profile_path or SPEAKER_PROFILES_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "speakers": {
-            name: {"embedding": embedding}
-            for name, embedding in profiles.items()
-        }
-    }
+    data = {"speakers": {name: {"embedding": embedding} for name, embedding in profiles.items()}}
     path.write_text(json.dumps(data, indent=2))
 
 
@@ -256,9 +253,7 @@ def map_speaker_names(
         total = sum(_speaking_times(speaker_segments).values())
         name_map = assign_by_voice(clusters, references, total)
     elif roster:
-        name_map = assign_substantive_speakers(
-            _speaking_times(speaker_segments), list(roster)
-        )
+        name_map = assign_substantive_speakers(_speaking_times(speaker_segments), list(roster))
     else:
         unique_speakers = sorted(set(s.speaker for s in speaker_segments))
         name_map = {spk: f"Speaker {i + 1}" for i, spk in enumerate(unique_speakers)}
@@ -266,12 +261,14 @@ def map_speaker_names(
     result = []
     for ts in segments:
         speaker = name_map.get(ts.speaker) if ts.speaker else None
-        result.append(TranscriptSegment(
-            text=ts.text,
-            start_time=ts.start_time,
-            end_time=ts.end_time,
-            speaker=speaker,
-        ))
+        result.append(
+            TranscriptSegment(
+                text=ts.text,
+                start_time=ts.start_time,
+                end_time=ts.end_time,
+                speaker=speaker,
+            )
+        )
     return result
 
 

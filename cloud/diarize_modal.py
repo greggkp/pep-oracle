@@ -2,6 +2,7 @@
 
 Deploy with: modal deploy cloud/diarize_modal.py
 """
+
 import modal
 
 app = modal.App("pep-oracle-diarize")
@@ -119,11 +120,13 @@ def diarize(
         vec = embeddings[i] if embeddings is not None else None
         if vec is None or any(math.isnan(float(x)) for x in vec):
             continue
-        clusters.append({
-            "speaker": label,
-            "seconds": times.get(label, 0.0),
-            "intro_seconds": intro.get(label, 0.0),
-            "embedding": [float(x) for x in vec],
-        })
+        clusters.append(
+            {
+                "speaker": label,
+                "seconds": times.get(label, 0.0),
+                "intro_seconds": intro.get(label, 0.0),
+                "embedding": [float(x) for x in vec],
+            }
+        )
 
     return {"segments": segments, "clusters": clusters}

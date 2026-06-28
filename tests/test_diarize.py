@@ -5,18 +5,19 @@ from pathlib import Path
 from pep_oracle.models import TranscriptSegment
 from pep_oracle.transcripts.diarize import (
     SpeakerSegment,
+    _load_cached,
+    _save_cache,
     align_speakers,
     host_roster_from_title,
     load_speaker_profiles,
     map_speaker_names,
     save_speaker_profiles,
-    _save_cache,
-    _load_cached,
 )
 
 
 def _nonexistent_profile_path():
     import tempfile
+
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         return Path(f.name + ".nonexistent")
 
@@ -48,12 +49,14 @@ def test_map_speaker_names_roster_assigns_by_speaking_time():
         TranscriptSegment(text="b", start_time=2.0, end_time=12.0, speaker="SPEAKER_01"),
     ]
     speaker_segments = [
-        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=2.0),    # 2s
-        SpeakerSegment(speaker="SPEAKER_01", start=2.0, end=12.0),   # 10s
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=2.0),  # 2s
+        SpeakerSegment(speaker="SPEAKER_01", start=2.0, end=12.0),  # 10s
     ]
     result = map_speaker_names(
-        segments, speaker_segments,
-        profile_path=_nonexistent_profile_path(), roster=["Chas", "Dave"],
+        segments,
+        speaker_segments,
+        profile_path=_nonexistent_profile_path(),
+        roster=["Chas", "Dave"],
     )
     assert result[1].speaker == "Chas"  # most speaking time
     assert result[0].speaker == "Dave"
@@ -66,12 +69,14 @@ def test_map_speaker_names_roster_chas_only_substantive_guest():
         TranscriptSegment(text="b", start_time=8.0, end_time=12.0, speaker="SPEAKER_01"),
     ]
     speaker_segments = [
-        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=8.0),    # 8s (67%)
-        SpeakerSegment(speaker="SPEAKER_01", start=8.0, end=12.0),   # 4s (33%)
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=8.0),  # 8s (67%)
+        SpeakerSegment(speaker="SPEAKER_01", start=8.0, end=12.0),  # 4s (33%)
     ]
     result = map_speaker_names(
-        segments, speaker_segments,
-        profile_path=_nonexistent_profile_path(), roster=["Chas"],
+        segments,
+        speaker_segments,
+        profile_path=_nonexistent_profile_path(),
+        roster=["Chas"],
     )
     assert result[0].speaker == "Chas"
     assert result[1].speaker == "Guest"
@@ -85,12 +90,14 @@ def test_map_speaker_names_skips_small_tail_cluster():
         TranscriptSegment(text="bit", start_time=90.0, end_time=95.0, speaker="SPEAKER_01"),
     ]
     speaker_segments = [
-        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=90.0),   # 90s (95%)
+        SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=90.0),  # 90s (95%)
         SpeakerSegment(speaker="SPEAKER_01", start=90.0, end=95.0),  # 5s  (5%)
     ]
     result = map_speaker_names(
-        segments, speaker_segments,
-        profile_path=_nonexistent_profile_path(), roster=["Chas", "Dave"],
+        segments,
+        speaker_segments,
+        profile_path=_nonexistent_profile_path(),
+        roster=["Chas", "Dave"],
     )
     assert result[0].speaker == "Chas"
     assert result[1].speaker is None  # 5% tail -> skipped, NOT 'Dave'
@@ -170,9 +177,16 @@ def test_map_speaker_names_ignores_placeholder_profiles(tmp_path):
     # Profiles with empty (placeholder) embeddings are NOT usable references;
     # mapping falls back to the roster path rather than to those names.
     profile_path = tmp_path / "profiles.json"
-    profile_path.write_text(json.dumps({"speakers": {
-        "Chas": {"embedding": []}, "Dave": {"embedding": []},
-    }}))
+    profile_path.write_text(
+        json.dumps(
+            {
+                "speakers": {
+                    "Chas": {"embedding": []},
+                    "Dave": {"embedding": []},
+                }
+            }
+        )
+    )
     segments = [
         TranscriptSegment(text="Hello", start_time=0.0, end_time=8.0, speaker="SPEAKER_00"),
         TranscriptSegment(text="Hi", start_time=8.0, end_time=12.0, speaker="SPEAKER_01"),
@@ -183,7 +197,10 @@ def test_map_speaker_names_ignores_placeholder_profiles(tmp_path):
     ]
     # No clusters + empty refs -> roster path (substantive speaking time).
     result = map_speaker_names(
-        segments, speaker_segments, profile_path=profile_path, roster=["Chas", "Dave"],
+        segments,
+        speaker_segments,
+        profile_path=profile_path,
+        roster=["Chas", "Dave"],
     )
     assert result[0].speaker == "Chas"
     assert result[1].speaker == "Dave"
@@ -208,7 +225,9 @@ def test_diarization_cache_roundtrip():
                 SpeakerSegment(speaker="SPEAKER_00", start=0.0, end=5.0),
                 SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=10.0),
             ],
-            clusters={"SPEAKER_00": {"embedding": [0.1, 0.2], "seconds": 5.0, "intro_seconds": 5.0}},
+            clusters={
+                "SPEAKER_00": {"embedding": [0.1, 0.2], "seconds": 5.0, "intro_seconds": 5.0}
+            },
         )
         _save_cache(data, path)
         loaded = _load_cached(path)
@@ -220,6 +239,7 @@ def test_diarization_cache_roundtrip():
 def test_diarization_cache_back_compat_bare_list():
     # Old caches were a bare segment list (no clusters).
     import json as _json
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.json"
         path.write_text(_json.dumps([{"speaker": "SPEAKER_00", "start": 0.0, "end": 5.0}]))
@@ -285,8 +305,12 @@ def test_diarize_audio_parses_clusters(monkeypatch):
             return {
                 "segments": [{"speaker": "SPEAKER_00", "start": 0.0, "end": 5.0}],
                 "clusters": [
-                    {"speaker": "SPEAKER_00", "seconds": 5.0, "intro_seconds": 5.0,
-                     "embedding": [0.1, 0.2, 0.3]},
+                    {
+                        "speaker": "SPEAKER_00",
+                        "seconds": 5.0,
+                        "intro_seconds": 5.0,
+                        "embedding": [0.1, 0.2, 0.3],
+                    },
                 ],
             }
 
@@ -308,29 +332,37 @@ def test_assign_by_voice_collapses_fragments_and_excludes_guest():
 
     references = {"Chas": [1.0, 0.0, 0.0], "Dave": [0.0, 1.0, 0.0]}
     clusters = {
-        "S0": {"embedding": [1.0, 0.0, 0.0], "seconds": 100.0},   # Chas
-        "S1": {"embedding": [0.9, 0.1, 0.0], "seconds": 30.0},    # Chas fragment -> Chas
-        "S2": {"embedding": [0.0, 1.0, 0.0], "seconds": 50.0},    # Dave
-        "S3": {"embedding": [0.0, 0.0, 1.0], "seconds": 35.0},    # guest (substantive) -> Guest
-        "S4": {"embedding": [0.0, 0.0, 1.0], "seconds": 1.0},     # tiny outlier -> skip
+        "S0": {"embedding": [1.0, 0.0, 0.0], "seconds": 100.0},  # Chas
+        "S1": {"embedding": [0.9, 0.1, 0.0], "seconds": 30.0},  # Chas fragment -> Chas
+        "S2": {"embedding": [0.0, 1.0, 0.0], "seconds": 50.0},  # Dave
+        "S3": {"embedding": [0.0, 0.0, 1.0], "seconds": 35.0},  # guest (substantive) -> Guest
+        "S4": {"embedding": [0.0, 0.0, 1.0], "seconds": 1.0},  # tiny outlier -> skip
     }
     total = sum(c["seconds"] for c in clusters.values())
     name_map = assign_by_voice(clusters, references, total)
     assert name_map["S0"] == "Chas"
-    assert name_map["S1"] == "Chas"   # over-split fragment collapsed into Chas
+    assert name_map["S1"] == "Chas"  # over-split fragment collapsed into Chas
     assert name_map["S2"] == "Dave"
     assert name_map["S3"] == "Guest"  # far from both hosts but substantive
-    assert name_map["S4"] is None     # far + tiny -> skipped
+    assert name_map["S4"] is None  # far + tiny -> skipped
 
 
 def test_map_speaker_names_uses_voice_references(tmp_path):
     import json as _json
+
     from pep_oracle.transcripts.diarize import map_speaker_names
 
     profile_path = tmp_path / "profiles.json"
-    profile_path.write_text(_json.dumps({"speakers": {
-        "Chas": {"embedding": [1.0, 0.0]}, "Dave": {"embedding": [0.0, 1.0]},
-    }}))
+    profile_path.write_text(
+        _json.dumps(
+            {
+                "speakers": {
+                    "Chas": {"embedding": [1.0, 0.0]},
+                    "Dave": {"embedding": [0.0, 1.0]},
+                }
+            }
+        )
+    )
     segments = [
         TranscriptSegment(text="hi", start_time=0.0, end_time=5.0, speaker="SPEAKER_00"),
         TranscriptSegment(text="yo", start_time=5.0, end_time=8.0, speaker="SPEAKER_01"),
@@ -340,10 +372,12 @@ def test_map_speaker_names_uses_voice_references(tmp_path):
         SpeakerSegment(speaker="SPEAKER_01", start=5.0, end=8.0),
     ]
     clusters = {
-        "SPEAKER_00": {"embedding": [1.0, 0.05], "seconds": 5.0},   # Chas
-        "SPEAKER_01": {"embedding": [0.05, 1.0], "seconds": 3.0},   # Dave
+        "SPEAKER_00": {"embedding": [1.0, 0.05], "seconds": 5.0},  # Chas
+        "SPEAKER_01": {"embedding": [0.05, 1.0], "seconds": 3.0},  # Dave
     }
-    result = map_speaker_names(segments, speaker_segments, profile_path=profile_path, clusters=clusters)
+    result = map_speaker_names(
+        segments, speaker_segments, profile_path=profile_path, clusters=clusters
+    )
     assert result[0].speaker == "Chas"
     assert result[1].speaker == "Dave"
 
@@ -395,14 +429,18 @@ def test_get_speaker_segments_diarizes_uncapped_by_default(tmp_path, monkeypatch
 
 def test_get_speaker_segments_uses_cache(tmp_path, monkeypatch):
     """If a diarization cache file exists, get_speaker_segments returns it without calling Modal."""
-    from pep_oracle.transcripts.diarize import (
-        DiarizationData, SpeakerSegment, get_speaker_segments, _save_cache,
-    )
     from pep_oracle import config
+    from pep_oracle.transcripts.diarize import (
+        DiarizationData,
+        SpeakerSegment,
+        _save_cache,
+        get_speaker_segments,
+    )
 
     monkeypatch.setattr(config, "DIARIZATION_CACHE_DIR", tmp_path)
     # Also patch the name imported into diarize.py at import time
     from pep_oracle.transcripts import diarize as diarize_mod
+
     monkeypatch.setattr(diarize_mod, "DIARIZATION_CACHE_DIR", tmp_path)
 
     cached = DiarizationData(segments=[SpeakerSegment(speaker="S1", start=0.0, end=10.0)])

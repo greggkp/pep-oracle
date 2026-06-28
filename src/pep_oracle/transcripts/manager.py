@@ -23,6 +23,8 @@ def get_transcript(
         raise RuntimeError(f"No audio URL for episode: {episode.title}")
 
     segments = transcribe_episode(
-        episode.audio_url, episode.guid, progress_callback=progress_callback,
+        episode.audio_url,
+        episode.guid,
+        progress_callback=progress_callback,
     )
     return segments, "whisper"

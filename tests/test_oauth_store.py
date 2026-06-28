@@ -1,4 +1,3 @@
-
 import boto3
 import pytest
 from moto import mock_aws
@@ -31,8 +30,9 @@ def test_client_roundtrip(store):
 
 
 def test_auth_code_single_use(store):
-    store.put_auth_code("abc", client_id="c1", code_challenge="chal",
-                        redirect_uri="https://app/cb", ttl_seconds=60)
+    store.put_auth_code(
+        "abc", client_id="c1", code_challenge="chal", redirect_uri="https://app/cb", ttl_seconds=60
+    )
     rec = store.pop_auth_code("abc")
     assert rec is not None
     assert rec.client_id == "c1"
@@ -43,8 +43,9 @@ def test_auth_code_single_use(store):
 
 
 def test_auth_code_expired_returns_none(store):
-    store.put_auth_code("old", client_id="c1", code_challenge="x",
-                        redirect_uri="https://app/cb", ttl_seconds=-1)
+    store.put_auth_code(
+        "old", client_id="c1", code_challenge="x", redirect_uri="https://app/cb", ttl_seconds=-1
+    )
     assert store.pop_auth_code("old") is None
 
 

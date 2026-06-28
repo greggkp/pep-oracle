@@ -19,11 +19,10 @@ class PepOracleCertStack(Stack):
         super().__init__(scope, cid, **kwargs)
         self.cfg = cfg
 
-        self.hosted_zone = route53.PublicHostedZone(
-            self, "Zone", zone_name=cfg.domain_name
-        )
+        self.hosted_zone = route53.PublicHostedZone(self, "Zone", zone_name=cfg.domain_name)
         self.certificate = acm.Certificate(
-            self, "Cert",
+            self,
+            "Cert",
             domain_name=cfg.domain_name,
             validation=acm.CertificateValidation.from_dns(self.hosted_zone),
         )

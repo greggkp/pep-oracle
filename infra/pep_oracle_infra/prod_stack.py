@@ -11,11 +11,8 @@ A-alias; and least-privilege IAM. The CloudFront ACM cert lives in us-east-1
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
-from aws_cdk import Duration
-from aws_cdk import RemovalPolicy
-from aws_cdk import Stack
+from aws_cdk import Duration, RemovalPolicy, Stack
 from aws_cdk import aws_apigatewayv2 as apigwv2
 from aws_cdk import aws_apigatewayv2_integrations as apigw_integrations
 from aws_cdk import aws_certificatemanager as acm
@@ -41,9 +38,9 @@ class PepOracleProdStack(Stack):
         cid: str,
         *,
         cfg: DeployConfig,
-        cert_arn: Optional[str] = None,
-        hosted_zone_id: Optional[str] = None,
-        hosted_zone_name: Optional[str] = None,
+        cert_arn: str | None = None,
+        hosted_zone_id: str | None = None,
+        hosted_zone_name: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, cid, **kwargs)
@@ -54,14 +51,16 @@ class PepOracleProdStack(Stack):
 
         # --- Data layer: KMS + S3 corpus bucket + DynamoDB OAuth table ---
         self.kms_key = kms.Key(
-            self, "DataKey",
+            self,
+            "DataKey",
             description="pep-oracle encryption-at-rest (S3 corpus, DynamoDB, SSM signing key)",
             enable_key_rotation=True,
             removal_policy=RemovalPolicy.RETAIN,
         )
 
         self.corpus_bucket = s3.Bucket(
-            self, "CorpusBucket",
+            self,
+            "CorpusBucket",
             bucket_name=cfg.corpus_bucket_name,
             versioned=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
@@ -72,12 +71,11 @@ class PepOracleProdStack(Stack):
         )
 
         self.oauth_table = dynamodb.Table(
-            self, "OAuthTable",
+            self,
+            "OAuthTable",
             table_name=cfg.oauth_table_name,
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            partition_key=dynamodb.Attribute(
-                name="pk", type=dynamodb.AttributeType.STRING
-            ),
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
             time_to_live_attribute="ttl",
             encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
             encryption_key=self.kms_key,
@@ -88,24 +86,21 @@ class PepOracleProdStack(Stack):
         )
         self.oauth_table.add_global_secondary_index(
             index_name="family-index",
-            partition_key=dynamodb.Attribute(
-                name="family_id", type=dynamodb.AttributeType.STRING
-            ),
+            partition_key=dynamodb.Attribute(name="family_id", type=dynamodb.AttributeType.STRING),
             projection_type=dynamodb.ProjectionType.KEYS_ONLY,
         )
 
         # --- Cognito: one-user pool + Hosted-UI domain + confidential app client ---
         self.user_pool = cognito.UserPool(
-            self, "UserPool",
+            self,
+            "UserPool",
             sign_in_aliases=cognito.SignInAliases(email=True),
             self_sign_up_enabled=False,  # single operator-created user
             removal_policy=RemovalPolicy.RETAIN,
         )
         self.user_pool_domain = self.user_pool.add_domain(
             "HostedUiDomain",
-            cognito_domain=cognito.CognitoDomainOptions(
-                domain_prefix=cfg.cognito_domain_prefix
-            ),
+            cognito_domain=cognito.CognitoDomainOptions(domain_prefix=cfg.cognito_domain_prefix),
         )
         self.user_pool_client = self.user_pool.add_client(
             "AppClient",
@@ -115,9 +110,7 @@ class PepOracleProdStack(Stack):
                 scopes=[cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
                 callback_urls=[f"{cfg.public_url}/oauth/authorize/callback"],
             ),
-            supported_identity_providers=[
-                cognito.UserPoolClientIdentityProvider.COGNITO
-            ],
+            supported_identity_providers=[cognito.UserPoolClientIdentityProvider.COGNITO],
             prevent_user_existence_errors=True,
         )
 
@@ -174,18 +167,22 @@ class PepOracleProdStack(Stack):
         self.corpus_bucket.grant_read(self.fn)
         self.oauth_table.grant_read_write_data(self.fn)
         self.kms_key.grant_decrypt(self.fn)  # SSM SecureString + S3/DDB CMK reads
-        self.fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["bedrock:InvokeModel"],
-            resources=[
-                f"arn:aws:bedrock:{cfg.compute_region}::foundation-model/{cfg.embed_model}"
-            ],
-        ))
-        self.fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["ssm:GetParameter"],
-            resources=[
-                f"arn:aws:ssm:{cfg.compute_region}:{self.account}:parameter{cfg.signing_ssm_param}"
-            ],
-        ))
+        self.fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    f"arn:aws:bedrock:{cfg.compute_region}::foundation-model/{cfg.embed_model}"
+                ],
+            )
+        )
+        self.fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:aws:ssm:{cfg.compute_region}:{self.account}:parameter{cfg.signing_ssm_param}"
+                ],
+            )
+        )
 
         # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this
         # account blocks public (auth=NONE) function URLs, and AWS_IAM/OAC would sign the
@@ -194,25 +191,24 @@ class PepOracleProdStack(Stack):
         # The app's own JWT (/mcp), PKCE (/token) and Cognito (/authorize) checks are the
         # security boundary.
         self.http_api = apigwv2.HttpApi(
-            self, "HttpApi",
-            default_integration=apigw_integrations.HttpLambdaIntegration(
-                "LambdaProxy", self.fn
-            ),
+            self,
+            "HttpApi",
+            default_integration=apigw_integrations.HttpLambdaIntegration("LambdaProxy", self.fn),
         )
-        api_domain = (
-            f"{self.http_api.api_id}.execute-api.{cfg.compute_region}.amazonaws.com"
-        )
+        api_domain = f"{self.http_api.api_id}.execute-api.{cfg.compute_region}.amazonaws.com"
 
         # --- Public endpoint: CloudFront + Route 53 alias (cert is cross-region) ---
         cert = acm.Certificate.from_certificate_arn(self, "Cert", self._cert_arn)
         zone = route53.PublicHostedZone.from_public_hosted_zone_attributes(
-            self, "Zone",
+            self,
+            "Zone",
             hosted_zone_id=self._hosted_zone_id,
             zone_name=self._hosted_zone_name,
         )
 
         self.distribution = cloudfront.Distribution(
-            self, "Cdn",
+            self,
+            "Cdn",
             default_behavior=cloudfront.BehaviorOptions(
                 origin=origins.HttpOrigin(
                     api_domain,
@@ -229,7 +225,8 @@ class PepOracleProdStack(Stack):
         )
 
         route53.ARecord(
-            self, "AliasA",
+            self,
+            "AliasA",
             zone=zone,
             record_name=cfg.domain_name,
             target=route53.RecordTarget.from_alias(

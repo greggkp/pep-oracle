@@ -70,20 +70,24 @@ def _build_speaker_turns(segments: list[TranscriptSegment]) -> list[dict] | None
     for s in segments:
         if s.speaker != current_speaker:
             if current_speaker is not None and turn_start is not None:
-                turns.append({
-                    "speaker": current_speaker,
-                    "start": turn_start,
-                    "end": s.start_time or turn_start,
-                })
+                turns.append(
+                    {
+                        "speaker": current_speaker,
+                        "start": turn_start,
+                        "end": s.start_time or turn_start,
+                    }
+                )
             current_speaker = s.speaker
             turn_start = s.start_time
     # Final turn
     if current_speaker is not None and turn_start is not None:
-        turns.append({
-            "speaker": current_speaker,
-            "start": turn_start,
-            "end": segments[-1].end_time or turn_start,
-        })
+        turns.append(
+            {
+                "speaker": current_speaker,
+                "start": turn_start,
+                "end": segments[-1].end_time or turn_start,
+            }
+        )
     return turns or None
 
 
@@ -136,7 +140,7 @@ def _chunk_by_time(
         split_idx = _find_pause_boundary(segments, chunk_start_idx, target_idx)
         chunk_segments = segments[chunk_start_idx:split_idx]
         if not chunk_segments:
-            chunk_segments = segments[chunk_start_idx:chunk_start_idx + 1]
+            chunk_segments = segments[chunk_start_idx : chunk_start_idx + 1]
             split_idx = chunk_start_idx + 1
 
         chunks.append(_make_chunk(chunk_segments, episode, len(chunks)))
@@ -171,14 +175,16 @@ def _chunk_by_words(
     while word_start < len(all_words):
         word_end = min(word_start + TARGET_CHUNK_WORDS, len(all_words))
         text = " ".join(all_words[word_start:word_end])
-        chunks.append(Chunk(
-            chunk_id=f"{episode.guid}_{len(chunks):04d}",
-            episode_guid=episode.guid,
-            text=text,
-            episode_title=episode.title,
-            episode_date=episode.pub_date.strftime("%Y-%m-%d"),
-            episode_number=episode.episode_number,
-        ))
+        chunks.append(
+            Chunk(
+                chunk_id=f"{episode.guid}_{len(chunks):04d}",
+                episode_guid=episode.guid,
+                text=text,
+                episode_title=episode.title,
+                episode_date=episode.pub_date.strftime("%Y-%m-%d"),
+                episode_number=episode.episode_number,
+            )
+        )
 
         if word_end >= len(all_words):
             break

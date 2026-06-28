@@ -44,7 +44,7 @@ class DeployConfig:
         return f"https://{self.domain_name}"
 
     @classmethod
-    def from_node(cls, node) -> "DeployConfig":
+    def from_node(cls, node) -> DeployConfig:
         def ctx(key: str, default=None):
             val = node.try_get_context(key)
             return val if val is not None else default

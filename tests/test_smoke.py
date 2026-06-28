@@ -1,4 +1,5 @@
 """Unit tests for the post-deploy smoke checks (scripts/smoke.py), fetchers mocked."""
+
 from __future__ import annotations
 
 import json
@@ -11,8 +12,9 @@ import smoke  # noqa: E402
 
 def _healthy(url, timeout=10.0):
     if url.endswith("/version"):
-        body = json.dumps({"code_git_sha": "abc1234", "code_semver": "v1.0.0",
-                           "corpus_version": "v0002"}).encode()
+        body = json.dumps(
+            {"code_git_sha": "abc1234", "code_semver": "v1.0.0", "corpus_version": "v0002"}
+        ).encode()
         return 200, body
     return 200, b"{}"
 
@@ -26,9 +28,11 @@ def test_check_passes_when_all_good(monkeypatch):
 def test_check_flags_stale_version_and_open_mcp(monkeypatch):
     def stale(url, timeout=10.0):
         if url.endswith("/version"):
-            return 200, json.dumps({"code_git_sha": "old", "code_semver": "v0.9.0",
-                                    "corpus_version": "v0002"}).encode()
+            return 200, json.dumps(
+                {"code_git_sha": "old", "code_semver": "v0.9.0", "corpus_version": "v0002"}
+            ).encode()
         return 200, b"{}"
+
     monkeypatch.setattr(smoke, "_get", stale)
     monkeypatch.setattr(smoke, "_post_no_token", lambda url, timeout=10.0: 200)  # open = bad
     fails = smoke.check("https://x", expect_sha="abc1234", expect_semver="v1.0.0")
@@ -42,6 +46,7 @@ def test_check_flags_non_json_version_body(monkeypatch):
         if url.endswith("/version"):
             return 200, b"<html>gateway timeout</html>"
         return 200, b"{}"
+
     monkeypatch.setattr(smoke, "_get", html)
     monkeypatch.setattr(smoke, "_post_no_token", lambda url, timeout=10.0: 401)
     fails = smoke.check("https://x")
@@ -53,6 +58,7 @@ def test_get_treats_timeout_as_retryable_not_raise(monkeypatch):
     # TimeoutError (an OSError) must become a retryable sentinel, not crash the run.
     def boom(req, timeout=15.0):
         raise TimeoutError("read operation timed out")
+
     monkeypatch.setattr(smoke.urllib.request, "urlopen", boom)
     assert smoke._get("https://x/health") == (0, b"")
     assert smoke._post_no_token("https://x/mcp") == 0

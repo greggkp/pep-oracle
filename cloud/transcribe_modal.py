@@ -2,6 +2,7 @@
 
 Deploy with: modal deploy cloud/transcribe_modal.py
 """
+
 import modal
 
 app = modal.App("pep-oracle-transcribe")
@@ -18,12 +19,14 @@ image = (
         "requests",
     )
     # ctranslate2 needs the torch-bundled cuDNN 9 and cuBLAS on LD_LIBRARY_PATH.
-    .env({
-        "LD_LIBRARY_PATH": (
-            "/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:"
-            "/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib"
-        )
-    })
+    .env(
+        {
+            "LD_LIBRARY_PATH": (
+                "/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:"
+                "/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib"
+            )
+        }
+    )
 )
 
 model_cache = modal.Volume.from_name("pep-oracle-whisper-cache", create_if_missing=True)

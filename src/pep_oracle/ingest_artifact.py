@@ -55,7 +55,9 @@ def _download_profiles(dest: str) -> Path | None:
 def _corpus_rows(corpus) -> list[dict]:
     return [
         {"chunk_id": cid, "text": doc, "embedding": emb, "metadata": meta}
-        for cid, doc, emb, meta in zip(corpus.ids, corpus.docs, corpus.embeddings, corpus.metas)
+        for cid, doc, emb, meta in zip(
+            corpus.ids, corpus.docs, corpus.embeddings, corpus.metas, strict=False
+        )
     ]
 
 
@@ -85,15 +87,17 @@ def ingest_artifact_incremental(
         # Daily default: only numbered episodes newer than the corpus max. The
         # episode_number>max_num guard is what keeps old gaps + unnumbered EXTRAs out.
         new_eps = [
-            e for e in feed
+            e
+            for e in feed
             if e.episode_number and e.episode_number > max_num and e.guid not in existing_guids
         ]
         mode = f"newest-forward (>{max_num})"
     if not new_eps:
         logger.info("ingest_artifact: no new episodes; current=%s [%s]", corpus.version, mode)
         return None
-    logger.info("ingest_artifact: %d new episode(s) on top of %s [%s]",
-                len(new_eps), corpus.version, mode)
+    logger.info(
+        "ingest_artifact: %d new episode(s) on top of %s [%s]", len(new_eps), corpus.version, mode
+    )
 
     profile_path = _download_profiles(dest)
     rows = _corpus_rows(corpus)
@@ -101,20 +105,33 @@ def ingest_artifact_incremental(
         chunks, embeddings = episode_chunks_and_embeddings(
             ep, diarize=diarize, profile_path=profile_path
         )
-        for chunk, emb in zip(chunks, embeddings):
+        for chunk, emb in zip(chunks, embeddings, strict=False):
             rows.append(
-                {"chunk_id": chunk.chunk_id, "text": chunk.text,
-                 "embedding": emb, "metadata": _chunk_metadata(chunk)}
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "text": chunk.text,
+                    "embedding": emb,
+                    "metadata": _chunk_metadata(chunk),
+                }
             )
 
     version = _next_version(corpus.version)
-    built_at = now_iso or _dt.datetime.now(_dt.timezone.utc).isoformat()
+    built_at = now_iso or _dt.datetime.now(_dt.UTC).isoformat()
     # Single-run assumption: daily cadence won't self-overlap; the write-then-flip
     # below is last-writer-wins, so avoid concurrent manual runs (see runbook).
     manifest = write_artifact(
-        rows, dest=dest, version=version, embed_model=config.EMBED_MODEL,
-        dims=config.EMBED_DIMS, git_sha=git_sha or getattr(config, "GIT_SHA", ""), built_at=built_at,
+        rows,
+        dest=dest,
+        version=version,
+        embed_model=config.EMBED_MODEL,
+        dims=config.EMBED_DIMS,
+        git_sha=git_sha or getattr(config, "GIT_SHA", ""),
+        built_at=built_at,
     )
-    logger.info("ingest_artifact: published %s (%d chunks, eps %s)",
-                version, manifest.chunk_count, manifest.episode_range)
+    logger.info(
+        "ingest_artifact: published %s (%d chunks, eps %s)",
+        version,
+        manifest.chunk_count,
+        manifest.episode_range,
+    )
     return manifest

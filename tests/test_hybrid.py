@@ -9,9 +9,14 @@ _counter = 0
 
 def _chunk(cid, text, ep=200, date="2026-01-01", speaker_turns=None):
     return Chunk(
-        chunk_id=cid, episode_guid=f"g{ep}", text=text,
-        episode_title=f"Ep {ep}", episode_date=date,
-        start_time=0.0, end_time=10.0, episode_number=ep,
+        chunk_id=cid,
+        episode_guid=f"g{ep}",
+        text=text,
+        episode_title=f"Ep {ep}",
+        episode_date=date,
+        start_time=0.0,
+        end_time=10.0,
+        episode_number=ep,
         speaker_turns=speaker_turns,
     )
 
@@ -36,11 +41,16 @@ def _corpus(tmp_path, chunks, embeddings, version="v0001"):
     global _counter
     _counter += 1
     hybrid._CACHE.clear()
-    rows = [_row(c, e) for c, e in zip(chunks, embeddings)]
+    rows = [_row(c, e) for c, e in zip(chunks, embeddings, strict=False)]
     dest = tmp_path / f"c{_counter}"
     corpus.write_artifact(
-        rows, dest=str(dest), version=version,
-        embed_model="m", dims=len(embeddings[0]), git_sha="s", built_at="t",
+        rows,
+        dest=str(dest),
+        version=version,
+        embed_model="m",
+        dims=len(embeddings[0]),
+        git_sha="s",
+        built_at="t",
     )
     return corpus.load_current(str(dest))
 
@@ -48,7 +58,7 @@ def _corpus(tmp_path, chunks, embeddings, version="v0001"):
 def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk(tmp_path):
     chunks = [
         _chunk("a", "the byrd rule reconciliation senate vote"),  # has query terms
-        _chunk("b", "weather sports and general chit chat"),      # no query terms
+        _chunk("b", "weather sports and general chit chat"),  # no query terms
         _chunk("c", "another off-topic filler chunk here"),
     ]
     # Embeddings: query is close to b/c, ORTHOGONAL to a -> semantic buries 'a'.
@@ -66,10 +76,20 @@ def test_bm25_rescues_lexically_relevant_but_semantically_distant_chunk(tmp_path
 
 def test_filters_episode_date_speaker(tmp_path):
     chunks = [
-        _chunk("e1", "tariffs talk", ep=260, date="2026-05-01",
-               speaker_turns=[{"speaker": "Chas", "start": 0.0, "end": 10.0}]),
-        _chunk("e2", "tariffs talk", ep=200, date="2025-01-01",
-               speaker_turns=[{"speaker": "Dave", "start": 0.0, "end": 10.0}]),
+        _chunk(
+            "e1",
+            "tariffs talk",
+            ep=260,
+            date="2026-05-01",
+            speaker_turns=[{"speaker": "Chas", "start": 0.0, "end": 10.0}],
+        ),
+        _chunk(
+            "e2",
+            "tariffs talk",
+            ep=200,
+            date="2025-01-01",
+            speaker_turns=[{"speaker": "Dave", "start": 0.0, "end": 10.0}],
+        ),
     ]
     col = _corpus(tmp_path, chunks, [[1.0, 0.0], [1.0, 0.0]])
 
@@ -86,9 +106,17 @@ def test_filters_episode_date_speaker(tmp_path):
 def test_result_shape_matches_store_query(tmp_path):
     col = _corpus(tmp_path, [_chunk("x", "hello world")], [[1.0, 0.0]])
     r = hybrid_search(col, "hello", [1.0, 0.0], top_k=1)[0]
-    assert set(r) >= {"chunk_id", "text", "distance", "episode_guid",
-                      "episode_title", "episode_date", "episode_number",
-                      "start_time", "end_time"}
+    assert set(r) >= {
+        "chunk_id",
+        "text",
+        "distance",
+        "episode_guid",
+        "episode_title",
+        "episode_date",
+        "episode_number",
+        "start_time",
+        "end_time",
+    }
     assert r["start_time"] == 0.0
 
 
@@ -109,8 +137,13 @@ def test_corpus_cache_rebuilds_on_new_version(tmp_path):
 def test_empty_collection_returns_empty(tmp_path):
     hybrid._CACHE.clear()
     corpus.write_artifact(
-        [], dest=str(tmp_path), version="v0001",
-        embed_model="m", dims=2, git_sha="s", built_at="t",
+        [],
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="m",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     col = corpus.load_current(str(tmp_path))
     assert col.count() == 0
@@ -126,11 +159,18 @@ def test_cache_keys_on_version_not_just_name():
     hybrid._CACHE.clear()
 
     def _meta(ep):
-        return {"episode_number": ep, "episode_date": f"2026-01-0{ep}",
-                "episode_guid": f"g{ep}", "episode_title": f"Ep {ep}",
-                "start_time": 0.0, "end_time": 1.0}
+        return {
+            "episode_number": ep,
+            "episode_date": f"2026-01-0{ep}",
+            "episode_guid": f"g{ep}",
+            "episode_title": f"Ep {ep}",
+            "start_time": 0.0,
+            "end_time": 1.0,
+        }
 
-    a = InMemoryCorpus(["a"], ["byrd rule reconciliation"], [[1.0, 0.0]], [_meta(1)], version="v0001")
+    a = InMemoryCorpus(
+        ["a"], ["byrd rule reconciliation"], [[1.0, 0.0]], [_meta(1)], version="v0001"
+    )
     b = InMemoryCorpus(["b"], ["tariffs section 122"], [[1.0, 0.0]], [_meta(2)], version="v0002")
 
     ra = hybrid_search(a, "byrd rule", [1.0, 0.0], top_k=1)

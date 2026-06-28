@@ -41,7 +41,7 @@ CORPUS_STALE_THRESHOLD_HOURS = 240
 # Inline stale-check Lambda: read corpus/current.json -> the version manifest's
 # built_at -> publish the corpus age (hours) as a CloudWatch metric. A CloudWatch
 # alarm on that metric (below) emails when the corpus goes stale.
-_STALE_CHECK_CODE = '''
+_STALE_CHECK_CODE = """
 import datetime
 import json
 import os
@@ -73,7 +73,7 @@ def handler(event, context):
         MetricData=[{"MetricName": "CorpusAgeHours", "Value": age_hours, "Unit": "Count"}],
     )
     return {"version": cur.get("version"), "age_hours": age_hours}
-'''
+"""
 
 
 class PepOracleIngestStack(Stack):
@@ -92,17 +92,17 @@ class PepOracleIngestStack(Stack):
         # constructs. Grants on imported resources are identity-only — no cross-stack
         # export — so deploying this stack never pulls PepOracleProdStack into the
         # deploy set (which would rebuild + redeploy the live serving Lambda).
-        corpus_bucket = s3.Bucket.from_bucket_name(
-            self, "CorpusBucket", cfg.corpus_bucket_name
-        )
+        corpus_bucket = s3.Bucket.from_bucket_name(self, "CorpusBucket", cfg.corpus_bucket_name)
         data_key = kms.Key.from_key_arn(
-            self, "DataKey",
+            self,
+            "DataKey",
             f"arn:aws:kms:{self.region}:{self.account}:key/{cfg.data_key_id}",
         )
 
         # Minimal VPC: 1 AZ, a public subnet, no NAT (scale-to-zero, public egress).
         vpc = ec2.Vpc(
-            self, "IngestVpc",
+            self,
+            "IngestVpc",
             max_azs=1,
             nat_gateways=0,
             subnet_configuration=[
@@ -115,9 +115,7 @@ class PepOracleIngestStack(Stack):
         )
         cluster = ecs.Cluster(self, "IngestCluster", vpc=vpc)
 
-        task_def = ecs.FargateTaskDefinition(
-            self, "IngestTask", cpu=1024, memory_limit_mib=4096
-        )
+        task_def = ecs.FargateTaskDefinition(self, "IngestTask", cpu=1024, memory_limit_mib=4096)
 
         project_root = Path(__file__).resolve().parents[2]
 
@@ -156,34 +154,40 @@ class PepOracleIngestStack(Stack):
         role = task_def.task_role
         corpus_bucket.grant_read_write(role)
         data_key.grant_encrypt_decrypt(role)
-        role.add_to_policy(iam.PolicyStatement(
-            actions=["bedrock:InvokeModel"],
-            resources=[
-                f"arn:aws:bedrock:{cfg.compute_region}::foundation-model/{cfg.embed_model}"
-            ],
-        ))
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    f"arn:aws:bedrock:{cfg.compute_region}::foundation-model/{cfg.embed_model}"
+                ],
+            )
+        )
 
         rule = events.Rule(
-            self, "DailyIngest",
+            self,
+            "DailyIngest",
             schedule=events.Schedule.rate(Duration.days(1)),
         )
         # DLQ catches EventBridge failing to *launch* the task (e.g. RunTask throttled
         # or the task fails to start). Runtime crashes are caught separately below.
         launch_dlq = sqs.Queue(
-            self, "IngestLaunchDlq",
+            self,
+            "IngestLaunchDlq",
             retention_period=Duration.days(14),
             encryption=sqs.QueueEncryption.SQS_MANAGED,
         )
-        rule.add_target(targets.EcsTask(
-            cluster=cluster,
-            task_definition=task_def,
-            task_count=1,
-            subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
-            assign_public_ip=True,
-            retry_attempts=2,
-            max_event_age=Duration.hours(2),
-            dead_letter_queue=launch_dlq,
-        ))
+        rule.add_target(
+            targets.EcsTask(
+                cluster=cluster,
+                task_definition=task_def,
+                task_count=1,
+                subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+                assign_public_ip=True,
+                retry_attempts=2,
+                max_event_age=Duration.hours(2),
+                dead_letter_queue=launch_dlq,
+            )
+        )
 
         # --- Monitoring / alerting ---
         alerts = sns.Topic(self, "IngestAlerts", display_name="pep-oracle ingest alerts")
@@ -192,7 +196,8 @@ class PepOracleIngestStack(Stack):
         # 1) Ingest task crashed: an ECS task in this cluster STOPPED with a non-zero
         #    container exit code. (Launch failures are covered by the DLQ alarm below.)
         failure_rule = events.Rule(
-            self, "IngestTaskFailed",
+            self,
+            "IngestTaskFailed",
             event_pattern=events.EventPattern(
                 source=["aws.ecs"],
                 detail_type=["ECS Task State Change"],
@@ -203,17 +208,20 @@ class PepOracleIngestStack(Stack):
                 },
             ),
         )
-        failure_rule.add_target(targets.SnsTopic(
-            alerts,
-            message=events.RuleTargetInput.from_text(
-                "pep-oracle daily ingest task FAILED with a non-zero exit code. "
-                "Check the ECS task logs (log group prefix 'ingest')."
-            ),
-        ))
+        failure_rule.add_target(
+            targets.SnsTopic(
+                alerts,
+                message=events.RuleTargetInput.from_text(
+                    "pep-oracle daily ingest task FAILED with a non-zero exit code. "
+                    "Check the ECS task logs (log group prefix 'ingest')."
+                ),
+            )
+        )
 
         # 2) Stale corpus: a daily Lambda publishes the corpus age; alarm if too old.
         stale_check = lambda_.Function(
-            self, "CorpusStaleCheck",
+            self,
+            "CorpusStaleCheck",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="index.handler",
             code=lambda_.Code.from_inline(_STALE_CHECK_CODE),
@@ -225,18 +233,22 @@ class PepOracleIngestStack(Stack):
         )
         corpus_bucket.grant_read(stale_check)
         data_key.grant_decrypt(stale_check)
-        stale_check.add_to_role_policy(iam.PolicyStatement(
-            actions=["cloudwatch:PutMetricData"],
-            resources=["*"],
-            conditions={"StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}},
-        ))
+        stale_check.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={"StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}},
+            )
+        )
         events.Rule(
-            self, "CorpusStaleCheckSchedule",
+            self,
+            "CorpusStaleCheckSchedule",
             schedule=events.Schedule.rate(Duration.days(1)),
             targets=[targets.LambdaFunction(stale_check)],
         )
         stale_alarm = cloudwatch.Alarm(
-            self, "CorpusStaleAlarm",
+            self,
+            "CorpusStaleAlarm",
             metric=cloudwatch.Metric(
                 namespace=METRIC_NAMESPACE,
                 metric_name="CorpusAgeHours",
@@ -256,9 +268,11 @@ class PepOracleIngestStack(Stack):
 
         # 3) DLQ alarm: EventBridge couldn't launch the daily task.
         dlq_alarm = cloudwatch.Alarm(
-            self, "IngestLaunchDlqAlarm",
+            self,
+            "IngestLaunchDlqAlarm",
             metric=launch_dlq.metric_approximate_number_of_messages_visible(
-                period=Duration.minutes(5), statistic="Maximum",
+                period=Duration.minutes(5),
+                statistic="Maximum",
             ),
             threshold=0,
             evaluation_periods=1,

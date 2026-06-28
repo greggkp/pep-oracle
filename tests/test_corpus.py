@@ -60,8 +60,13 @@ def test_write_artifact_handles_missing_episode_numbers(tmp_path):
     rows = [_row("a", "x", 0, [0.1, 0.2])]  # 0 == store sentinel for "no episode"
     rows[0]["metadata"]["episode_number"] = 0
     manifest = corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="m", dims=2, git_sha="s", built_at="t",
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="m",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     assert manifest.episode_range == [None, None]
 
@@ -72,8 +77,13 @@ def test_inmemory_corpus_roundtrip_and_get_shape(tmp_path):
         _row("b", "weather and chit chat", 252, [0.0, 1.0]),
     ]
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="m", dims=2, git_sha="s", built_at="t",
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="m",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
 
     c = corpus.load_current(str(tmp_path))
@@ -96,31 +106,47 @@ def test_inmemory_corpus_is_drop_in_for_hybrid_search(tmp_path):
         _row("b", "weather and chit chat", 252, [0.0, 1.0]),
     ]
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="m", dims=2, git_sha="s", built_at="t",
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="m",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     c = corpus.load_current(str(tmp_path))
 
     results = hybrid_search(c, "byrd rule", [1.0, 0.0], top_k=2)
     assert results[0]["chunk_id"] == "a"
     assert set(results[0]) >= {
-        "chunk_id", "text", "distance", "episode_guid",
-        "episode_title", "episode_date", "episode_number",
-        "start_time", "end_time",
+        "chunk_id",
+        "text",
+        "distance",
+        "episode_guid",
+        "episode_title",
+        "episode_date",
+        "episode_number",
+        "start_time",
+        "end_time",
     }
 
 
 def test_load_current_rejects_corrupt_parquet(tmp_path):
     rows = [_row("a", "x", 251, [1.0, 0.0])]
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="m", dims=2, git_sha="s", built_at="t",
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="m",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     # Corrupt the parquet so its sha256 no longer matches current.json
     (tmp_path / "corpus" / "v0001.parquet").write_bytes(b"corrupted")
     try:
         corpus.load_current(str(tmp_path))
-        assert False, "expected a sha256 mismatch error"
+        raise AssertionError("expected a sha256 mismatch error")
     except ValueError as exc:
         assert "sha256" in str(exc).lower()
 
@@ -128,8 +154,12 @@ def test_load_current_rejects_corrupt_parquet(tmp_path):
 def test_load_manifest_returns_version_and_manifest(tmp_path):
     rows = [_row("a", "x", 251, [1.0, 0.0]), _row("b", "y", 253, [0.0, 1.0])]
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0007",
-        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s",
+        rows,
+        dest=str(tmp_path),
+        version="v0007",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
         built_at="2026-06-02T00:00:00+00:00",
     )
     version, manifest = corpus.load_manifest(str(tmp_path))
@@ -142,8 +172,13 @@ def test_load_manifest_returns_version_and_manifest(tmp_path):
 def test_validate_serving_passes_when_dims_and_model_match(tmp_path, monkeypatch):
     rows = [_row("a", "x", 251, [1.0, 0.0])]
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     c = corpus.load_current(str(tmp_path))
@@ -153,14 +188,19 @@ def test_validate_serving_passes_when_dims_and_model_match(tmp_path, monkeypatch
 def test_validate_serving_raises_on_embed_model_mismatch(tmp_path, monkeypatch):
     rows = [_row("a", "x", 251, [1.0, 0.0])]
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     monkeypatch.setattr(_config, "EMBED_MODEL", "some-other-model")  # wrong model vs Titan corpus
     c = corpus.load_current(str(tmp_path))
     try:
         corpus._validate_serving(c, str(tmp_path))
-        assert False, "expected an embedder-mismatch error"
+        raise AssertionError("expected an embedder-mismatch error")
     except ValueError as exc:
         assert "embed" in str(exc).lower()
 
@@ -168,14 +208,19 @@ def test_validate_serving_raises_on_embed_model_mismatch(tmp_path, monkeypatch):
 def test_validate_serving_raises_on_dims_mismatch(tmp_path, monkeypatch):
     rows = [_row("a", "x", 251, [1.0, 0.0])]  # 2-d vectors
     corpus.write_artifact(
-        rows, dest=str(tmp_path), version="v0001",
-        embed_model="amazon.titan-embed-text-v2:0", dims=99, git_sha="s", built_at="t",  # manifest lies: 99 != 2
+        rows,
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=99,
+        git_sha="s",
+        built_at="t",  # manifest lies: 99 != 2
     )
     monkeypatch.setattr(_config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     c = corpus.load_current(str(tmp_path))
     try:
         corpus._validate_serving(c, str(tmp_path))
-        assert False, "expected a dims-mismatch error"
+        raise AssertionError("expected a dims-mismatch error")
     except ValueError as exc:
         assert "dim" in str(exc).lower()
 
@@ -183,8 +228,12 @@ def test_validate_serving_raises_on_dims_mismatch(tmp_path, monkeypatch):
 def _publish(tmp_path, version, ep, text):
     corpus.write_artifact(
         [_row("c", text, ep, [1.0, 0.0])],
-        dest=str(tmp_path), version=version,
-        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+        dest=str(tmp_path),
+        version=version,
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
 
 

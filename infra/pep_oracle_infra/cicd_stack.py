@@ -37,7 +37,8 @@ class PepOracleCicdStack(Stack):
         super().__init__(scope, cid, **kwargs)
 
         provider = iam.OpenIdConnectProvider(
-            self, "GitHubOidc",
+            self,
+            "GitHubOidc",
             url=GITHUB_OIDC_URL,
             client_ids=["sts.amazonaws.com"],
         )
@@ -55,20 +56,27 @@ class PepOracleCicdStack(Stack):
         )
 
         role = iam.Role(
-            self, "DeployRole",
+            self,
+            "DeployRole",
             role_name="pep-oracle-github-deploy",
             assumed_by=principal,
             max_session_duration=Duration.hours(1),
         )
-        role.add_to_policy(iam.PolicyStatement(
-            actions=["sts:AssumeRole"],
-            resources=[f"arn:aws:iam::{self.account}:role/cdk-hnb659fds-*"],
-        ))
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["sts:AssumeRole"],
+                resources=[f"arn:aws:iam::{self.account}:role/cdk-hnb659fds-*"],
+            )
+        )
         # cdk reads the bootstrap version param with the caller's own identity.
-        role.add_to_policy(iam.PolicyStatement(
-            actions=["ssm:GetParameter"],
-            resources=[f"arn:aws:ssm:*:{self.account}:parameter/cdk-bootstrap/hnb659fds/version"],
-        ))
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:aws:ssm:*:{self.account}:parameter/cdk-bootstrap/hnb659fds/version"
+                ],
+            )
+        )
 
         CfnOutput(self, "DeployRoleArn", value=role.role_arn)
         self.deploy_role = role

@@ -8,7 +8,6 @@ from pep_oracle import mcp_server
 from pep_oracle.models import Chunk
 from pep_oracle.store import _chunk_metadata
 
-
 _counter = 0
 
 
@@ -31,8 +30,13 @@ class _CorpusHolder:
         hybrid._CACHE.clear()  # avoid cross-build corpus cache bleed
         dest = self._tmp_path / f"mcp{_counter}"
         corpus.write_artifact(
-            rows, dest=str(dest), version=f"v{self._n:04d}",
-            embed_model="m", dims=10, git_sha="s", built_at="t",
+            rows,
+            dest=str(dest),
+            version=f"v{self._n:04d}",
+            embed_model="m",
+            dims=10,
+            git_sha="s",
+            built_at="t",
         )
         self.corpus = corpus.load_current(str(dest))
 
@@ -50,9 +54,7 @@ def patched(monkeypatch, tmp_path):
     # Fixed embedding — must match dimension of seeded chunks.
     fixed_embedding = [1.0] + [0.0] * 9
 
-    monkeypatch.setattr(
-        mcp_server, "embed_texts", lambda texts: [fixed_embedding for _ in texts]
-    )
+    monkeypatch.setattr(mcp_server, "embed_texts", lambda texts: [fixed_embedding for _ in texts])
     monkeypatch.setattr(mcp_server, "get_serving_corpus", lambda: holder.corpus)
     return holder
 
@@ -80,12 +82,14 @@ def _seed_chunks(holder, count: int = 3, with_speakers: bool = False):
             speaker_text=speaker_text,
             speaker_turns=speaker_turns,
         )
-        rows.append({
-            "chunk_id": chunk.chunk_id,
-            "text": chunk.text,
-            "embedding": [1.0] + [0.0] * 9,
-            "metadata": _chunk_metadata(chunk),
-        })
+        rows.append(
+            {
+                "chunk_id": chunk.chunk_id,
+                "text": chunk.text,
+                "embedding": [1.0] + [0.0] * 9,
+                "metadata": _chunk_metadata(chunk),
+            }
+        )
     holder.build(rows)
 
 
@@ -264,10 +268,22 @@ def test_search_pep_episode_number_scopes_results(patched, monkeypatch):
 def _dated_candidates():
     base = {"speaker_text": None, "speakers": None, "start_time": 1.0, "end_time": 2.0}
     return [
-        {**base, "text": "newest", "episode_title": "E263", "episode_number": 263,
-         "episode_date": "2026-05-29", "distance": 0.1},
-        {**base, "text": "oldest", "episode_title": "E215", "episode_number": 215,
-         "episode_date": "2025-06-01", "distance": 0.2},
+        {
+            **base,
+            "text": "newest",
+            "episode_title": "E263",
+            "episode_number": 263,
+            "episode_date": "2026-05-29",
+            "distance": 0.1,
+        },
+        {
+            **base,
+            "text": "oldest",
+            "episode_title": "E215",
+            "episode_number": 215,
+            "episode_date": "2025-06-01",
+            "distance": 0.2,
+        },
     ]
 
 
@@ -287,8 +303,7 @@ def test_search_pep_default_intent_is_newest_first(patched, monkeypatch):
 
 def test_search_pep_forwards_date_filters(patched, monkeypatch):
     captured = {}
-    monkeypatch.setattr(mcp_server, "hybrid_search",
-                        lambda *a, **k: captured.update(k) or [])
+    monkeypatch.setattr(mcp_server, "hybrid_search", lambda *a, **k: captured.update(k) or [])
     mcp_server.search_pep("x", top_k=5, after_date="2026-01-01", before_date="2026-06-01")
     assert captured["after_date"] == "2026-01-01"
     assert captured["before_date"] == "2026-06-01"
@@ -323,7 +338,14 @@ _TEST_PUBLIC_URL = "https://test.example.com"
 _TEST_ISSUER = _TEST_PUBLIC_URL.rstrip("/")
 
 
-def _build_app(monkeypatch, *, signing_key=_TEST_SIGNING_KEY, public_url=_TEST_PUBLIC_URL, trust_flag="1", tmp_path=None):
+def _build_app(
+    monkeypatch,
+    *,
+    signing_key=_TEST_SIGNING_KEY,
+    public_url=_TEST_PUBLIC_URL,
+    trust_flag="1",
+    tmp_path=None,
+):
     """Build a fresh FastAPI app with mount_mcp_if_configured applied.
 
     The MCP SDK's session_manager is created lazily on the first call to
@@ -358,7 +380,12 @@ def _build_app(monkeypatch, *, signing_key=_TEST_SIGNING_KEY, public_url=_TEST_P
     return app, mounted
 
 
-def _mint(client_id: str = "test-client", *, signing_key: str = _TEST_SIGNING_KEY, issuer: str = _TEST_ISSUER) -> str:
+def _mint(
+    client_id: str = "test-client",
+    *,
+    signing_key: str = _TEST_SIGNING_KEY,
+    issuer: str = _TEST_ISSUER,
+) -> str:
     from pep_oracle import oauth
 
     return oauth.mint_access_token(signing_key, client_id, issuer=issuer)
@@ -571,14 +598,26 @@ def test_get_serving_corpus_loads_artifact(tmp_path, monkeypatch):
 
     corpus.write_artifact(
         [
-            {"chunk_id": "z1", "text": "the byrd rule reconciliation senate",
-             "embedding": [1.0, 0.0],
-             "metadata": {"episode_number": 251, "episode_date": "2026-04-01",
-                          "episode_guid": "g", "episode_title": "Ep 251",
-                          "start_time": 0.0, "end_time": 10.0}},
+            {
+                "chunk_id": "z1",
+                "text": "the byrd rule reconciliation senate",
+                "embedding": [1.0, 0.0],
+                "metadata": {
+                    "episode_number": 251,
+                    "episode_date": "2026-04-01",
+                    "episode_guid": "g",
+                    "episode_title": "Ep 251",
+                    "start_time": 0.0,
+                    "end_time": 10.0,
+                },
+            },
         ],
-        dest=str(tmp_path), version="v0001",
-        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s", built_at="t",
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
+        built_at="t",
     )
     monkeypatch.setattr(config, "CORPUS_URI", str(tmp_path))
     monkeypatch.setattr(config, "EMBED_MODEL", "amazon.titan-embed-text-v2:0")

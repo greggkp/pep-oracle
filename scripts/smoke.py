@@ -34,8 +34,9 @@ def _get(url: str, timeout: float = 15.0):
 
 
 def _post_no_token(url: str, timeout: float = 15.0):
-    req = urllib.request.Request(url, data=b"{}", method="POST",
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url, data=b"{}", method="POST", headers={"Content-Type": "application/json"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status
@@ -66,9 +67,13 @@ def check(base: str, expect_sha: str = "", expect_semver: str = "") -> list[str]
             failures.append("/version returned a non-JSON body")
         else:
             if expect_sha and data.get("code_git_sha") != expect_sha:
-                failures.append(f"/version code_git_sha={data.get('code_git_sha')} (want {expect_sha})")
+                failures.append(
+                    f"/version code_git_sha={data.get('code_git_sha')} (want {expect_sha})"
+                )
             if expect_semver and data.get("code_semver") != expect_semver:
-                failures.append(f"/version code_semver={data.get('code_semver')} (want {expect_semver})")
+                failures.append(
+                    f"/version code_semver={data.get('code_semver')} (want {expect_semver})"
+                )
             if not data.get("corpus_version"):
                 failures.append("/version missing corpus_version")
 
