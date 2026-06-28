@@ -3,6 +3,7 @@ import os
 import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
@@ -213,9 +214,7 @@ def _code_version() -> tuple[str, str]:
 @app.get("/version")
 async def api_version():
     semver, sha = _code_version()
-    import typing
-
-    out: dict[str, typing.Any] = {"code_semver": semver, "code_git_sha": sha}
+    out: dict[str, Any] = {"code_semver": semver, "code_git_sha": sha}
     try:
         version, manifest = _corpus.load_manifest(_config.CORPUS_URI)
         out.update(
