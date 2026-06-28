@@ -16,3 +16,7 @@ infra/.venv/
 infra/cdk.out/
 infra/node_modules/
 infra/cdk.context.json
+
+# Locally-downloaded tool binaries (not part of the repo; fetched ad hoc)
+/gitleaks
+/gh_*_linux_amd64/
