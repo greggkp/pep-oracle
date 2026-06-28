@@ -1,7 +1,7 @@
 """Tests for ingest.episode_chunks_and_embeddings (the Fargate-path core)."""
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from pep_oracle import ingest
@@ -13,7 +13,7 @@ def _ep(num: int = 300, guid: str | None = None) -> Episode:
     return Episode(
         guid=guid or f"guid-{num}",
         title=f"Test Episode (Ep {num}, 1 Jan)",
-        pub_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        pub_date=datetime(2026, 1, 1, tzinfo=UTC),
         audio_url=f"https://example.com/ep{num}.mp3",
         description=f"Episode {num}",
         duration_seconds=9000,
@@ -34,10 +34,14 @@ def _fake_embed(texts):
 def test_episode_chunks_and_embeddings_returns_chunks_and_vectors(monkeypatch):
     """Returns (chunks, embeddings) with correct shapes and episode linkage."""
     monkeypatch.setattr(
-        ingest, "_run_transcribe_and_diarize",
+        ingest,
+        "_run_transcribe_and_diarize",
         lambda episode, diarize, cb: (
             [TranscriptSegment(text="hello world", start_time=0.0, end_time=5.0)],
-            "whisper", [], 0.0, 0.0,
+            "whisper",
+            [],
+            0.0,
+            0.0,
         ),
     )
     monkeypatch.setattr(ingest, "embed_texts", lambda texts: [[0.1] * 1024 for _ in texts])
@@ -56,7 +60,8 @@ def test_episode_chunks_and_embeddings_returns_empty_on_no_segments(monkeypatch)
     """When transcription yields no segments, returns ([], []) without calling embed."""
     embed_called = []
     monkeypatch.setattr(
-        ingest, "_run_transcribe_and_diarize",
+        ingest,
+        "_run_transcribe_and_diarize",
         lambda episode, diarize, cb: ([], "whisper", None, 0.0, 0.0),
     )
     monkeypatch.setattr(ingest, "embed_texts", lambda texts: embed_called.append(texts) or [])
@@ -73,7 +78,8 @@ def test_episode_chunks_and_embeddings_one_embedding_per_chunk(monkeypatch):
     """The number of embeddings must exactly match the number of chunks."""
     segments = FAKE_SEGMENTS * 3  # enough to guarantee multiple chunks
     monkeypatch.setattr(
-        ingest, "_run_transcribe_and_diarize",
+        ingest,
+        "_run_transcribe_and_diarize",
         lambda episode, diarize, cb: (segments, "whisper", None, 0.0, 0.0),
     )
     monkeypatch.setattr(ingest, "embed_texts", _fake_embed)
@@ -88,7 +94,8 @@ def test_episode_chunks_and_embeddings_one_embedding_per_chunk(monkeypatch):
 def test_episode_chunks_and_embeddings_chunk_metadata_matches_episode(monkeypatch):
     """Chunks carry the episode's title and pub_date."""
     monkeypatch.setattr(
-        ingest, "_run_transcribe_and_diarize",
+        ingest,
+        "_run_transcribe_and_diarize",
         lambda episode, diarize, cb: (FAKE_SEGMENTS, "whisper", None, 0.0, 0.0),
     )
     monkeypatch.setattr(ingest, "embed_texts", _fake_embed)

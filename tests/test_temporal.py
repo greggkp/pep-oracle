@@ -15,17 +15,17 @@ def _c(distance, ep_date, ep_num):
 
 
 def test_recency_score_decay():
-    assert recency_score("2026-05-30", TODAY) == 1.0          # today
+    assert recency_score("2026-05-30", TODAY) == 1.0  # today
     assert abs(recency_score("2026-05-09", TODAY) - 0.5) < 1e-6  # one half-life (21d)
-    assert recency_score("2024-01-01", TODAY) < 0.001         # very old -> ~0
+    assert recency_score("2024-01-01", TODAY) < 0.001  # very old -> ~0
     assert recency_score("not-a-date", TODAY) == 0.0
-    assert recency_score("2027-01-01", TODAY) == 1.0          # future clamps to 1
+    assert recency_score("2027-01-01", TODAY) == 1.0  # future clamps to 1
 
 
 def test_current_blends_recency_so_recent_relevant_wins():
     cands = [
-        _c(0.10, "2025-01-01", 200),   # very relevant but old
-        _c(0.30, "2026-05-29", 263),   # slightly less relevant but ~today
+        _c(0.10, "2025-01-01", 200),  # very relevant but old
+        _c(0.30, "2026-05-29", 263),  # slightly less relevant but ~today
     ]
     results, order = select_for_intent(cands, "current", top_k=2, today=TODAY)
     assert order == NEWEST_FIRST
@@ -35,8 +35,8 @@ def test_current_blends_recency_so_recent_relevant_wins():
 
 def test_prediction_keeps_old_relevant_and_orders_chronological():
     cands = [
-        _c(0.10, "2025-06-01", 215),   # the original (old) prediction, most relevant
-        _c(0.20, "2026-05-01", 258),   # later update
+        _c(0.10, "2025-06-01", 215),  # the original (old) prediction, most relevant
+        _c(0.20, "2026-05-01", 258),  # later update
     ]
     results, order = select_for_intent(cands, "prediction", top_k=2, today=TODAY)
     assert order == CHRONOLOGICAL
@@ -48,8 +48,8 @@ def test_prediction_keeps_old_relevant_and_orders_chronological():
 def test_evolution_spreads_across_episodes():
     cands = [
         _c(0.10, "2026-05-01", 258),
-        _c(0.12, "2026-05-01", 258),   # 2nd from same ep
-        _c(0.15, "2026-05-01", 258),   # 3rd from same ep -> dropped (cap 2/ep)
+        _c(0.12, "2026-05-01", 258),  # 2nd from same ep
+        _c(0.15, "2026-05-01", 258),  # 3rd from same ep -> dropped (cap 2/ep)
         _c(0.20, "2025-06-01", 215),
         _c(0.22, "2025-09-01", 230),
     ]

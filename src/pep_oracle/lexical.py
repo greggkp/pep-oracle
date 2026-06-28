@@ -13,10 +13,27 @@ from collections import Counter
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 _NUM_WORDS = {
-    0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
-    7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
-    13: "thirteen", 14: "fourteen", 15: "fifteen", 16: "sixteen",
-    17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty",
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+    13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
 }
 
 
@@ -63,6 +80,10 @@ class BM25:
                 f = tf.get(w, 0)
                 if f:
                     idf = self._idf.get(w, 0.0)
-                    s += idf * (f * (self.k1 + 1)) / (f + self.k1 * (1 - self.b + self.b * dl / self.avgdl))
+                    s += (
+                        idf
+                        * (f * (self.k1 + 1))
+                        / (f + self.k1 * (1 - self.b + self.b * dl / self.avgdl))
+                    )
             out[i] = s
         return out

@@ -1,4 +1,5 @@
 """GET /version: the release tag (PEP_ORACLE_SEMVER) overrides the package version."""
+
 from __future__ import annotations
 
 from pep_oracle import config as _config

@@ -125,8 +125,15 @@ def _rsa_keypair():
 
 def _id_token(priv_pem, *, iss, aud, email, ttl=3600, kid=_KID, token_use="id"):
     now = int(time.time())
-    claims = {"sub": "u1", "iss": iss, "aud": aud, "email": email,
-              "token_use": token_use, "iat": now, "exp": now + ttl}
+    claims = {
+        "sub": "u1",
+        "iss": iss,
+        "aud": aud,
+        "email": email,
+        "token_use": token_use,
+        "iat": now,
+        "exp": now + ttl,
+    }
     return jwt.encode(claims, priv_pem, algorithm="RS256", headers={"kid": kid})
 
 
@@ -139,8 +146,9 @@ def _verifying_gate(monkeypatch):
 
 def test_verify_id_token_rejects_non_id_token_use(monkeypatch):
     gate, priv_pem = _verifying_gate(monkeypatch)
-    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id,
-                    email="me@example.com", token_use="access")
+    tok = _id_token(
+        priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com", token_use="access"
+    )
     with pytest.raises(authorize_gate.IdentityError):
         gate._verify_id_token(tok)
 
@@ -169,7 +177,9 @@ def test_verify_id_token_rejects_wrong_audience(monkeypatch):
 
 def test_verify_id_token_rejects_wrong_issuer(monkeypatch):
     gate, priv_pem = _verifying_gate(monkeypatch)
-    tok = _id_token(priv_pem, iss="https://evil.example", aud=gate.client_id, email="me@example.com")
+    tok = _id_token(
+        priv_pem, iss="https://evil.example", aud=gate.client_id, email="me@example.com"
+    )
     with pytest.raises(authorize_gate.IdentityError):
         gate._verify_id_token(tok)
 
@@ -183,7 +193,9 @@ def test_verify_id_token_rejects_expired(monkeypatch):
 
 def test_verify_id_token_rejects_unknown_kid(monkeypatch):
     gate, priv_pem = _verifying_gate(monkeypatch)
-    tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com", kid="other-kid")
+    tok = _id_token(
+        priv_pem, iss=gate.issuer, aud=gate.client_id, email="me@example.com", kid="other-kid"
+    )
     with pytest.raises(authorize_gate.IdentityError):
         gate._verify_id_token(tok)
 
@@ -246,7 +258,8 @@ def test_exchange_and_verify_happy_path(monkeypatch):
 def test_exchange_non_200_raises(monkeypatch):
     gate = _gate()
     monkeypatch.setattr(
-        authorize_gate.requests, "post",
+        authorize_gate.requests,
+        "post",
         lambda *a, **k: _FakeResp(400, {"error": "invalid_grant"}),
     )
     with pytest.raises(authorize_gate.IdentityError):
@@ -256,7 +269,8 @@ def test_exchange_non_200_raises(monkeypatch):
 def test_exchange_missing_id_token_raises(monkeypatch):
     gate = _gate()
     monkeypatch.setattr(
-        authorize_gate.requests, "post",
+        authorize_gate.requests,
+        "post",
         lambda *a, **k: _FakeResp(200, {"access_token": "a"}),  # no id_token
     )
     with pytest.raises(authorize_gate.IdentityError):

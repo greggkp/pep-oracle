@@ -35,8 +35,13 @@ def _corpus_from_chunks(tmp_path, chunks_and_embs):
     dest = tmp_path / f"store{_counter}"
     dims = len(chunks_and_embs[0][1]) if chunks_and_embs else 10
     corpus.write_artifact(
-        rows, dest=str(dest), version="v0001",
-        embed_model="m", dims=dims, git_sha="s", built_at="t",
+        rows,
+        dest=str(dest),
+        version="v0001",
+        embed_model="m",
+        dims=dims,
+        git_sha="s",
+        built_at="t",
     )
     return corpus.load_current(str(dest))
 
@@ -178,8 +183,13 @@ def test_get_ingestion_stats(tmp_path):
 
 def test_get_ingestion_stats_empty(tmp_path):
     corpus.write_artifact(
-        [], dest=str(tmp_path), version="v0001",
-        embed_model="m", dims=10, git_sha="s", built_at="t",
+        [],
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="m",
+        dims=10,
+        git_sha="s",
+        built_at="t",
     )
     col = corpus.load_current(str(tmp_path))
     stats = get_ingestion_stats(col)

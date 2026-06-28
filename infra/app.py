@@ -8,7 +8,6 @@ with cross_region_references so the prod CloudFront can use the us-east-1 cert.
 import os
 
 import aws_cdk as cdk
-
 from pep_oracle_infra.cert_stack import PepOracleCertStack
 from pep_oracle_infra.config import DeployConfig
 from pep_oracle_infra.prod_stack import PepOracleProdStack

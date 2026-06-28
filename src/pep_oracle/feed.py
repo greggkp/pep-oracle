@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import timezone
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 
 import feedparser
@@ -37,7 +37,7 @@ def parse_entry(entry: feedparser.FeedParserDict) -> Episode:
 
     pub_date = parsedate_to_datetime(entry["published"])
     if pub_date.tzinfo is None:
-        pub_date = pub_date.replace(tzinfo=timezone.utc)
+        pub_date = pub_date.replace(tzinfo=UTC)
 
     return Episode(
         guid=entry["id"],
@@ -54,6 +54,7 @@ def fetch_episodes(feed_url: str = RSS_FEED_URL, timeout: int = 15) -> list[Epis
     logger.info("Fetching RSS feed from %s", feed_url)
     if feed_url.startswith(("http://", "https://")):
         import requests
+
         response = requests.get(feed_url, timeout=timeout)
         response.raise_for_status()
         feed = feedparser.parse(response.content)

@@ -15,14 +15,14 @@ def test_recall_at_k():
     assert recall_at_k([5, 3, 7, 1], {7}, k=2) == 0  # not in first 2
     assert recall_at_k([5, 3, 7, 1], {7}, k=3) == 1  # in first 3
     assert recall_at_k([5, 3, 7, 1], {9}, k=4) == 0  # absent
-    assert recall_at_k([7, 7, 7], {7}, k=1) == 1     # duplicates fine
+    assert recall_at_k([7, 7, 7], {7}, k=1) == 1  # duplicates fine
 
 
 def test_reciprocal_rank():
-    assert reciprocal_rank([5, 7, 3], {7}) == 0.5     # first relevant at rank 2
-    assert reciprocal_rank([7, 5, 3], {7}) == 1.0     # rank 1
-    assert reciprocal_rank([1, 2, 3], {9}) == 0.0     # absent
-    assert reciprocal_rank([5, 7, 7], {7}) == 0.5     # first occurrence only
+    assert reciprocal_rank([5, 7, 3], {7}) == 0.5  # first relevant at rank 2
+    assert reciprocal_rank([7, 5, 3], {7}) == 1.0  # rank 1
+    assert reciprocal_rank([1, 2, 3], {9}) == 0.0  # absent
+    assert reciprocal_rank([5, 7, 7], {7}) == 0.5  # first occurrence only
 
 
 def test_resolve_relevant_episodes():
@@ -50,12 +50,22 @@ def _toy_corpus():
     docs = ["the byrd rule reconciliation senate", "weather and sports chit chat"]
     embeddings = [[1.0, 0.0], [0.0, 1.0]]
     metas = [
-        {"episode_number": 251, "episode_date": "2026-04-01",
-         "episode_guid": "g251", "episode_title": "Ep 251",
-         "start_time": 0.0, "end_time": 10.0},
-        {"episode_number": 252, "episode_date": "2026-04-08",
-         "episode_guid": "g252", "episode_title": "Ep 252",
-         "start_time": 0.0, "end_time": 10.0},
+        {
+            "episode_number": 251,
+            "episode_date": "2026-04-01",
+            "episode_guid": "g251",
+            "episode_title": "Ep 251",
+            "start_time": 0.0,
+            "end_time": 10.0,
+        },
+        {
+            "episode_number": 252,
+            "episode_date": "2026-04-08",
+            "episode_guid": "g252",
+            "episode_title": "Ep 252",
+            "start_time": 0.0,
+            "end_time": 10.0,
+        },
     ]
     return InMemoryCorpus(ids, docs, embeddings, metas)
 
@@ -68,7 +78,7 @@ def test_evaluate_corpus_scores_a_known_case():
 
     assert res["overall"]["n"] == 1
     assert res["overall"]["recall"][5] == 1.0  # 'a' contains "byrd rule"
-    assert res["overall"]["mrr"] == 1.0        # and ranks first
+    assert res["overall"]["mrr"] == 1.0  # and ranks first
 
 
 def test_format_single_renders_overall_and_by_type():

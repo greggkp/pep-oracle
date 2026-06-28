@@ -51,7 +51,7 @@ def test_ssm_backend_missing_param_raises(monkeypatch):
     monkeypatch.setattr(config, "OAUTH_SIGNING_SSM_REGION", "ap-southeast-2")
     with mock_aws():
         boto3.client("ssm", region_name="ap-southeast-2")  # ensure region exists in moto
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             signing.resolve_signing_key()
 
 

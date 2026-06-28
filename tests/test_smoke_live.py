@@ -103,7 +103,10 @@ def _mcp_post(base_url, headers):
 
 
 def test_mcp_rejects_request_without_token(base_url):
-    if requests.get(f"{base_url}/.well-known/oauth-authorization-server", timeout=10).status_code != 200:
+    if (
+        requests.get(f"{base_url}/.well-known/oauth-authorization-server", timeout=10).status_code
+        != 200
+    ):
         pytest.skip("MCP/OAuth not enabled on this server")
     resp = _mcp_post(base_url, headers={})
     assert resp.status_code == 401, f"unauthenticated /mcp should be 401, got {resp.status_code}"

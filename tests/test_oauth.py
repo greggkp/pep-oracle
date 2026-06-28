@@ -650,6 +650,7 @@ class _FakeGate:
 
     def login_redirect(self, *, redirect_uri: str, login_state: str) -> str:
         from urllib.parse import urlencode
+
         return f"{self.login_url}?{urlencode({'redirect_uri': redirect_uri, 'state': login_state})}"
 
     def exchange_and_verify(self, *, code: str, redirect_uri: str) -> dict:
@@ -690,8 +691,11 @@ def test_callback_issues_pep_code_after_successful_identity():
     client_id = _register(client)
     verifier, challenge = _pkce_pair()
     login_state = oauth._encode_login_state(
-        SIGNING_KEY, PUBLIC_URL, client_id=client_id,
-        redirect_uri="https://claude.ai/cb", code_challenge=challenge,
+        SIGNING_KEY,
+        PUBLIC_URL,
+        client_id=client_id,
+        redirect_uri="https://claude.ai/cb",
+        code_challenge=challenge,
         client_state="client-state-xyz",
     )
     r = client.get(
@@ -706,11 +710,16 @@ def test_callback_issues_pep_code_after_successful_identity():
     qs = parse_qs(loc.query)
     assert qs["state"] == ["client-state-xyz"]
     code = qs["code"][0]
-    r2 = client.post("/oauth/token", data={
-        "grant_type": "authorization_code", "code": code,
-        "redirect_uri": "https://claude.ai/cb", "client_id": client_id,
-        "code_verifier": verifier,
-    })
+    r2 = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/cb",
+            "client_id": client_id,
+            "code_verifier": verifier,
+        },
+    )
     assert r2.status_code == 200, r2.text
     assert r2.json()["access_token"]
 
@@ -724,11 +733,18 @@ def test_callback_rejects_failed_identity():
     client_id = _register(client)
     _, challenge = _pkce_pair()
     login_state = oauth._encode_login_state(
-        SIGNING_KEY, PUBLIC_URL, client_id=client_id,
-        redirect_uri="https://claude.ai/cb", code_challenge=challenge, client_state=None,
+        SIGNING_KEY,
+        PUBLIC_URL,
+        client_id=client_id,
+        redirect_uri="https://claude.ai/cb",
+        code_challenge=challenge,
+        client_state=None,
     )
-    r = client.get("/oauth/authorize/callback",
-                   params={"code": "bad", "state": login_state}, follow_redirects=False)
+    r = client.get(
+        "/oauth/authorize/callback",
+        params={"code": "bad", "state": login_state},
+        follow_redirects=False,
+    )
     assert r.status_code == 403
     assert r.json()["error"] == "access_denied"
 
@@ -736,8 +752,11 @@ def test_callback_rejects_failed_identity():
 def test_callback_rejects_tampered_login_state():
     gate = _FakeGate(identity=True)
     client, _ = _client_with_gate(gate)
-    r = client.get("/oauth/authorize/callback",
-                   params={"code": "x", "state": "not-a-real-jwt"}, follow_redirects=False)
+    r = client.get(
+        "/oauth/authorize/callback",
+        params={"code": "x", "state": "not-a-real-jwt"},
+        follow_redirects=False,
+    )
     assert r.status_code == 400
     assert r.json()["error"] == "invalid_request"
 
@@ -750,12 +769,19 @@ def test_callback_rejects_expired_login_state(monkeypatch):
     real = time.time()
     monkeypatch.setattr(oauth.time, "time", lambda: real - oauth.LOGIN_STATE_TTL_SECONDS - 10)
     login_state = oauth._encode_login_state(
-        SIGNING_KEY, PUBLIC_URL, client_id=client_id,
-        redirect_uri="https://claude.ai/cb", code_challenge=challenge, client_state=None,
+        SIGNING_KEY,
+        PUBLIC_URL,
+        client_id=client_id,
+        redirect_uri="https://claude.ai/cb",
+        code_challenge=challenge,
+        client_state=None,
     )
     monkeypatch.setattr(oauth.time, "time", lambda: real)
-    r = client.get("/oauth/authorize/callback",
-                   params={"code": "x", "state": login_state}, follow_redirects=False)
+    r = client.get(
+        "/oauth/authorize/callback",
+        params={"code": "x", "state": login_state},
+        follow_redirects=False,
+    )
     assert r.status_code == 400
 
 

@@ -40,7 +40,9 @@ def _episodes_with_speaker_metadata():
         if not speaker_keys:
             continue
         num = meta.get("episode_number") or 0
-        label = f"Ep {num} ({meta.get('episode_date', '?')})" if num else meta.get("episode_date", "?")
+        label = (
+            f"Ep {num} ({meta.get('episode_date', '?')})" if num else meta.get("episode_date", "?")
+        )
         by_episode[label] |= speaker_keys
     return by_episode
 

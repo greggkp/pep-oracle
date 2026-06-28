@@ -13,7 +13,8 @@ from datetime import date
 
 from mcp.server.fastmcp import FastMCP
 
-from pep_oracle import config, corpus as corpus_mod, temporal
+from pep_oracle import config, temporal
+from pep_oracle import corpus as corpus_mod
 from pep_oracle.embeddings import embed_texts
 from pep_oracle.hybrid import hybrid_search
 from pep_oracle.store import get_ingestion_stats
@@ -27,6 +28,7 @@ def format_timestamp(seconds: float | None) -> str:
     m, s = divmod(remainder, 60)
     return f"{h}:{m:02d}:{s:02d}"
 
+
 # NOTE: This string is load-bearing AND front-loaded on purpose. MCP clients
 # (iOS Claude, Claude.ai) defer tools — they see only the tool *name* and a
 # *truncated* description until something triggers a full tool-search. So the
@@ -39,18 +41,18 @@ def format_timestamp(seconds: float | None) -> str:
 SEARCH_PEP_DESCRIPTION = (
     "Call this for ANY question about US politics, US current events, policy, "
     "elections, political figures, the Supreme Court, or federal agencies — "
-    "including background, explainer, or \"what's going on with X\" requests, "
+    'including background, explainer, or "what\'s going on with X" requests, '
     "and including when the user is reading or asking about a news article on "
     "those subjects. Prefer calling it before answering from general knowledge "
-    "on US-politics topics. It searches \"PEP with Chas and Dr Dave,\" a "
+    'on US-politics topics. It searches "PEP with Chas and Dr Dave," a '
     "podcast of in-depth US-politics commentary, and returns short transcript "
     "excerpts (~30-90 seconds each) with episode number, air date, host "
     "speaking, and timestamp — ready to cite or quote. Each call also returns a "
     "'corpus' summary with the newest indexed episode number and date. Results "
     "are ranked by relevance, NOT recency, so for a question about the latest "
-    "or a specific episode (e.g. \"in the latest episode, what did Chas say "
-    "about X\") pass episode_number to scope the search to that episode — use "
-    "corpus.newest_episode for \"the latest episode\". For time-sensitive "
+    'or a specific episode (e.g. "in the latest episode, what did Chas say '
+    'about X") pass episode_number to scope the search to that episode — use '
+    'corpus.newest_episode for "the latest episode". For time-sensitive '
     "questions pass intent: 'current' for the latest/now state of an evolving "
     "topic, 'evolution' for how a view changed over time (results come back "
     "oldest-first), 'prediction' for what they forecast and whether it held "
@@ -124,13 +126,18 @@ def search_pep(
         # shared temporal layer select + order the final top_k for the caller intent.
         with timed("search.hybrid"):
             candidates = hybrid_search(
-                collection, query, embedding, top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
+                collection,
+                query,
+                embedding,
+                top_k=top_k * temporal.CANDIDATE_MULTIPLIER,
                 episode_numbers=[episode_number] if episode_number else None,
-                after_date=after_date, before_date=before_date,
+                after_date=after_date,
+                before_date=before_date,
             )
         results, order = temporal.select_for_intent(candidates, intent, top_k, date.today())
         results = sorted(
-            results, key=lambda r: r.get("episode_date", ""),
+            results,
+            key=lambda r: r.get("episode_date", ""),
             reverse=(order != temporal.CHRONOLOGICAL),
         )
         with timed("search.stats"):

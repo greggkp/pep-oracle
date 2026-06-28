@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pep_oracle.chunking import (
@@ -13,23 +13,27 @@ def _make_episode() -> Episode:
     return Episode(
         guid="test-guid",
         title="TEST (Ep 1, 1 Jan)",
-        pub_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        pub_date=datetime(2026, 1, 1, tzinfo=UTC),
         audio_url="https://example.com/test.mp3",
         description="Test",
         episode_number=1,
     )
 
 
-def _timed_segments(count: int, duration_each: float = 13.0, gap: float = 0.5) -> list[TranscriptSegment]:
+def _timed_segments(
+    count: int, duration_each: float = 13.0, gap: float = 0.5
+) -> list[TranscriptSegment]:
     """Generate evenly-spaced timed segments."""
     segments = []
     t = 0.0
     for i in range(count):
-        segments.append(TranscriptSegment(
-            text=f"Segment {i} with some words to fill space.",
-            start_time=t,
-            end_time=t + duration_each,
-        ))
+        segments.append(
+            TranscriptSegment(
+                text=f"Segment {i} with some words to fill space.",
+                start_time=t,
+                end_time=t + duration_each,
+            )
+        )
         t += duration_each + gap
     return segments
 
@@ -83,7 +87,7 @@ def test_chunks_have_overlap():
         words_a = set(chunks[i].text.split())
         words_b = set(chunks[i + 1].text.split())
         overlap = words_a & words_b
-        assert len(overlap) > 0, f"Chunks {i} and {i+1} have no overlap"
+        assert len(overlap) > 0, f"Chunks {i} and {i + 1} have no overlap"
 
 
 def test_chunk_metadata():
@@ -144,11 +148,13 @@ def test_pause_boundary_preferred():
     segments = []
     t = 0.0
     for i in range(40):
-        segments.append(TranscriptSegment(
-            text=f"Segment {i}.",
-            start_time=t,
-            end_time=t + 10.0,
-        ))
+        segments.append(
+            TranscriptSegment(
+                text=f"Segment {i}.",
+                start_time=t,
+                end_time=t + 10.0,
+            )
+        )
         # Insert a 5-second gap at segment 18 (around the 4-min mark)
         gap = 5.0 if i == 18 else 0.5
         t += 10.0 + gap

@@ -1,6 +1,8 @@
 """Tests for the FastAPI server's product surface (no GUI): /health, /version,
 the MCP mount gating, the bearer wrapper, and the Lambda handler."""
 
+import contextlib
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -31,12 +33,26 @@ def test_version_reports_corpus_when_manifest_loads(tmp_path, monkeypatch):
     from pep_oracle import corpus
 
     corpus.write_artifact(
-        [{"chunk_id": "a", "text": "x", "embedding": [1.0, 0.0],
-          "metadata": {"episode_number": 251, "episode_date": "2026-04-01",
-                       "episode_guid": "g", "episode_title": "t",
-                       "start_time": 0.0, "end_time": 1.0}}],
-        dest=str(tmp_path), version="v0042",
-        embed_model="amazon.titan-embed-text-v2:0", dims=2, git_sha="s",
+        [
+            {
+                "chunk_id": "a",
+                "text": "x",
+                "embedding": [1.0, 0.0],
+                "metadata": {
+                    "episode_number": 251,
+                    "episode_date": "2026-04-01",
+                    "episode_guid": "g",
+                    "episode_title": "t",
+                    "start_time": 0.0,
+                    "end_time": 1.0,
+                },
+            }
+        ],
+        dest=str(tmp_path),
+        version="v0042",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
         built_at="2026-06-01T06:14:00+00:00",
     )
     monkeypatch.setattr(server._config, "CORPUS_URI", str(tmp_path))
@@ -91,15 +107,13 @@ def test_mount_builds_oauth_store_from_config(tmp_path, monkeypatch):
 
     monkeypatch.setenv("PEP_ORACLE_PUBLIC_URL", "https://pep-oracle.example")
     monkeypatch.setenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", "1")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)          # don't touch ~/.pep-oracle
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)  # don't touch ~/.pep-oracle
     monkeypatch.setattr(config, "OAUTH_STORE", "sqlite")
     monkeypatch.setattr(server.oauth, "register_oauth_routes", fake_register)
     monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
 
-    try:
+    with contextlib.suppress(_Stop):
         server.mount_mcp_if_configured(FastAPI())
-    except _Stop:
-        pass
 
     store = captured["store"]
     # a store object, NOT a path string:
@@ -152,10 +166,8 @@ def test_mount_cognito_gate_skips_upstream_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(server.oauth, "register_oauth_routes", fake_register)
     monkeypatch.setattr(server, "_resolve_signing_key", lambda: "k")
 
-    try:
+    with contextlib.suppress(_Stop):
         server.mount_mcp_if_configured(FastAPI())
-    except _Stop:
-        pass
     assert isinstance(captured["gate"], authorize_gate.CognitoGate)
 
 
@@ -204,8 +216,7 @@ def _apigw_v2_event(method="GET", path="/health"):
         "headers": {"host": "test.example", "content-length": "0"},
         "requestContext": {
             "domainName": "test.example",
-            "http": {"method": method, "path": path, "protocol": "HTTP/1.1",
-                     "sourceIp": "1.2.3.4"},
+            "http": {"method": method, "path": path, "protocol": "HTTP/1.1", "sourceIp": "1.2.3.4"},
             "stage": "$default",
             "requestId": "req-1",
         },
