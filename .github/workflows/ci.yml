@@ -41,3 +41,21 @@ jobs:
         run: |
           docker build -f Dockerfile -t pep-oracle:ci .
           docker build -f Dockerfile.ingest -t pep-oracle-ingest:ci .
+      - name: Run Trivy vulnerability scanner on serving image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'pep-oracle:ci'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+      - name: Run Trivy vulnerability scanner on ingest image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'pep-oracle-ingest:ci'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
