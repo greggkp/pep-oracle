@@ -26,6 +26,8 @@ jobs:
           pip install -r infra/requirements.txt
       - name: Ruff
         run: uv run ruff check .
+      - name: Mypy
+        run: uv run mypy src
       - name: Pytest (root)
         run: uv run pytest -q
       - name: Pytest (infra)

@@ -31,12 +31,16 @@ def _find_pause_boundary(
     best_gap = 0.0
 
     for i in range(lo, hi + 1):
-        if i >= len(segments) or segments[i].start_time is None:
+        if i >= len(segments):
+            continue
+        st = segments[i].start_time
+        if st is None:
             continue
         prev = segments[i - 1]
-        if prev.end_time is None:
+        pt = prev.end_time
+        if pt is None:
             continue
-        gap = segments[i].start_time - prev.end_time
+        gap = st - pt
         if gap > best_gap:
             best_gap = gap
             best_idx = i
@@ -111,7 +115,7 @@ def _chunk_by_time(
     segments: list[TranscriptSegment],
     episode: Episode,
 ) -> list[Chunk]:
-    chunks = []
+    chunks: list[Chunk] = []
     chunk_start_idx = 0
 
     while chunk_start_idx < len(segments):
@@ -165,7 +169,7 @@ def _chunk_by_words(
     if not all_words:
         return []
 
-    chunks = []
+    chunks: list[Chunk] = []
     word_start = 0
 
     while word_start < len(all_words):

@@ -325,7 +325,7 @@ def register_oauth_routes(
             callback_uri = f"{issuer}{CALLBACK_PATH}"
             logger.info("authorize: redirecting to identity provider for client_id=%s", client_id)
             return RedirectResponse(
-                url=gate.login_redirect(redirect_uri=callback_uri, login_state=login_state),
+                url=gate.login_redirect(redirect_uri=callback_uri, login_state=login_state),  # type: ignore[attr-defined]
                 status_code=302,
             )
         return _issue_code_and_redirect(
@@ -440,7 +440,7 @@ def register_oauth_routes(
                 # This route is only registered when requires_identity() is True,
                 # i.e. for CognitoGate, which is the only gate exposing
                 # exchange_and_verify (kept off the minimal AuthorizeGate Protocol).
-                gate.exchange_and_verify(code=cognito_code, redirect_uri=callback_uri)
+                gate.exchange_and_verify(code=cognito_code, redirect_uri=callback_uri)  # type: ignore[attr-defined]
             except IdentityError:
                 logger.warning("authorize callback: identity verification failed")
                 return _err(403, "access_denied", "identity verification failed")

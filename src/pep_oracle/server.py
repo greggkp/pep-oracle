@@ -134,11 +134,13 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     parsed = urlparse(public_url)
     if parsed.hostname:
         ts = mcp.settings.transport_security
+        assert ts is not None
         if parsed.hostname not in ts.allowed_hosts:
             ts.allowed_hosts = [*ts.allowed_hosts, parsed.hostname]
         public_origin = f"{parsed.scheme}://{parsed.hostname}"
         if public_origin not in ts.allowed_origins:
             ts.allowed_origins = [*ts.allowed_origins, public_origin]
+    assert mcp.settings.transport_security is not None
     mcp.settings.transport_security.enable_dns_rebinding_protection = False
     # Build the streamable app once to create the session-manager template (it captures
     # the MCP server app, the stateless flag, and the transport-security settings).
@@ -204,7 +206,8 @@ def _code_version() -> tuple[str, str]:
 @app.get("/version")
 async def api_version():
     semver, sha = _code_version()
-    out = {"code_semver": semver, "code_git_sha": sha}
+    import typing
+    out: dict[str, typing.Any] = {"code_semver": semver, "code_git_sha": sha}
     try:
         version, manifest = _corpus.load_manifest(_config.CORPUS_URI)
         out.update(
