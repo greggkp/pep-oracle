@@ -55,6 +55,8 @@ Expect `corpus_version` to advance (e.g. v0002) and `corpus_episode_range` max t
 
 **Selection is newest-forward** (default): the run only ingests numbered episodes *newer* than the corpus's current max episode number. Old back-catalogue gaps and unnumbered "EXTRA" bonus episodes are skipped on purpose — otherwise a single permanent gap would make every daily run a fragile, hours-long all-or-nothing job (publish is one atomic flip after the whole loop, so any mid-run failure → nothing published). So a verify run normally processes just the one newest episode (quick + cheap).
 
+Each publish also writes a prebuilt BM25 index sidecar (`corpus/vNNNN.bm25.zst`, ~6 MB at the current corpus size) next to the parquet — a serving cold-start optimization; a failure to write it only logs a warning and never blocks the publish. See [prebuilt-bm25-index.md](prebuilt-bm25-index.md).
+
 ## 4. Cut over (only after step 3 succeeds)
 On the OptiPlex:
 ```bash

@@ -290,3 +290,159 @@ def test_current_corpus_keeps_cache_after_ttl_if_version_unchanged(tmp_path, mon
     clock["t"] = 400.0  # past TTL, but no new version published
     c2 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
     assert c2 is c1  # same object — version unchanged, no reload
+
+
+# --- prebuilt BM25 index sidecar ------------------------------------------
+
+from pep_oracle.lexical import build_bm25  # noqa: E402
+
+
+def _index_rows():
+    return [
+        _row("a", "byrd rule reconciliation senate vote", 251, [1.0, 0.0]),
+        _row("b", "tariffs and trade policy day 2", 252, [0.0, 1.0]),
+        _row("c", "weather sports and chit chat", 253, [0.5, 0.5]),
+    ]
+
+
+def _write(tmp_path, rows, version="v0001"):
+    corpus.write_artifact(
+        rows,
+        dest=str(tmp_path),
+        version=version,
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
+        built_at="t",
+    )
+
+
+def test_write_artifact_emits_bm25_sidecar(tmp_path):
+    _write(tmp_path, _index_rows())
+    sidecar = tmp_path / "corpus" / "v0001.bm25.zst"
+    assert sidecar.exists()
+    assert sidecar.read_bytes().startswith(corpus._INDEX_MAGIC)
+    # Manifest + current.json shape is unchanged (no index keys leaked in).
+    cur = json.loads((tmp_path / "corpus" / "current.json").read_text())
+    assert set(cur) == {"version", "sha256", "manifest_url"}
+
+
+def test_serialize_deserialize_roundtrip_scores_identical(tmp_path):
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    sha = json.loads((tmp_path / "corpus" / "current.json").read_text())["sha256"]
+    blob = (tmp_path / "corpus" / "v0001.bm25.zst").read_bytes()
+    idx = corpus._deserialize_index(blob, parquet_sha=sha, chunk_count=len(rows))
+    fresh = build_bm25([r["text"] for r in rows])
+    from pep_oracle.lexical import normalize_numbers
+
+    for q in ["byrd rule", "tariffs day two", "weather"]:
+        assert idx.scores(normalize_numbers(q)) == fresh.scores(normalize_numbers(q))
+
+
+def test_load_current_attaches_and_roundtrips_prebuilt(tmp_path):
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    c = corpus.load_current(str(tmp_path))
+    assert c.prebuilt_bm25 is not None
+    assert c.count() == c.prebuilt_bm25.N
+    fresh = build_bm25(list(c.docs))
+    from pep_oracle.lexical import normalize_numbers
+
+    for q in ["byrd rule", "tariffs"]:
+        assert c.prebuilt_bm25.scores(normalize_numbers(q)) == fresh.scores(normalize_numbers(q))
+
+
+def test_load_current_falls_back_when_sidecar_missing(tmp_path, monkeypatch):
+    _hybrid._CACHE.clear()
+    _serving_config(monkeypatch)
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    (tmp_path / "corpus" / "v0001.bm25.zst").unlink()  # simulate a pre-index artifact
+    c = corpus.load_current(str(tmp_path))
+    assert c.prebuilt_bm25 is None
+    res = hybrid_search(c, "byrd rule", [1.0, 0.0], top_k=1)
+    assert res[0]["chunk_id"] == "a"  # retrieval still correct via rebuild
+
+
+def test_load_current_rejects_stale_or_corrupt_sidecar(tmp_path):
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    sidecar = tmp_path / "corpus" / "v0001.bm25.zst"
+
+    # (a) stale: an index whose embedded parquet_sha256 no longer matches.
+    stale = corpus._serialize_index(rows, "some-other-parquet-sha")
+    sidecar.write_bytes(stale)
+    assert corpus.load_current(str(tmp_path)).prebuilt_bm25 is None
+
+    # (b) corrupt: random bytes (bad magic) and a truncated valid frame.
+    sidecar.write_bytes(b"not a real index frame at all")
+    assert corpus.load_current(str(tmp_path)).prebuilt_bm25 is None
+    good = corpus._serialize_index(
+        rows, json.loads((tmp_path / "corpus" / "current.json").read_text())["sha256"]
+    )
+    sidecar.write_bytes(good[: len(good) // 2])
+    assert corpus.load_current(str(tmp_path)).prebuilt_bm25 is None
+
+    # (c) valid magic + valid zstd, but the decompressed payload is not JSON
+    # (exercises the json.loads-raises path, distinct from the zstd-raises path).
+    import struct
+
+    import pyarrow as pa
+
+    payload = b"this is not json"
+    bad_json = (
+        corpus._INDEX_MAGIC
+        + struct.pack("<Q", len(payload))
+        + pa.compress(payload, codec="zstd").to_pybytes()
+    )
+    sidecar.write_bytes(bad_json)
+    assert corpus.load_current(str(tmp_path)).prebuilt_bm25 is None
+
+
+def test_empty_corpus_writes_no_sidecar(tmp_path):
+    _write(tmp_path, [])
+    assert not (tmp_path / "corpus" / "v0001.bm25.zst").exists()
+    assert corpus.load_current(str(tmp_path)).prebuilt_bm25 is None
+
+
+def test_write_artifact_tolerates_serialize_failure(tmp_path, monkeypatch):
+    # A serialize/upload failure must NOT block the publish (serving rebuilds).
+    monkeypatch.setattr(
+        corpus, "_serialize_index", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    manifest = corpus.write_artifact(
+        _index_rows(),
+        dest=str(tmp_path),
+        version="v0001",
+        embed_model="amazon.titan-embed-text-v2:0",
+        dims=2,
+        git_sha="s",
+        built_at="t",
+    )
+    assert manifest.chunk_count == 3
+    assert (tmp_path / "corpus" / "current.json").exists()  # flip still happened
+    assert not (tmp_path / "corpus" / "v0001.bm25.zst").exists()
+    assert corpus.load_current(str(tmp_path)).prebuilt_bm25 is None  # serving falls back
+
+
+def test_ttl_swap_adopts_new_versions_prebuilt_index(tmp_path, monkeypatch):
+    # On a TTL version swap the freshly loaded corpus must carry its OWN prebuilt
+    # index (not a stale one), so the post-swap search uses it.
+    _serving_config(monkeypatch)
+    corpus.reset_serving_cache()
+    _hybrid._CACHE.clear()
+    _publish(tmp_path, "v0001", 251, "byrd rule reconciliation")
+
+    clock = {"t": 0.0}
+    c1 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c1.prebuilt_bm25 is not None and c1.version == "v0001"
+
+    _publish(tmp_path, "v0002", 252, "tariffs trade policy")
+    clock["t"] = 400.0  # past TTL → swap
+    c2 = corpus.current_corpus(str(tmp_path), ttl_seconds=300, now=lambda: clock["t"])
+    assert c2 is not c1 and c2.version == "v0002"
+    assert c2.prebuilt_bm25 is not None and c2.count() == c2.prebuilt_bm25.N
+
+    res = hybrid_search(c2, "tariffs", [1.0, 0.0], top_k=1)
+    assert res[0]["episode_number"] == 252
