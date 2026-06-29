@@ -1,3 +1,5 @@
+import pytest
+
 import pep_oracle.corpus as corpus
 import pep_oracle.hybrid as hybrid
 from pep_oracle.hybrid import hybrid_search
@@ -178,3 +180,70 @@ def test_cache_keys_on_version_not_just_name():
 
     assert ra[0]["chunk_id"] == "a"
     assert rb[0]["chunk_id"] == "b"  # not stale 'a' from a name-only cache key
+
+
+# --- prebuilt BM25 index adoption -----------------------------------------
+
+
+def test_uses_prebuilt_index_and_skips_rebuild(tmp_path, monkeypatch):
+    """A corpus carrying a prebuilt index must be used WITHOUT calling build_bm25,
+    and must rank identically to the rebuild path."""
+    chunks = [
+        _chunk("a", "the byrd rule reconciliation senate vote"),
+        _chunk("b", "weather sports and general chit chat"),
+    ]
+    embeddings = [[1.0, 0.0], [0.0, 1.0]]
+    col = _corpus(tmp_path, chunks, embeddings)  # load_current attaches prebuilt_bm25
+    assert col.prebuilt_bm25 is not None
+
+    hybrid._CACHE.clear()
+    monkeypatch.setattr(
+        hybrid,
+        "build_bm25",
+        lambda *a, **k: pytest.fail("build_bm25 called despite prebuilt index"),
+    )
+    # Two calls: the first populates the (name, version) cache; the second must
+    # reuse it. Neither may rebuild (build_bm25 is rigged to fail above).
+    res = hybrid_search(col, "byrd rule", [1.0, 0.0], top_k=1)
+    assert res[0]["chunk_id"] == "a"
+    res2 = hybrid_search(col, "byrd rule", [1.0, 0.0], top_k=1)
+    assert res2[0]["chunk_id"] == "a"
+
+
+def test_falls_back_to_build_when_no_prebuilt(tmp_path):
+    """A directly-constructed corpus (prebuilt_bm25=None) ranks via rebuild."""
+    from pep_oracle.corpus import InMemoryCorpus
+
+    hybrid._CACHE.clear()
+    meta = {
+        "episode_number": 1,
+        "episode_date": "2026-01-01",
+        "episode_guid": "g1",
+        "episode_title": "Ep 1",
+        "start_time": 0.0,
+        "end_time": 1.0,
+    }
+    col = InMemoryCorpus(["a"], ["byrd rule reconciliation"], [[1.0, 0.0]], [meta], version="v0001")
+    assert col.prebuilt_bm25 is None
+    res = hybrid_search(col, "byrd rule", [1.0, 0.0], top_k=1)
+    assert res[0]["chunk_id"] == "a"
+
+
+def test_stale_prebuilt_count_triggers_rebuild(tmp_path, monkeypatch):
+    """A prebuilt index whose N disagrees with the corpus count is ignored (the
+    defense-in-depth guard), and search rebuilds and still returns correct results."""
+    chunks = [_chunk("a", "byrd rule reconciliation"), _chunk("b", "tariffs trade")]
+    col = _corpus(tmp_path, chunks, [[1.0, 0.0], [0.0, 1.0]])
+    col.prebuilt_bm25.N = 999  # corrupt the adopted index's size
+    hybrid._CACHE.clear()
+    built = {"n": 0}
+    real_build = hybrid.build_bm25
+
+    def _counting_build(docs):
+        built["n"] += 1
+        return real_build(docs)
+
+    monkeypatch.setattr(hybrid, "build_bm25", _counting_build)
+    res = hybrid_search(col, "byrd rule", [1.0, 0.0], top_k=1)
+    assert built["n"] == 1  # rebuilt rather than trusting the mismatched index
+    assert res[0]["chunk_id"] == "a"

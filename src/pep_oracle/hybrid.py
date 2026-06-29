@@ -14,7 +14,7 @@ revisit if it grows.
 
 import numpy as np
 
-from pep_oracle.lexical import BM25, normalize_numbers
+from pep_oracle.lexical import build_bm25, normalize_numbers
 from pep_oracle.store import SENTINEL_NO_TIME
 from pep_oracle.timing import timed
 
@@ -51,10 +51,20 @@ def _load_corpus(collection) -> dict:
     if count == 0:
         embeddings = embeddings.reshape(0, 0)
     norms = np.linalg.norm(embeddings, axis=1)
-    # BM25 build (tokenize every doc + idf/tf) is a cache-miss-only cost paid on
-    # cold start and on each corpus-version swap — timed to size it on the cold path.
-    with timed("hybrid.bm25_build", chunks=count):
-        bm25 = BM25([normalize_numbers(d or "") for d in docs])
+    # Prefer the artifact's prebuilt BM25 index (decoded in corpus.load_current) so
+    # the cold start skips the ~2.7s rebuild. Fall back to building from docs when
+    # the corpus carries no index (older artifact, rejected/stale index, or a
+    # directly-constructed corpus). hybrid.bm25_build appearing in logs is therefore
+    # an ops signal that no usable prebuilt index was present. The N==count guard is
+    # defense-in-depth on top of the validation already done at decode time.
+    prebuilt = getattr(collection, "prebuilt_bm25", None)
+    if prebuilt is not None and count == prebuilt.N:
+        bm25 = prebuilt
+    else:
+        # BM25 build (tokenize every doc + idf/tf) is a cache-miss-only cost paid on
+        # cold start and on each corpus-version swap — timed to size it on the cold path.
+        with timed("hybrid.bm25_build", chunks=count):
+            bm25 = build_bm25(docs)
     corpus = {
         "count": count,
         "ids": got["ids"],

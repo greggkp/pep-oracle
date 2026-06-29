@@ -1,4 +1,28 @@
-from pep_oracle.lexical import BM25, normalize_numbers, tokenize
+import json
+
+import pytest
+
+from pep_oracle.lexical import (
+    BM25,
+    BM25_CODE_FINGERPRINT,
+    BM25_INDEX_FORMAT,
+    build_bm25,
+    normalize_numbers,
+    tokenize,
+)
+
+_DOCS = [
+    "trump said something about the byrd rule reconciliation",
+    "trump talked about trade and tariffs",
+    "weather sports and general chit chat",
+    "day 2 of the senate hearing on immigration",
+    "",  # empty doc — must survive round-trip
+]
+_QUERIES = ["byrd", "trump tariffs", "day two immigration", "absent xyzzy", "trade"]
+
+
+def _scores(bm, q):
+    return bm.scores(normalize_numbers(q))
 
 
 def test_tokenize():
@@ -45,3 +69,83 @@ def test_bm25_empty_and_missing_terms():
     bm = BM25(["hello world"])
     assert bm.scores("absent") == [0.0]
     assert BM25([]).scores("x") == []
+
+
+# --- serialization (prebuilt index) ---------------------------------------
+
+
+def test_bm25_to_dict_from_dict_scores_identical():
+    bm = BM25([normalize_numbers(d) for d in _DOCS])
+    rebuilt = BM25.from_dict(bm.to_dict())
+    for q in _QUERIES:
+        # EXACT equality: the reconstructed index must score bit-identically.
+        assert _scores(bm, q) == _scores(rebuilt, q)
+
+
+def test_bm25_from_dict_survives_json_roundtrip():
+    # Proves plain-dict tf + IEEE-double round-trip through JSON, the path the
+    # corpus sidecar actually takes.
+    bm = build_bm25(_DOCS)
+    rebuilt = BM25.from_dict(json.loads(json.dumps(bm.to_dict())))
+    for q in _QUERIES:
+        assert _scores(bm, q) == _scores(rebuilt, q)
+
+
+def test_build_bm25_matches_manual_and_handles_none():
+    docs = ["trump tariffs", None, "byrd rule"]
+    expected = BM25([normalize_numbers(d or "") for d in docs])
+    got = build_bm25(docs)
+    for q in _QUERIES:
+        assert _scores(got, q) == _scores(expected, q)
+
+
+def test_bm25_empty_corpus_roundtrip():
+    bm = build_bm25([])
+    d = bm.to_dict()
+    assert d["N"] == 0
+    rebuilt = BM25.from_dict(json.loads(json.dumps(d)))
+    assert rebuilt.scores("anything") == []
+
+
+def test_bm25_from_dict_rejects_bad_index_format():
+    d = build_bm25(_DOCS).to_dict()
+    d["index_format"] = BM25_INDEX_FORMAT + 1
+    with pytest.raises(ValueError, match="index_format"):
+        BM25.from_dict(d)
+
+
+def test_bm25_from_dict_rejects_fingerprint_mismatch():
+    d = build_bm25(_DOCS).to_dict()
+    d["code_fingerprint"] = "0" * 16  # as if built by different tokenizer/scoring code
+    with pytest.raises(ValueError, match="fingerprint"):
+        BM25.from_dict(d)
+
+
+def test_bm25_from_dict_rejects_n_mismatch():
+    bm = build_bm25(_DOCS)
+    with pytest.raises(ValueError, match="expected"):
+        BM25.from_dict(bm.to_dict(), expected_n=len(_DOCS) + 1)
+    # Internal length inconsistency is also rejected.
+    d = bm.to_dict()
+    d["doclen"] = d["doclen"][:-1]
+    with pytest.raises(ValueError, match="length mismatch"):
+        BM25.from_dict(d)
+
+
+def test_code_fingerprint_is_stable_and_present():
+    # Available in a normal (non-stripped) checkout, and deterministic across calls.
+    from pep_oracle.lexical import _compute_code_fingerprint
+
+    assert BM25_CODE_FINGERPRINT is not None
+    assert _compute_code_fingerprint() == BM25_CODE_FINGERPRINT
+
+
+def test_bm25_from_dict_rejects_when_fingerprint_unavailable(monkeypatch):
+    # Stripped/zipped deploy: inspect.getsource fails → BM25_CODE_FINGERPRINT is
+    # None → every prebuilt index is rejected (fail closed → serving rebuilds).
+    import pep_oracle.lexical as lex
+
+    d = build_bm25(_DOCS).to_dict()
+    monkeypatch.setattr(lex, "BM25_CODE_FINGERPRINT", None)
+    with pytest.raises(ValueError, match="unavailable"):
+        BM25.from_dict(d)

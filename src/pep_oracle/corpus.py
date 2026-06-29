@@ -17,6 +17,8 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
+import struct
 import threading
 import time
 
@@ -27,7 +29,16 @@ import pyarrow.parquet as pq
 from pep_oracle import _storage as storage
 from pep_oracle import config
 from pep_oracle.config import CHROMA_COLLECTION
+from pep_oracle.lexical import BM25, build_bm25
 from pep_oracle.timing import timed
+
+log = logging.getLogger(__name__)
+
+# Self-describing frame for the prebuilt BM25 index sidecar (corpus/vNNNN.bm25.zst):
+#   8-byte MAGIC + uint64-LE uncompressed-length + zstd(json of BM25 state).
+# The MAGIC lets a reader reject a wrong/garbage object before decompressing; the
+# length is required by pa.decompress for zstd (the raw frame carries no size).
+_INDEX_MAGIC = b"PEPBM25\x00"
 
 
 @dataclasses.dataclass
@@ -67,6 +78,60 @@ def _episode_range(rows: list[dict]) -> list:
     return [nums[0], nums[-1]] if nums else [None, None]
 
 
+def _serialize_index(rows: list[dict], parquet_sha: str) -> bytes:
+    """Build the BM25 index over the rows' text and pack it as the sidecar frame.
+    Embeds the parquet sha256 + chunk_count so the loader can PROVE the index was
+    built from the exact parquet it is serving (and reject a stale one)."""
+    state = build_bm25([r["text"] for r in rows]).to_dict()
+    state["parquet_sha256"] = parquet_sha
+    state["chunk_count"] = len(rows)
+    jb = json.dumps(state).encode("utf-8")
+    comp = pa.compress(jb, codec="zstd").to_pybytes()
+    return _INDEX_MAGIC + struct.pack("<Q", len(jb)) + comp
+
+
+def _deserialize_index(data: bytes, *, parquet_sha: str, chunk_count: int) -> BM25 | None:
+    """Inverse of `_serialize_index`, with provenance validation. Returns a ready
+    BM25, or None if the bytes are not a valid index for THIS parquet (caller then
+    rebuilds). Raises only on genuinely corrupt frames (caught one level up)."""
+    if not data.startswith(_INDEX_MAGIC):
+        return None
+    (n,) = struct.unpack("<Q", data[8:16])
+    jb = pa.decompress(data[16:], decompressed_size=n, codec="zstd", asbytes=True)
+    state = json.loads(jb)
+    # Provenance coupling: the index must have been built from this exact parquet.
+    if state.get("parquet_sha256") != parquet_sha or state.get("chunk_count") != chunk_count:
+        return None
+    return BM25.from_dict(state, expected_n=chunk_count)
+
+
+def _load_prebuilt_index(
+    prefix: str, version: str, *, parquet_sha: str, chunk_count: int
+) -> BM25 | None:
+    """Fetch + validate the prebuilt BM25 sidecar for a corpus version. Returns the
+    index, or None on ANY doubt (absent sidecar from an older artifact, stale,
+    corrupt, or built by a different code version) — the serving path then rebuilds.
+    Correctness over latency: a wrong index must never silently mis-score."""
+    if chunk_count == 0:
+        return None
+    try:
+        with timed("corpus.index_download"):
+            data = storage.get_bytes(f"{prefix}/{version}.bm25.zst")
+    except Exception:  # noqa: BLE001 — absent sidecar (pre-index artifact) → rebuild
+        return None
+    try:
+        with timed("corpus.index_decode", chunks=chunk_count):
+            idx = _deserialize_index(data, parquet_sha=parquet_sha, chunk_count=chunk_count)
+        if idx is None:
+            log.warning("prebuilt bm25 index for %s rejected (stale/mismatch); rebuilding", version)
+        return idx
+    except Exception:  # noqa: BLE001 — corrupt/garbage sidecar → rebuild
+        log.warning(
+            "prebuilt bm25 index for %s failed to decode; rebuilding", version, exc_info=True
+        )
+        return None
+
+
 def write_artifact(
     rows: list[dict],
     *,
@@ -77,7 +142,8 @@ def write_artifact(
     git_sha: str,
     built_at: str,
 ) -> Manifest:
-    """Write vNNNN.parquet + manifest, then flip current.json. Returns the Manifest."""
+    """Write vNNNN.parquet + manifest (+ prebuilt BM25 sidecar), then flip
+    current.json. Returns the Manifest."""
     data = _table_bytes(_build_table(rows))
     sha = hashlib.sha256(data).hexdigest()
     manifest = Manifest(
@@ -95,6 +161,18 @@ def write_artifact(
     manifest_uri = f"{base}/{version}.manifest.json"
     storage.put_bytes(f"{base}/{version}.parquet", data)  # immutable
     storage.put_text(manifest_uri, json.dumps(manifest.to_dict(), indent=2))  # immutable
+    if rows:
+        # Prebuilt lexical index — a pure serving-latency optimization. Write it
+        # under the immutable version key BEFORE the current.json flip, but never
+        # let a serialize/upload failure block the publish (serving rebuilds).
+        try:
+            storage.put_bytes(f"{base}/{version}.bm25.zst", _serialize_index(rows, sha))
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "failed to write prebuilt bm25 index for %s; serving will rebuild",
+                version,
+                exc_info=True,
+            )
     storage.put_text(  # flip LAST
         f"{base}/current.json",
         json.dumps({"version": version, "sha256": sha, "manifest_url": manifest_uri}),
@@ -108,13 +186,18 @@ class InMemoryCorpus:
     and `.get(include=[...])`. Backed by parallel lists loaded from the parquet
     artifact, so retrieval code is reused unchanged (no ChromaDB on this path)."""
 
-    def __init__(self, ids, docs, embeddings, metas, version: str | None = None):
+    def __init__(
+        self, ids, docs, embeddings, metas, version: str | None = None, prebuilt_bm25=None
+    ):
         self.name = CHROMA_COLLECTION
         self.version = version
         self.ids = ids
         self.docs = docs
         self.embeddings = embeddings
         self.metas = metas
+        # Optional prebuilt BM25 index (from the artifact sidecar); hybrid adopts it
+        # to skip the cold-start rebuild. None → hybrid builds from docs as before.
+        self.prebuilt_bm25 = prebuilt_bm25
 
     def count(self) -> int:
         return len(self.ids)
@@ -178,7 +261,13 @@ def load_current(base: str) -> InMemoryCorpus:
             f"corpus sha256 mismatch for {version}: current.json={cur['sha256']} actual={actual}"
         )
     with timed("corpus.parse", bytes=len(data)):
-        return InMemoryCorpus.from_parquet_bytes(data, version=version)
+        corpus = InMemoryCorpus.from_parquet_bytes(data, version=version)
+    # Attach the prebuilt BM25 index if the artifact ships one. The parquet sha is
+    # already verified above, so reusing cur["sha256"] for provenance is free.
+    corpus.prebuilt_bm25 = _load_prebuilt_index(
+        prefix, version, parquet_sha=cur["sha256"], chunk_count=corpus.count()
+    )
+    return corpus
 
 
 def load_manifest(base: str) -> tuple[str, Manifest]:

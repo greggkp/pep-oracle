@@ -42,13 +42,25 @@ only `search.*`, since corpus/BM25 are cached):
 | `corpus.parse_columns` | `corpus.from_parquet_bytes` | cold/refresh | ids + docs `to_pylist` |
 | `corpus.parse_embeddings` | `corpus.from_parquet_bytes` | cold/refresh | arrow→numpy float32 matrix load; `chunks=` = row count |
 | `corpus.parse_metadata` | `corpus.from_parquet_bytes` | cold/refresh | metadata `to_pylist` + per-row `json.loads` |
+| `corpus.index_download` | `corpus._load_prebuilt_index` | cold/refresh | S3 GET of the BM25 sidecar `vNNNN.bm25.zst` |
+| `corpus.index_decode` | `corpus._load_prebuilt_index` | cold/refresh | zstd decompress + `json.loads` of the prebuilt index; `chunks=` = row count |
 | `search.hybrid` | `mcp_server.search_pep` | no | candidate retrieval (cosine + BM25 + RRF) |
-| `hybrid.bm25_build` | `hybrid._load_corpus` | cold/refresh | BM25 tokenize + idf/tf; `chunks=` = row count |
+| `hybrid.bm25_build` | `hybrid._load_corpus` | cold/refresh **fallback only** | BM25 tokenize + idf/tf rebuild; `chunks=` = row count. Fires ONLY when no usable prebuilt index was loaded (pre-index artifact, or a rejected/stale index) — its appearance is an **ops signal** |
 | `search.stats` | `mcp_server.search_pep` | no | `get_ingestion_stats` (full-corpus rescan per request) |
 
-Note the `*.parse_embeddings`, `*.bm25_build`, and `corpus.*` phases also fire on
-every **TTL refresh** (a request crossing `CORPUS_REFRESH_TTL_SECONDS` onto a new
-corpus version), so they are not strictly cold-start costs.
+Note the `*.parse_embeddings`, `corpus.index_*`, `*.bm25_build`, and `corpus.*`
+phases also fire on every **TTL refresh** (a request crossing
+`CORPUS_REFRESH_TTL_SECONDS` onto a new corpus version), so they are not strictly
+cold-start costs.
+
+**Prebuilt BM25 index (2026-06-29).** The artifact now ships the BM25 index as an
+immutable per-version sidecar (`corpus/vNNNN.bm25.zst`); the serving path decodes
+it (`corpus.index_decode`, ~1s on Lambda) instead of rebuilding it
+(`hybrid.bm25_build`, ~2.67s) — a ~1.7s cold-path win that also applies on TTL
+refresh. The parquet is byte-unchanged, so `corpus.parse_read_table` does not
+regress. On a happy-path cold request you should now see `corpus.index_download` +
+`corpus.index_decode` and **no** `hybrid.bm25_build`. See
+[prebuilt-bm25-index.md](prebuilt-bm25-index.md).
 
 ## Reading it in CloudWatch
 
@@ -77,6 +89,65 @@ fields @message
 | stats avg(ms), max(ms), count() by phase
 ```
 
+## Production measurement (2026-06-28)
+
+First real read of CloudWatch after ~18 days live (serving Lambda
+`PepOracleProdStack-ServeFnBA855C13`, 2048 MB, 30 s timeout). Window: last 30
+days.
+
+**Traffic shape.** 2001 Lambda invocations, but only **5 were actual
+`/mcp` searches** (4 on 2026-06-10, 1 on 2026-06-26). The other ~1996 are
+`/health`, `/version`, `/.well-known/...`, no-token `/mcp` 401s, and OAuth —
+cheap (`avg @duration` across all invocations was 152 ms). 369 cold starts
+(~18 %), `avg Init Duration` 2.38 s, `max` 9.4 s. `max @maxMemoryUsed` 1447 MB
+of 2048 (memory is adequately sized).
+
+**Every real search was cold.** All five searches paid the full corpus load +
+BM25 build (each phase count = 5 = the `search.total` count). At this traffic
+the container always scales to zero between queries, so **the cold path is the
+only path** — there is effectively no warm search traffic. The warm-path
+vectorized-cosine win (warm `search.hybrid` ~18 ms, local) is real but never
+reaches a user here.
+
+Cold `search.total` 4.4–7.0 s (avg 5.5 s). On a user's *first* query the ~2.4 s
+INIT stacks on top → ~7–9 s wall clock. Breakdown (avg over the 5, corpus
+6020→6139 chunks):
+
+| phase | avg ms | note |
+|-------|-------:|------|
+| `search.total` | 5503 | end-to-end |
+| `search.hybrid` | 2755 | dominated by ↓ |
+| **`hybrid.bm25_build`** | **2670** | **biggest single phase** |
+| `search.corpus_fetch` | 2594 | = load_and_validate |
+| `corpus.parse` | 1907 | dominated by ↓ |
+| **`corpus.parse_read_table`** | **1372** | **parquet zstd decode + arrow** |
+| `corpus.download` | 406 | S3 GET of parquet |
+| `search.embed` | 148 | Bedrock round-trip |
+| `corpus.parse_metadata` | 126 | |
+| `corpus.parse_columns` | 35 | |
+| `embed.client_init` | 13 | |
+| `corpus.parse_embeddings` | **8.5** | numpy load — **2026-06-10 fix confirmed in prod** |
+| `search.stats` | 3 | |
+
+**Conclusions vs. the original analysis.**
+1. The 2026-06-10 embeddings-parse optimization holds in production:
+   `corpus.parse_embeddings` is ~8 ms (was ~2.3 s). Done, verified.
+2. The cold path is now dominated by two phases the doc hadn't quantified with
+   prod data: **`hybrid.bm25_build` (~2.67 s)** and
+   **`corpus.parse_read_table` (~1.37 s)** — together ~4 s of the ~5.5 s.
+3. **Do _not_ warm the corpus/BM25 at INIT.** The corpus is lazy-loaded on first
+   search, which is why 369 cold starts only cost ~152 ms each — the
+   health-check/discovery cold starts (the overwhelming majority) never touch the
+   corpus. Warming at INIT would push that ~4 s onto every cold start, not just
+   the rare search.
+4. Highest-leverage fix: ~~**ship a prebuilt BM25 index inside the corpus
+   artifact** so a cold search skips the ~2.7 s build~~ — **done** (2026-06-29):
+   the artifact ships a `vNNNN.bm25.zst` sidecar; cold search decodes it
+   (`corpus.index_decode` ~1 s) instead of rebuilding (`hybrid.bm25_build`
+   ~2.67 s). **Next target: `corpus.parse_read_table` (~1.37 s)** — cut the
+   parquet decode (lighter compression than zstd, or split the embedding matrix
+   into its own file loaded straight to numpy).
+
 ## Decision
 
 Once the data is in, compare the dominant phase against the candidate fixes:
@@ -90,8 +161,11 @@ Once the data is in, compare the dominant phase against the candidate fixes:
   this also unlocks warm-path cosine vectorization~~ — **done** (2026-06-10):
   parse dropped ~2.3s→~0.1s and warm `search.hybrid` ~390ms→~18ms (6,020 chunks,
   local measurement).
-- `hybrid.bm25_build` dominates → ship a prebuilt index in the artifact, or
-  build it lazily off the request path.
+- `hybrid.bm25_build` dominates → ~~ship a prebuilt index in the artifact, or
+  build it lazily off the request path~~ — **done** (2026-06-29): prebuilt index
+  shipped as the `vNNNN.bm25.zst` sidecar (`corpus.index_decode` replaces the
+  build on the happy path). `hybrid.bm25_build` now firing at all means the
+  prebuilt index was missing or rejected — investigate.
 - `corpus.*` / `bm25_build` show up on otherwise-warm requests → that's the TTL
   refresh paying inline; consider refreshing in the background.
 - Both heavy corpus phases dominate → also consider warming the corpus + BM25 in
