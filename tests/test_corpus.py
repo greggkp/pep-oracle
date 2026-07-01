@@ -446,3 +446,104 @@ def test_ttl_swap_adopts_new_versions_prebuilt_index(tmp_path, monkeypatch):
 
     res = hybrid_search(c2, "tariffs", [1.0, 0.0], top_k=1)
     assert res[0]["episode_number"] == 252
+
+
+# --- prebuilt embedding-matrix sidecar --------------------------------------
+
+import numpy as np  # noqa: E402
+
+
+def test_write_artifact_emits_emb_sidecar(tmp_path):
+    _write(tmp_path, _index_rows())
+    sidecar = tmp_path / "corpus" / "v0001.emb.zst"
+    assert sidecar.exists()
+    assert sidecar.read_bytes().startswith(corpus._EMB_MAGIC)
+    # Parquet + manifest + current.json are byte-shape unchanged (rollback inert).
+    cur = json.loads((tmp_path / "corpus" / "current.json").read_text())
+    assert set(cur) == {"version", "sha256", "manifest_url"}
+
+
+def test_emb_serialize_deserialize_roundtrip_exact(tmp_path):
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    sha = json.loads((tmp_path / "corpus" / "current.json").read_text())["sha256"]
+    blob = (tmp_path / "corpus" / "v0001.emb.zst").read_bytes()
+    mat = corpus._deserialize_embeddings(blob, parquet_sha=sha)
+    expected = np.asarray([r["embedding"] for r in rows], dtype=np.float32)
+    assert mat.shape == expected.shape and mat.dtype == np.float32
+    assert np.array_equal(mat, expected)  # bit-exact, not approximate
+
+
+def test_load_current_uses_emb_sidecar_and_matches_parquet_path(tmp_path, monkeypatch):
+    _hybrid._CACHE.clear()
+    _serving_config(monkeypatch)
+    rows = _index_rows()
+    _write(tmp_path, rows)
+
+    with_sidecar = corpus.load_current(str(tmp_path))
+    (tmp_path / "corpus" / "v0001.emb.zst").unlink()  # simulate a pre-sidecar artifact
+    from_parquet = corpus.load_current(str(tmp_path))
+
+    # Same corpus either way: the sidecar is a pure decode-path optimization.
+    assert with_sidecar.ids == from_parquet.ids
+    assert with_sidecar.docs == from_parquet.docs
+    assert with_sidecar.metas == from_parquet.metas
+    assert np.array_equal(np.asarray(with_sidecar.embeddings), np.asarray(from_parquet.embeddings))
+    # The sidecar matrix is a read-only frombuffer view; the full retrieval path
+    # (cosine + BM25 + RRF) must work on it unchanged.
+    res = hybrid_search(with_sidecar, "byrd rule", [1.0, 0.0], top_k=1)
+    assert res[0]["chunk_id"] == "a"
+
+
+def test_load_current_rejects_stale_or_corrupt_emb_sidecar(tmp_path):
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    sidecar = tmp_path / "corpus" / "v0001.emb.zst"
+    expected = np.asarray([r["embedding"] for r in rows], dtype=np.float32)
+
+    # (a) stale: matrix whose embedded parquet sha no longer matches.
+    sidecar.write_bytes(corpus._serialize_embeddings(rows, "0" * 64))
+    assert np.array_equal(np.asarray(corpus.load_current(str(tmp_path)).embeddings), expected)
+
+    # (b) corrupt: bad magic, then a truncated valid frame.
+    sidecar.write_bytes(b"definitely not an embeddings frame")
+    assert np.array_equal(np.asarray(corpus.load_current(str(tmp_path)).embeddings), expected)
+    sha = json.loads((tmp_path / "corpus" / "current.json").read_text())["sha256"]
+    good = corpus._serialize_embeddings(rows, sha)
+    sidecar.write_bytes(good[: len(good) // 2])
+    assert np.array_equal(np.asarray(corpus.load_current(str(tmp_path)).embeddings), expected)
+
+
+def test_emb_sidecar_row_count_mismatch_falls_back_to_column(tmp_path):
+    # A frame that passes the sha check but carries the wrong number of rows must
+    # be rejected by the parse-time row-count guard, which then re-reads the
+    # embedding column it originally skipped.
+    rows = _index_rows()
+    _write(tmp_path, rows)
+    sha = json.loads((tmp_path / "corpus" / "current.json").read_text())["sha256"]
+    short = corpus._serialize_embeddings(rows[:2], sha)  # valid frame, 2 rows not 3
+    (tmp_path / "corpus" / "v0001.emb.zst").write_bytes(short)
+    c = corpus.load_current(str(tmp_path))
+    expected = np.asarray([r["embedding"] for r in rows], dtype=np.float32)
+    assert np.array_equal(np.asarray(c.embeddings), expected)
+
+
+def test_empty_corpus_writes_no_emb_sidecar(tmp_path):
+    _write(tmp_path, [])
+    assert not (tmp_path / "corpus" / "v0001.emb.zst").exists()
+    assert corpus.load_current(str(tmp_path)).count() == 0
+
+
+def test_write_artifact_tolerates_emb_serialize_failure(tmp_path, monkeypatch):
+    # An embeddings-sidecar failure must NOT block the publish or the BM25 sidecar.
+    monkeypatch.setattr(
+        corpus,
+        "_serialize_embeddings",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    _write(tmp_path, _index_rows())
+    assert (tmp_path / "corpus" / "current.json").exists()  # flip still happened
+    assert (tmp_path / "corpus" / "v0001.bm25.zst").exists()  # bm25 unaffected
+    assert not (tmp_path / "corpus" / "v0001.emb.zst").exists()
+    c = corpus.load_current(str(tmp_path))  # serving falls back to the column
+    assert c.count() == 3 and c.prebuilt_bm25 is not None

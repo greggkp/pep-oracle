@@ -40,7 +40,9 @@ only `search.*`, since corpus/BM25 are cached):
 | `corpus.parse` | `corpus.load_current` | cold/refresh | `bytes=` = parquet size |
 | `corpus.parse_read_table` | `corpus.from_parquet_bytes` | cold/refresh | parquet decode (zstd decompress + arrow buffers) |
 | `corpus.parse_columns` | `corpus.from_parquet_bytes` | cold/refresh | ids + docs `to_pylist` |
-| `corpus.parse_embeddings` | `corpus.from_parquet_bytes` | cold/refresh | arrow→numpy float32 matrix load; `chunks=` = row count |
+| `corpus.parse_embeddings` | `corpus.from_parquet_bytes` | cold/refresh **fallback only** | arrow→numpy float32 matrix load from the parquet column; `chunks=` = row count. Fires ONLY when no usable prebuilt embeddings sidecar loaded — like `hybrid.bm25_build`, its appearance on a non-empty corpus is an **ops signal** |
+| `corpus.emb_download` | `corpus._load_prebuilt_embeddings` | cold/refresh | S3 GET of the embedding-matrix sidecar `vNNNN.emb.zst` |
+| `corpus.emb_decode` | `corpus._load_prebuilt_embeddings` | cold/refresh | zstd decompress + `np.frombuffer` of the prebuilt float32 matrix; `bytes=` = frame size |
 | `corpus.parse_metadata` | `corpus.from_parquet_bytes` | cold/refresh | metadata `to_pylist` + per-row `json.loads` |
 | `corpus.index_download` | `corpus._load_prebuilt_index` | cold/refresh | S3 GET of the BM25 sidecar `vNNNN.bm25.zst` |
 | `corpus.index_decode` | `corpus._load_prebuilt_index` | cold/refresh | zstd decompress + `json.loads` of the prebuilt index; `chunks=` = row count |
@@ -61,6 +63,20 @@ refresh. The parquet is byte-unchanged, so `corpus.parse_read_table` does not
 regress. On a happy-path cold request you should now see `corpus.index_download` +
 `corpus.index_decode` and **no** `hybrid.bm25_build`. See
 [prebuilt-bm25-index.md](prebuilt-bm25-index.md).
+
+**Prebuilt embedding matrix (2026-07-01).** Same sidecar pattern, applied to the
+embedding column: the artifact ships `corpus/vNNNN.emb.zst` (raw row-major float32
++ zstd, parquet-sha provenance in the frame). When it loads, `from_parquet_bytes`
+reads only the `chunk_id`/`text`/`metadata` columns — parquet is columnar, so the
+embedding column's pages (the bulk of the file's decode cost, the
+`corpus.parse_read_table` ~1.37s prod phase) are never touched — and the matrix
+comes from `np.frombuffer` on the decompressed sidecar (`corpus.emb_decode`).
+Fallbacks stack: absent/stale/corrupt sidecar or a row-count mismatch at parse
+time → decode the parquet column exactly as before (`corpus.parse_embeddings`
+firing is the ops signal). The parquet stays byte-unchanged (rollback inert). On a
+happy-path cold request you should now see `corpus.emb_download` +
+`corpus.emb_decode`, a much smaller `corpus.parse_read_table`, and **no**
+`corpus.parse_embeddings`.
 
 ## Reading it in CloudWatch
 
@@ -144,9 +160,13 @@ INIT stacks on top → ~7–9 s wall clock. Breakdown (avg over the 5, corpus
    artifact** so a cold search skips the ~2.7 s build~~ — **done** (2026-06-29):
    the artifact ships a `vNNNN.bm25.zst` sidecar; cold search decodes it
    (`corpus.index_decode` ~1 s) instead of rebuilding (`hybrid.bm25_build`
-   ~2.67 s). **Next target: `corpus.parse_read_table` (~1.37 s)** — cut the
-   parquet decode (lighter compression than zstd, or split the embedding matrix
-   into its own file loaded straight to numpy).
+   ~2.67 s). ~~Next target: `corpus.parse_read_table` (~1.37 s)~~ — **done**
+   (2026-07-01): the `vNNNN.emb.zst` sidecar carries the embedding matrix, so
+   the parse skips the embedding column (see above). Re-measure in prod; the
+   expected next targets are `corpus.index_decode` (~1 s of JSON decode — a
+   binary BM25 encoding would cut it) and the ~2.4 s Lambda INIT, which now
+   bounds the floor (a scheduled warmer that exercises the search path is the
+   only way a user gets a warm search at this traffic level).
 
 ## Decision
 
