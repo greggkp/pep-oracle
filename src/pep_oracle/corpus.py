@@ -40,6 +40,15 @@ log = logging.getLogger(__name__)
 # length is required by pa.decompress for zstd (the raw frame carries no size).
 _INDEX_MAGIC = b"PEPBM25\x00"
 
+# Frame for the prebuilt embedding-matrix sidecar (corpus/vNNNN.emb.zst):
+#   8-byte MAGIC + <QII> (raw byte length, rows, dims) + 64-byte ascii parquet
+#   sha256 hex + zstd(row-major float32 matrix bytes).
+# Same provenance idea as the BM25 sidecar: the embedded sha proves the matrix
+# was built from the exact parquet being served, so the serving path can skip
+# decoding the parquet's embedding column (the bulk of its decode cost).
+_EMB_MAGIC = b"PEPEMBF\x00"
+_EMB_HEADER_LEN = 8 + struct.calcsize("<QII") + 64
+
 
 @dataclasses.dataclass
 class Manifest:
@@ -103,6 +112,66 @@ def _deserialize_index(data: bytes, *, parquet_sha: str, chunk_count: int) -> BM
     if state.get("parquet_sha256") != parquet_sha or state.get("chunk_count") != chunk_count:
         return None
     return BM25.from_dict(state, expected_n=chunk_count)
+
+
+def _serialize_embeddings(rows: list[dict], parquet_sha: str) -> bytes:
+    """Pack the rows' embeddings as a raw float32 matrix in the sidecar frame.
+    Embeds the parquet sha256 so the loader can PROVE the matrix came from the
+    exact parquet it is serving (a stale one would silently mis-rank everything)."""
+    mat = np.asarray([r["embedding"] for r in rows], dtype=np.float32)
+    if mat.ndim != 2:
+        raise ValueError(f"embeddings are not a uniform matrix (shape {mat.shape})")
+    raw = mat.tobytes(order="C")
+    comp = pa.compress(raw, codec="zstd").to_pybytes()
+    header = struct.pack("<QII", len(raw), mat.shape[0], mat.shape[1])
+    return _EMB_MAGIC + header + parquet_sha.encode("ascii") + comp
+
+
+def _deserialize_embeddings(data: bytes, *, parquet_sha: str) -> np.ndarray | None:
+    """Inverse of `_serialize_embeddings`, with provenance validation. Returns the
+    (N x dims) float32 matrix (read-only view — the serving path never writes it),
+    or None if the bytes are not a valid matrix for THIS parquet (caller then falls
+    back to the parquet's embedding column)."""
+    if not data.startswith(_EMB_MAGIC) or len(data) < _EMB_HEADER_LEN:
+        return None
+    raw_len, rows, dims = struct.unpack("<QII", data[8 : _EMB_HEADER_LEN - 64])
+    sha = data[_EMB_HEADER_LEN - 64 : _EMB_HEADER_LEN].decode("ascii", errors="replace")
+    if sha != parquet_sha or raw_len != rows * dims * 4:
+        return None
+    raw = pa.decompress(
+        data[_EMB_HEADER_LEN:], decompressed_size=raw_len, codec="zstd", asbytes=True
+    )
+    if len(raw) != raw_len:
+        return None
+    return np.frombuffer(raw, dtype=np.float32).reshape(rows, dims)
+
+
+def _load_prebuilt_embeddings(prefix: str, version: str, *, parquet_sha: str) -> np.ndarray | None:
+    """Fetch + validate the prebuilt embedding-matrix sidecar for a corpus version.
+    Returns the matrix, or None on ANY doubt (absent from an older artifact, stale,
+    corrupt) — the parse path then decodes the parquet's embedding column as before.
+    Correctness over latency: a wrong matrix must never silently mis-rank."""
+    try:
+        with timed("corpus.emb_download"):
+            data = storage.get_bytes(f"{prefix}/{version}.emb.zst")
+    except Exception:  # noqa: BLE001 — absent sidecar (pre-sidecar artifact) → parquet path
+        return None
+    try:
+        with timed("corpus.emb_decode", bytes=len(data)):
+            mat = _deserialize_embeddings(data, parquet_sha=parquet_sha)
+        if mat is None:
+            log.warning(
+                "prebuilt embeddings for %s rejected (stale/mismatch); using parquet column",
+                version,
+            )
+        return mat
+    except Exception:  # noqa: BLE001 — corrupt/garbage sidecar → parquet path
+        log.warning(
+            "prebuilt embeddings for %s failed to decode; using parquet column",
+            version,
+            exc_info=True,
+        )
+        return None
 
 
 def _load_prebuilt_index(
@@ -173,6 +242,16 @@ def write_artifact(
                 version,
                 exc_info=True,
             )
+        # Prebuilt embedding matrix — same contract: immutable, pre-flip, and a
+        # failure never blocks the publish (serving decodes the parquet column).
+        try:
+            storage.put_bytes(f"{base}/{version}.emb.zst", _serialize_embeddings(rows, sha))
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "failed to write prebuilt embeddings for %s; serving will use the parquet column",
+                version,
+                exc_info=True,
+            )
     storage.put_text(  # flip LAST
         f"{base}/current.json",
         json.dumps({"version": version, "sha256": sha, "manifest_url": manifest_uri}),
@@ -217,31 +296,62 @@ class InMemoryCorpus:
         return out
 
     @classmethod
-    def from_parquet_bytes(cls, data: bytes, version: str | None = None) -> InMemoryCorpus:
+    def from_parquet_bytes(
+        cls,
+        data: bytes,
+        version: str | None = None,
+        prebuilt_embeddings: np.ndarray | None = None,
+    ) -> InMemoryCorpus:
         # use_threads=False: arrow sizes its decode pool from os.cpu_count(), which on
         # Lambda reports the host's cores while the function only holds ~1 vCPU of
         # cgroup quota — the extra threads exhaust the quota early in each scheduling
         # period and stall (in-Lambda read_table measured 3.3s vs ~60ms local,
         # 2026-06-10, v1.2.2 sub-phase timing). Single-threaded is also faster locally
         # at this file size (~66ms vs ~158ms; thread coordination outweighs the gain).
+        #
+        # With a validated prebuilt embedding matrix (the .emb.zst sidecar), skip the
+        # embedding column entirely — it dominates the parquet's decode cost. Parquet
+        # is columnar, so a column subset never touches the skipped column's pages.
+        want = ["chunk_id", "text", "metadata"] if prebuilt_embeddings is not None else None
         with timed("corpus.parse_read_table", bytes=len(data)):
-            table = pq.read_table(io.BytesIO(data), use_threads=False)
+            table = pq.read_table(io.BytesIO(data), use_threads=False, columns=want)
         with timed("corpus.parse_columns", chunks=table.num_rows):
             ids = table.column("chunk_id").to_pylist()
             docs = table.column("text").to_pylist()
-        # Load embeddings as one (N x dims) float32 numpy matrix, near-zero-copy from
-        # arrow. The previous to_pylist() exploded the column into ~N*dims Python float
-        # objects and dominated cold-start / refresh CPU (see docs cold-path measurement).
-        with timed("corpus.parse_embeddings", chunks=table.num_rows):
-            if table.num_rows:
-                flat = table.column("embedding").combine_chunks().flatten()
-                embeddings = (
-                    flat.to_numpy(zero_copy_only=False)
-                    .astype(np.float32, copy=False)
-                    .reshape(table.num_rows, -1)
-                )
-            else:
-                embeddings = np.zeros((0, 0), dtype=np.float32)
+        if prebuilt_embeddings is not None and len(prebuilt_embeddings) != table.num_rows:
+            # Belt-and-braces on top of the sidecar's sha256 provenance check: a
+            # matrix of the wrong height can never be served. Fall back to the column.
+            log.warning(
+                "prebuilt embeddings row count %d != parquet rows %d; using parquet column",
+                len(prebuilt_embeddings),
+                table.num_rows,
+            )
+            prebuilt_embeddings = None
+        if prebuilt_embeddings is not None:
+            embeddings = prebuilt_embeddings
+        else:
+            # Load embeddings as one (N x dims) float32 numpy matrix, near-zero-copy
+            # from arrow. The previous to_pylist() exploded the column into ~N*dims
+            # Python float objects and dominated cold-start / refresh CPU (see docs
+            # cold-path measurement). With the sidecar shipped this branch firing on
+            # a non-empty corpus is an ops signal (sidecar absent/rejected).
+            with timed("corpus.parse_embeddings", chunks=table.num_rows):
+                if table.num_rows:
+                    col = (
+                        table.column("embedding")
+                        if "embedding" in table.column_names
+                        else pq.read_table(
+                            io.BytesIO(data), use_threads=False, columns=["embedding"]
+                        ).column("embedding")
+                    )
+                    flat = col.combine_chunks().flatten()
+                    embeddings = (
+                        flat.to_numpy(zero_copy_only=False)
+                        .astype(np.float32, copy=False)
+                        .reshape(table.num_rows, -1)
+                    )
+                else:
+                    embeddings = np.zeros((0, 0), dtype=np.float32)
         with timed("corpus.parse_metadata", chunks=table.num_rows):
             metas = [json.loads(m) for m in table.column("metadata").to_pylist()]
         return cls(ids, docs, embeddings, metas, version=version)
@@ -260,10 +370,13 @@ def load_current(base: str) -> InMemoryCorpus:
         raise ValueError(
             f"corpus sha256 mismatch for {version}: current.json={cur['sha256']} actual={actual}"
         )
+    # Fetch the prebuilt embedding matrix BEFORE parsing: with a valid sidecar the
+    # parse skips the parquet's embedding column (its dominant decode cost). The
+    # parquet sha is already verified above, so cur["sha256"] proves provenance.
+    emb = _load_prebuilt_embeddings(prefix, version, parquet_sha=cur["sha256"])
     with timed("corpus.parse", bytes=len(data)):
-        corpus = InMemoryCorpus.from_parquet_bytes(data, version=version)
-    # Attach the prebuilt BM25 index if the artifact ships one. The parquet sha is
-    # already verified above, so reusing cur["sha256"] for provenance is free.
+        corpus = InMemoryCorpus.from_parquet_bytes(data, version=version, prebuilt_embeddings=emb)
+    # Attach the prebuilt BM25 index if the artifact ships one.
     corpus.prebuilt_bm25 = _load_prebuilt_index(
         prefix, version, parquet_sha=cur["sha256"], chunk_count=corpus.count()
     )
