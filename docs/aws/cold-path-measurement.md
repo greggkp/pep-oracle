@@ -167,6 +167,23 @@ INIT stacks on top → ~7–9 s wall clock. Breakdown (avg over the 5, corpus
    binary BM25 encoding would cut it) and the ~2.4 s Lambda INIT, which now
    bounds the floor (a scheduled warmer that exercises the search path is the
    only way a user gets a warm search at this traffic level).
+5. **Prod re-measure after both sidecars (2026-07-19).** Both are adopted
+   (`hybrid.bm25_build` never fires; `corpus.parse_embeddings` gone), but
+   true-cold `search.total` stayed ~5.2–6.4 s: `corpus.parse_read_table` is
+   still **2.6–3.4 s on a genuinely cold container even with the embedding
+   column pruned**. The bottleneck is not decode CPU but **container-image lazy
+   loading**: the identical column-pruned read is 175–480 ms in the Fargate
+   ingest and was 463 ms on a Lambda container that had already served ~15
+   requests since INIT — first-touch page faults into pyarrow's code/data pages
+   dominate. Column pruning therefore can't help a true cold start, and the
+   doc's remaining micro-targets (`index_decode`, INIT trim) would shave only
+   ~1–1.5 s off ~8 s. → **Scheduled warmer implemented (2026-07-19)**: an
+   EventBridge rule (`ServeWarmSchedule`, rate 4 min) direct-invokes the Lambda
+   with `{"pep_oracle_warm": true}`; `server.handler` routes the sentinel to an
+   in-process `search_pep` call (`warm.search` timing phase) so the container,
+   its lazily loaded corpus + prebuilt index, and the 5-min TTL refresh are all
+   kept off the user path. No public route, no auth surface, ~$0.10/month of
+   Lambda time. Observed warm `search.total` is ~150–250 ms.
 
 ## Decision
 

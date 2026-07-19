@@ -224,11 +224,43 @@ def _apigw_v2_event(method="GET", path="/health"):
     }
 
 
-def test_lambda_handler_is_constructed():
-    """server.handler is a Mangum ASGI adapter wrapping the FastAPI app, so the
-    same app runs under uvicorn locally and Lambda in prod."""
-    assert server.handler is not None
-    assert server.handler.__class__.__name__ == "Mangum"
+def test_lambda_handler_delegates_http_events_to_mangum():
+    """server.handler routes HTTP events to the Mangum adapter wrapping the FastAPI
+    app, so the same app runs under uvicorn locally and Lambda in prod."""
+    assert server._mangum_handler is not None
+    assert server._mangum_handler.__class__.__name__ == "Mangum"
+    r = server.handler(_apigw_v2_event(path="/health"), None)
+    assert r["statusCode"] == 200
+
+
+def test_lambda_handler_routes_warm_event_to_search(monkeypatch):
+    """The EventBridge warmer sentinel must run the real search path in-process
+    (never Mangum), so the lazy corpus/index load is paid by the warmer."""
+    from pep_oracle import mcp_server
+
+    calls = []
+
+    def fake_search(query, top_k=5, **kwargs):
+        calls.append((query, top_k))
+        return {"corpus": {"newest_episode": 268}, "results": []}
+
+    monkeypatch.setattr(mcp_server, "search_pep", fake_search)
+    out = server.handler({server.WARM_EVENT_KEY: True}, None)
+    assert out == {"warmed": True, "newest_episode": 268}
+    assert calls == [(server.WARM_QUERY, 1)]
+
+
+def test_lambda_handler_warm_search_failure_propagates(monkeypatch):
+    """A broken search path must surface as a Lambda invocation error (visible in
+    metrics), not a silently 'successful' warm."""
+    from pep_oracle import mcp_server
+
+    def broken_search(query, top_k=5, **kwargs):
+        raise RuntimeError("corpus unavailable")
+
+    monkeypatch.setattr(mcp_server, "search_pep", broken_search)
+    with pytest.raises(RuntimeError, match="corpus unavailable"):
+        server.handler({server.WARM_EVENT_KEY: True}, None)
 
 
 def test_mcp_mount_survives_warm_mangum_reinvocation(monkeypatch, tmp_path):
