@@ -18,6 +18,8 @@ from aws_cdk import aws_apigatewayv2_integrations as apigw_integrations
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
+from aws_cdk import aws_cloudwatch as cloudwatch
+from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_events as events
@@ -28,9 +30,18 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as route53_targets
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subs
 from constructs import Construct
 
 from pep_oracle_infra.config import DeployConfig
+
+# Warmer cadence: under the 5-minute corpus TTL so a refresh is normally absorbed by a
+# warm invocation rather than a user's search.
+WARM_INTERVAL_MINUTES = Duration.minutes(4)
+# Floor for the "warming stopped" alarm: the warmer alone yields 15/hour at a 4-minute
+# cadence, so 10 leaves room for a missed tick or a clock-boundary split.
+WARM_MIN_INVOCATIONS_PER_HOUR = 10
 
 
 class PepOracleProdStack(Stack):
@@ -194,10 +205,10 @@ class PepOracleProdStack(Stack):
         # route, no auth surface. Do NOT warm at INIT instead: the corpus must stay
         # lazy so health/discovery cold starts remain cheap (see
         # docs/aws/cold-path-measurement.md).
-        events.Rule(
+        warm_rule = events.Rule(
             self,
             "ServeWarmSchedule",
-            schedule=events.Schedule.rate(Duration.minutes(4)),
+            schedule=events.Schedule.rate(WARM_INTERVAL_MINUTES),
             targets=[
                 targets.LambdaFunction(
                     self.fn,
@@ -205,6 +216,79 @@ class PepOracleProdStack(Stack):
                 )
             ],
         )
+
+        # --- Monitoring / alerting ---
+        # Own topic rather than the ingest stack's: the two stacks are deliberately
+        # decoupled (see the external-resource imports in ingest_stack) so deploying
+        # one never redeploys the other.
+        serve_alerts = sns.Topic(self, "ServeAlerts", display_name="pep-oracle serving alerts")
+        serve_alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
+
+        # 1) The warmer's search raised (broken corpus/index/Bedrock path). server.handler
+        #    lets warm-search exceptions propagate precisely so they land here — Mangum
+        #    swallows HTTP-request errors into 500s, so this metric is a clean warmer
+        #    signal rather than ordinary request noise.
+        errors_alarm = cloudwatch.Alarm(
+            self,
+            "ServeFnErrorsAlarm",
+            metric=self.fn.metric_errors(period=Duration.minutes(15), statistic="Sum"),
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "pep-oracle serving Lambda raised — most likely the scheduled warmer's "
+                "search failed (corpus, prebuilt index, or Bedrock). Users would fall "
+                "back to cold searches. Check the ServeFn logs for warm.search."
+            ),
+        )
+        errors_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
+
+        # 2) Warming stopped silently (rule disabled/deleted, or invocations never
+        #    arrive). The warmer alone guarantees 60/WARM_INTERVAL invocations an hour
+        #    independent of user traffic, so a count well under that means it stalled.
+        #    Missing data is itself the failure here, hence BREACHING.
+        warm_stopped_alarm = cloudwatch.Alarm(
+            self,
+            "ServeWarmStoppedAlarm",
+            metric=self.fn.metric_invocations(period=Duration.hours(1), statistic="Sum"),
+            threshold=WARM_MIN_INVOCATIONS_PER_HOUR,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            alarm_description=(
+                f"Fewer than {WARM_MIN_INVOCATIONS_PER_HOUR} serving-Lambda invocations in "
+                f"an hour — the {WARM_INTERVAL_MINUTES.to_minutes()}-minute warmer should "
+                "alone produce ~"
+                f"{60 // WARM_INTERVAL_MINUTES.to_minutes()}. Warming has likely stopped, so "
+                "every user search pays the ~6s cold path."
+            ),
+        )
+        warm_stopped_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
+
+        # 3) EventBridge could not deliver to the Lambda at all (e.g. throttled against
+        #    the account's concurrency=10) — invisible to both alarms above.
+        warm_failed_alarm = cloudwatch.Alarm(
+            self,
+            "ServeWarmFailedInvocationsAlarm",
+            metric=cloudwatch.Metric(
+                namespace="AWS/Events",
+                metric_name="FailedInvocations",
+                dimensions_map={"RuleName": warm_rule.rule_name},
+                period=Duration.minutes(15),
+                statistic="Sum",
+            ),
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "EventBridge failed to invoke the serving Lambda for the warm schedule "
+                "(e.g. throttling against the account concurrency limit)."
+            ),
+        )
+        warm_failed_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
+        self.serve_alerts_topic = serve_alerts
 
         # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this
         # account blocks public (auth=NONE) function URLs, and AWS_IAM/OAC would sign the
