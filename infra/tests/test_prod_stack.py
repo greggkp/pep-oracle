@@ -254,3 +254,21 @@ def test_lambda_has_semver_env():
             }
         ),
     )
+
+
+def test_warmer_schedule_invokes_lambda_with_sentinel():
+    # Scheduled warmer: rate(4 min) direct-invokes the serving Lambda with the
+    # pep_oracle_warm sentinel so one container keeps its lazily loaded corpus +
+    # prebuilt index resident (every real search is otherwise a cold start).
+    t = _template()
+    t.has_resource_properties(
+        "AWS::Events::Rule",
+        Match.object_like(
+            {
+                "ScheduleExpression": "rate(4 minutes)",
+                "Targets": Match.array_with(
+                    [Match.object_like({"Input": '{"pep_oracle_warm":true}'})]
+                ),
+            }
+        ),
+    )

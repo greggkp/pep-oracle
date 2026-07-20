@@ -20,6 +20,8 @@ from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_events as events
+from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_lambda as lambda_
@@ -182,6 +184,26 @@ class PepOracleProdStack(Stack):
                     f"arn:aws:ssm:{cfg.compute_region}:{self.account}:parameter{cfg.signing_ssm_param}"
                 ],
             )
+        )
+
+        # Scheduled warmer: at this traffic level every real search lands on a cold
+        # container (~8 s wall: INIT + lazy corpus/index load). Invoking the real
+        # search path every 4 min keeps one container and its resident corpus warm
+        # and absorbs the 5-min corpus TTL refresh, for well under $1/month. The
+        # sentinel event is routed by server.handler before Mangum — no public
+        # route, no auth surface. Do NOT warm at INIT instead: the corpus must stay
+        # lazy so health/discovery cold starts remain cheap (see
+        # docs/aws/cold-path-measurement.md).
+        events.Rule(
+            self,
+            "ServeWarmSchedule",
+            schedule=events.Schedule.rate(Duration.minutes(4)),
+            targets=[
+                targets.LambdaFunction(
+                    self.fn,
+                    event=events.RuleTargetInput.from_object({"pep_oracle_warm": True}),
+                )
+            ],
         )
 
         # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this

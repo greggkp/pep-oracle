@@ -261,7 +261,35 @@ def _make_lambda_handler():
     return Mangum(_McpSlashNormalizer(app))
 
 
-handler = _make_lambda_handler()
+_mangum_handler = _make_lambda_handler()
+
+# Sentinel key in the EventBridge warmer's invocation payload (see the prod stack's
+# ServeWarmSchedule rule). Direct Lambda invoke, so no public route or auth surface.
+WARM_EVENT_KEY = "pep_oracle_warm"
+WARM_QUERY = "current federal politics"
+
+
+def _run_warm_search() -> dict:
+    """Execute one real search so every lazy cold-path cost — corpus download +
+    parse, prebuilt-index decode, Bedrock client init — is paid here instead of on
+    a user's first query, and the container (with its resident corpus) stays warm.
+    Also absorbs the periodic corpus TTL refresh. Exceptions propagate so a broken
+    search path surfaces as Lambda invocation errors, not silent cold users."""
+    from pep_oracle.mcp_server import search_pep
+    from pep_oracle.timing import timed
+
+    with timed("warm.search"):
+        out = search_pep(WARM_QUERY, top_k=1)
+    return {"warmed": True, "newest_episode": out["corpus"]["newest_episode"]}
+
+
+def handler(event, context=None):
+    """Lambda entrypoint: routes the EventBridge warmer sentinel to the in-process
+    search path; every other event is an HTTP request for Mangum."""
+    if isinstance(event, dict) and event.get(WARM_EVENT_KEY):
+        return _run_warm_search()
+    assert _mangum_handler is not None, "mangum is required for HTTP Lambda events"
+    return _mangum_handler(event, context)
 
 
 def main():
