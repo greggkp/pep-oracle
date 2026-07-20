@@ -185,6 +185,29 @@ INIT stacks on top → ~7–9 s wall clock. Breakdown (avg over the 5, corpus
    kept off the user path. No public route, no auth surface, ~$0.10/month of
    Lambda time. Observed warm `search.total` is ~150–250 ms.
 
+   **Confirmed in prod on v1.3.7 (2026-07-20).** First warmer firing after the
+   rule was created paid the whole cold path — `warm.search` 5797.9 ms
+   (`parse_read_table` 3258 ms, `index_decode` 624 ms, `emb_decode` 302 ms,
+   `search.embed` 134 ms) — and the next firing 4 min later returned in
+   **162.4 ms with `search.corpus_fetch` 0.0 ms**, i.e. the corpus and prebuilt
+   index stayed resident across firings. That 5.8 s → 162 ms is exactly the cost
+   a user's first query used to pay.
+
+   Alarms (prod stack, own `ServeAlerts` SNS topic — kept separate from the
+   ingest stack's so the two stacks stay independently deployable) cover the
+   three ways warming dies without anyone noticing:
+   - Lambda `Errors` > 0 / 15 min — the warm search raised (corpus, index, or
+     Bedrock). `server.handler` lets warm-search exceptions propagate precisely
+     so they surface here; Mangum swallows ordinary request errors into 500s, so
+     this stays a clean warmer signal rather than request noise.
+   - Lambda `Invocations` < 10 / hour, `treat_missing_data=BREACHING` — the rule
+     was disabled or deleted. The warmer alone yields ~15/hour independent of
+     user traffic, and *no datapoints at all* is itself the failure, hence
+     BREACHING rather than the usual NOT_BREACHING.
+   - EventBridge `FailedInvocations` > 0 / 15 min — delivery never reached the
+     Lambda (e.g. throttling against the account's concurrency limit of 10),
+     which neither alarm above would see.
+
 ## Decision
 
 Once the data is in, compare the dominant phase against the candidate fixes:

@@ -272,3 +272,58 @@ def test_warmer_schedule_invokes_lambda_with_sentinel():
             }
         ),
     )
+
+
+def test_serving_alerts_topic_has_email_subscription():
+    # Serving alarms notify via their own topic, not the ingest stack's, so the two
+    # stacks stay independently deployable.
+    t = _template()
+    t.has_resource_properties(
+        "AWS::SNS::Subscription",
+        Match.object_like({"Protocol": "email", "Endpoint": "me@example.com"}),
+    )
+
+
+def test_warmer_alarms_present_and_wired_to_topic():
+    # Three failure modes: the warm search raises; warming silently stops (no/too few
+    # invocations); EventBridge can't deliver at all.
+    t = _template()
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "Errors",
+                "Namespace": "AWS/Lambda",
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Threshold": 0,
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "Invocations",
+                "Namespace": "AWS/Lambda",
+                "ComparisonOperator": "LessThanThreshold",
+                "Threshold": 10,
+                # Missing data must page: no datapoints is exactly the stalled case.
+                "TreatMissingData": "breaching",
+                "Period": 3600,
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "FailedInvocations",
+                "Namespace": "AWS/Events",
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Threshold": 0,
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
