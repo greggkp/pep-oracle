@@ -31,21 +31,36 @@ from pep_oracle_infra.config import DeployConfig
 MODAL_TOKEN_ID_PARAM = "/pep-oracle/modal-token-id"
 MODAL_TOKEN_SECRET_PARAM = "/pep-oracle/modal-token-secret"
 
-# CloudWatch namespace for the corpus-freshness metric the stale-check Lambda emits.
+# CloudWatch namespace for the corpus-freshness metrics the stale-check Lambda emits.
 METRIC_NAMESPACE = "PepOracle/Ingest"
-# Alarm if no new corpus version has been published in this many hours. The podcast
-# publishes ~weekly, so a daily/28h threshold would false-positive on every normal
-# gap; 10 days clears a normal week (plus slack) but catches a genuinely stalled feed.
-CORPUS_STALE_THRESHOLD_HOURS = 240
+# Alarm if a numbered episode has sat in the feed un-ingested for this many hours.
+# The signal is corpus lag *behind the feed*, NOT absolute corpus age: the podcast
+# publishes irregularly and can go on hiatus for weeks, during which an age-based
+# alarm sits in permanent ALARM and trains you to ignore it. Lag is 0 whenever the
+# corpus has every numbered episode the feed offers, however old the corpus is.
+# The ingest job runs daily, so 48h clears one missed/failed run plus slack.
+INGEST_LAG_THRESHOLD_HOURS = 48
+# Feed the ingest job pulls from; mirrors pep_oracle.config.RSS_FEED_URL.
+RSS_FEED_URL = "https://feeds.libsyn.com/249335/rss"
 
-# Inline stale-check Lambda: read corpus/current.json -> the version manifest's
-# built_at -> publish the corpus age (hours) as a CloudWatch metric. A CloudWatch
-# alarm on that metric (below) emails when the corpus goes stale.
+# Inline stale-check Lambda: compare the corpus manifest's episode_range against the
+# live RSS feed and publish two CloudWatch metrics:
+#   CorpusAgeHours  — hours since the corpus was built (observability only, no alarm:
+#                     it climbs forever during a podcast hiatus, which is not a fault).
+#   IngestLagHours  — hours since the OLDEST numbered feed episode the corpus lacks was
+#                     published, or 0 when the corpus is caught up. This is the alarmed
+#                     metric: it only rises when ingestion is genuinely falling behind.
+# Episode selection mirrors the job's newest-forward rule (numbered episodes above the
+# corpus max), so the known back-catalogue gap and unnumbered EXTRAs never trip it.
 _STALE_CHECK_CODE = """
 import datetime
+import email.utils
 import json
 import os
+import re
 import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 
 import boto3
 
@@ -53,6 +68,31 @@ _s3 = boto3.client("s3")
 _cw = boto3.client("cloudwatch")
 BUCKET = os.environ["CORPUS_BUCKET"]
 NAMESPACE = os.environ["METRIC_NAMESPACE"]
+FEED_URL = os.environ["RSS_FEED_URL"]
+
+# Mirrors pep_oracle.feed.EPISODE_NUMBER_RE (English + Spanish title formats).
+EPISODE_NUMBER_RE = re.compile(r"\\((?:Ep|Episodio)\\s*(\\d+)", re.IGNORECASE)
+
+
+def _pending_episodes(corpus_max):
+    \"\"\"(number, published_at) for numbered feed episodes newer than the corpus max.\"\"\"
+    req = urllib.request.Request(FEED_URL, headers={"User-Agent": "pep-oracle-stale-check"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        root = ET.fromstring(resp.read())
+    pending = []
+    for item in root.iterfind("./channel/item"):
+        title = (item.findtext("title") or "").strip()
+        match = EPISODE_NUMBER_RE.search(title)
+        if not match:
+            continue  # unnumbered EXTRA: never selected newest-forward
+        number = int(match.group(1))
+        if corpus_max is not None and number <= corpus_max:
+            continue
+        pubdate = item.findtext("pubDate")
+        if not pubdate:
+            continue
+        pending.append((number, email.utils.parsedate_to_datetime(pubdate)))
+    return pending
 
 
 def handler(event, context):
@@ -68,11 +108,33 @@ def handler(event, context):
         built = built.replace(tzinfo=datetime.timezone.utc)
     now = datetime.datetime.now(datetime.timezone.utc)
     age_hours = (now - built).total_seconds() / 3600.0
+
+    episode_range = manifest.get("episode_range") or [None, None]
+    corpus_max = episode_range[1]
+    pending = _pending_episodes(corpus_max)
+    if pending:
+        # Oldest pending episode: lag measures how long ingestion has been behind,
+        # not how recently the podcast published.
+        oldest = min(pending, key=lambda pair: pair[0])[1]
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=datetime.timezone.utc)
+        lag_hours = max((now - oldest).total_seconds() / 3600.0, 0.0)
+    else:
+        lag_hours = 0.0
+
     _cw.put_metric_data(
         Namespace=NAMESPACE,
-        MetricData=[{"MetricName": "CorpusAgeHours", "Value": age_hours, "Unit": "Count"}],
+        MetricData=[
+            {"MetricName": "CorpusAgeHours", "Value": age_hours, "Unit": "Count"},
+            {"MetricName": "IngestLagHours", "Value": lag_hours, "Unit": "Count"},
+        ],
     )
-    return {"version": cur.get("version"), "age_hours": age_hours}
+    return {
+        "version": cur.get("version"),
+        "age_hours": age_hours,
+        "lag_hours": lag_hours,
+        "pending_episodes": sorted(number for number, _ in pending),
+    }
 """
 
 
@@ -192,6 +254,20 @@ class PepOracleIngestStack(Stack):
         # --- Monitoring / alerting ---
         alerts = sns.Topic(self, "IngestAlerts", display_name="pep-oracle ingest alerts")
         alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
+        # Same-account CloudWatch alarms can normally publish via SNS's implicit
+        # __default_policy_ID. Attaching ANY explicit topic policy replaces that default
+        # — and the EventBridge target below attaches one — so alarm actions silently
+        # fail with "CloudWatch Alarms is not authorized to perform: SNS:Publish" unless
+        # cloudwatch.amazonaws.com is granted back explicitly. (PepOracleProdStack's
+        # ServeAlerts topic has no EventBridge target, keeps the default, and is fine.)
+        alerts.add_to_resource_policy(
+            iam.PolicyStatement(
+                principals=[iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+                actions=["sns:Publish"],
+                resources=[alerts.topic_arn],
+                conditions={"StringEquals": {"aws:SourceAccount": self.account}},
+            )
+        )
 
         # 1) Ingest task crashed: an ECS task in this cluster STOPPED with a non-zero
         #    container exit code. (Launch failures are covered by the DLQ alarm below.)
@@ -218,17 +294,19 @@ class PepOracleIngestStack(Stack):
             )
         )
 
-        # 2) Stale corpus: a daily Lambda publishes the corpus age; alarm if too old.
+        # 2) Ingest lag: a daily Lambda diffs the corpus against the feed; alarm when a
+        #    numbered episode has gone un-ingested too long (0 during a podcast hiatus).
         stale_check = lambda_.Function(
             self,
             "CorpusStaleCheck",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="index.handler",
             code=lambda_.Code.from_inline(_STALE_CHECK_CODE),
-            timeout=Duration.seconds(30),
+            timeout=Duration.seconds(60),  # now also fetches + parses the RSS feed
             environment={
                 "CORPUS_BUCKET": cfg.corpus_bucket_name,
                 "METRIC_NAMESPACE": METRIC_NAMESPACE,
+                "RSS_FEED_URL": RSS_FEED_URL,
             },
         )
         corpus_bucket.grant_read(stale_check)
@@ -246,25 +324,28 @@ class PepOracleIngestStack(Stack):
             schedule=events.Schedule.rate(Duration.days(1)),
             targets=[targets.LambdaFunction(stale_check)],
         )
-        stale_alarm = cloudwatch.Alarm(
+        lag_alarm = cloudwatch.Alarm(
             self,
-            "CorpusStaleAlarm",
+            "IngestLagAlarm",
             metric=cloudwatch.Metric(
                 namespace=METRIC_NAMESPACE,
-                metric_name="CorpusAgeHours",
-                period=Duration.hours(6),
+                metric_name="IngestLagHours",
+                # The producer runs once a day, so the period must be a day too: a 6h
+                # period leaves 3 of every 4 windows empty, which under MISSING flaps
+                # the alarm INSUFFICIENT_DATA -> ALARM daily and re-notifies each time.
+                period=Duration.hours(24),
                 statistic="Maximum",
             ),
-            threshold=CORPUS_STALE_THRESHOLD_HOURS,
+            threshold=INGEST_LAG_THRESHOLD_HOURS,
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.MISSING,
             alarm_description=(
-                "No new corpus version published in >10 days — the ingest pipeline "
-                "appears stalled (publishes ~weekly normally)."
+                "A numbered episode has been in the feed un-ingested for >48h — the "
+                "ingest pipeline appears stalled. Stays OK through a podcast hiatus."
             ),
         )
-        stale_alarm.add_alarm_action(cw_actions.SnsAction(alerts))
+        lag_alarm.add_alarm_action(cw_actions.SnsAction(alerts))
 
         # 3) DLQ alarm: EventBridge couldn't launch the daily task.
         dlq_alarm = cloudwatch.Alarm(

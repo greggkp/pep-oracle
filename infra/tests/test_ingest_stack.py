@@ -244,18 +244,46 @@ def test_stale_corpus_lambda_and_alarm():
         "AWS::CloudWatch::Alarm",
         Match.object_like(
             {
-                "MetricName": "CorpusAgeHours",
+                "MetricName": "IngestLagHours",
                 "Namespace": "PepOracle/Ingest",
-                "Threshold": 240,
+                "Threshold": 48,
+                # Must match the once-daily producer, else the alarm flaps through
+                # INSUFFICIENT_DATA every day and re-notifies on each transition.
+                "Period": 86400,
                 "ComparisonOperator": "GreaterThanThreshold",
             }
         ),
     )
 
 
+def test_stale_check_alarms_on_feed_lag_not_corpus_age():
+    """A podcast hiatus must not page: the alarmed metric is lag behind the feed, which
+    is 0 when the corpus holds every numbered episode, however old the corpus is."""
+    t = _template()
+    alarms = t.find_resources("AWS::CloudWatch::Alarm")
+    metrics = {a["Properties"].get("MetricName") for a in alarms.values()}
+    assert "CorpusAgeHours" not in metrics
+    assert "IngestLagHours" in metrics
+
+
+def test_cloudwatch_can_publish_to_alerts_topic():
+    """The EventBridge target attaches an explicit topic policy, which REPLACES SNS's
+    implicit same-account default — so alarm actions fail with an authorization error
+    unless cloudwatch.amazonaws.com is granted publish back explicitly."""
+    t = _template()
+    policies = t.find_resources("AWS::SNS::TopicPolicy")
+    services = {
+        stmt.get("Principal", {}).get("Service")
+        for policy in policies.values()
+        for stmt in policy["Properties"]["PolicyDocument"]["Statement"]
+    }
+    assert "cloudwatch.amazonaws.com" in services
+    assert "events.amazonaws.com" in services
+
+
 def test_alarms_action_to_sns():
     t = _template()
-    # Both the stale-corpus and DLQ alarms wire their AlarmActions to the SNS topic.
+    # Both the ingest-lag and DLQ alarms wire their AlarmActions to the SNS topic.
     t.resource_count_is("AWS::CloudWatch::Alarm", 2)
     t.has_resource_properties(
         "AWS::CloudWatch::Alarm",
