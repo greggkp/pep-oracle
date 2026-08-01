@@ -277,8 +277,10 @@ def test_cloudwatch_can_publish_to_alerts_topic():
         for policy in policies.values()
         for stmt in policy["Properties"]["PolicyDocument"]["Statement"]
     }
-    assert "cloudwatch.amazonaws.com" in services
-    assert "events.amazonaws.com" in services
+    # Exact set, not `in`: an unexpected extra principal on an alerting topic is a
+    # finding too, and CodeQL's py/incomplete-url-substring-sanitization heuristic
+    # flags `"<host>" in x` even when x is a set and the check is exact membership.
+    assert services == {"cloudwatch.amazonaws.com", "events.amazonaws.com"}
 
 
 def test_alarms_action_to_sns():
