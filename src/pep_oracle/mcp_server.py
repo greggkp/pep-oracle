@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from pep_oracle import config, temporal
 from pep_oracle import corpus as corpus_mod
@@ -62,7 +62,10 @@ SEARCH_PEP_DESCRIPTION = (
 
 SEARCH_TOOL_NAME = "search_us_politics_commentary"
 
-mcp = FastMCP("pep-oracle", stateless_http=True)
+# Transport params (stateless_http, path, security) are passed to
+# streamable_http_app() by server.mount_mcp_if_configured — in mcp>=2 they
+# live on the transport methods, not the constructor.
+mcp = MCPServer("pep-oracle")
 
 
 def format_citation(result: dict) -> dict:
