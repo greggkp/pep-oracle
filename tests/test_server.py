@@ -319,7 +319,8 @@ def test_mcp_host_check_disabled_and_slash_normalized(monkeypatch, tmp_path):
     assert server.mount_mcp_if_configured(app) is True
 
     # host/origin DNS-rebinding check disabled (the Lambda can't see the public Host)
-    assert mcp_server.mcp.settings.transport_security.enable_dns_rebinding_protection is False
+    ts = mcp_server.mcp.session_manager.security_settings
+    assert ts is not None and ts.enable_dns_rebinding_protection is False
 
     # /mcp (no trailing slash) reaches the bearer wrapper (401 no-token) — NOT a 307 redirect
     handler = mangum.Mangum(server._McpSlashNormalizer(app))

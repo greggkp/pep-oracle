@@ -357,8 +357,9 @@ def _build_app(
     from pep_oracle import mcp_server
     from pep_oracle.server import mount_mcp_if_configured
 
-    # Reset the FastMCP session manager so each test's mount gets a fresh one.
-    mcp_server.mcp._session_manager = None
+    # Reset the SDK session manager (held by the lowlevel server in mcp>=2) so each
+    # test's mount gets a fresh one.
+    mcp_server.mcp._lowlevel_server._session_manager = None
 
     if signing_key is None:
         monkeypatch.delenv("PEP_ORACLE_OAUTH_SIGNING_KEY", raising=False)
@@ -445,24 +446,25 @@ def test_mount_skipped_when_trust_flag_not_one(monkeypatch, tmp_path):
             assert resp.status_code == 404
 
 
-def test_mount_extends_transport_security_allowed_hosts(monkeypatch, tmp_path):
-    """mount_mcp_if_configured must add the public hostname to the FastMCP
-    SDK's TransportSecurity allowed_hosts/allowed_origins. Default rejects
-    non-localhost Host headers (DNS rebinding defense), which would 421 every
-    real request once the server is behind a tunnel."""
+def test_mount_disables_dns_rebinding_and_is_stateless(monkeypatch, tmp_path):
+    """The mounted session manager must have the DNS-rebinding host/origin check
+    OFF (behind CloudFront→APIGW the Lambda sees the execute-api Host, so the
+    check would 421 every real request) and stateless mode ON (multi-container
+    Lambda serving: any container must handle any request). In mcp>=2 both are
+    transport params captured by streamable_http_app(), readable off the
+    session manager — the SDK auto-enables the host check when no explicit
+    TransportSecuritySettings is passed, so this guards against a regression to
+    the default."""
     from pep_oracle.mcp_server import mcp as global_mcp
 
     app, mounted = _build_app(
         monkeypatch, public_url="https://pep-oracle.iicapn.com", tmp_path=tmp_path
     )
     assert mounted is True
-    ts = global_mcp.settings.transport_security
-    # Exact-match membership (not substring) so the host check can't be fooled by
-    # a lookalike like "pep-oracle.iicapn.com.evil.test".
-    assert any(h == "pep-oracle.iicapn.com" for h in ts.allowed_hosts)
-    assert any(o == "https://pep-oracle.iicapn.com" for o in ts.allowed_origins)
-    # Localhost defaults still present (don't break dev / tests)
-    assert any("localhost" in h for h in ts.allowed_hosts)
+    sm = global_mcp.session_manager
+    assert sm.security_settings is not None
+    assert sm.security_settings.enable_dns_rebinding_protection is False
+    assert sm.stateless is True
 
 
 def test_mcp_401_when_no_authorization_header(monkeypatch, tmp_path):
@@ -629,8 +631,12 @@ def test_get_serving_corpus_loads_artifact(tmp_path, monkeypatch):
     assert c.version == "v0001"
 
 
-def test_mcp_is_stateless_http():
-    """Multi-container Lambda serving requires stateless MCP (no per-session state)."""
+def test_mcp_is_stateless_http(monkeypatch, tmp_path):
+    """Multi-container Lambda serving requires stateless MCP (no per-session state).
+    In mcp>=2 statelessness is a transport param passed at mount time, so assert it
+    on the session manager a mount produces."""
     from pep_oracle.mcp_server import mcp
 
-    assert mcp.settings.stateless_http is True
+    _, mounted = _build_app(monkeypatch, tmp_path=tmp_path)
+    assert mounted is True
+    assert mcp.session_manager.stateless is True

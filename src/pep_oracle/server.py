@@ -4,7 +4,6 @@ import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import FastAPI
 
@@ -126,31 +125,27 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     oauth.register_oauth_routes(app, signing_key, public_url, store, gate)
     logger.info("OAuth provider routes registered")
 
+    from mcp.server.transport_security import TransportSecuritySettings
+
     from pep_oracle.mcp_server import mcp
 
-    # Remap SDK's /mcp → / so mount at /mcp gives final URL /mcp (not /mcp/mcp).
-    mcp.settings.streamable_http_path = "/"
-    # SDK's TransportSecurity defaults reject non-localhost Host headers (a DNS-rebinding
-    # defense for browser-facing localhost servers). Behind CloudFront→API Gateway the
-    # Lambda sees the APIGW execute-api Host, not the public hostname, so that check 421s
-    # every /mcp call. DNS rebinding is a browser threat and irrelevant here — /mcp is a
-    # server-to-server JSON API gated by the JWT bearer (the real auth) — so disable the
-    # host/origin check. Still extend allowed_hosts/origins with the public hostname for
-    # the uvicorn/OptiPlex path where the check stays meaningful.
-    parsed = urlparse(public_url)
-    if parsed.hostname:
-        ts = mcp.settings.transport_security
-        assert ts is not None
-        if parsed.hostname not in ts.allowed_hosts:
-            ts.allowed_hosts = [*ts.allowed_hosts, parsed.hostname]
-        public_origin = f"{parsed.scheme}://{parsed.hostname}"
-        if public_origin not in ts.allowed_origins:
-            ts.allowed_origins = [*ts.allowed_origins, public_origin]
-    assert mcp.settings.transport_security is not None
-    mcp.settings.transport_security.enable_dns_rebinding_protection = False
+    # The SDK's DNS-rebinding host/origin check defends browser-facing localhost servers.
+    # Behind CloudFront→API Gateway the Lambda sees the APIGW execute-api Host, not the
+    # public hostname, so that check 421s every /mcp call. DNS rebinding is a browser
+    # threat and irrelevant here — /mcp is a server-to-server JSON API gated by the JWT
+    # bearer (the real auth) — so disable it. The settings object must be explicit: with
+    # transport_security=None the SDK auto-enables the check for its localhost default.
+    transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     # Build the streamable app once to create the session-manager template (it captures
-    # the MCP server app, the stateless flag, and the transport-security settings).
-    mcp.streamable_http_app()
+    # the MCP server app and the transport params, which in mcp>=2 are passed here rather
+    # than to the constructor). streamable_http_path="/" remaps the SDK's default /mcp so
+    # the mount at /mcp yields final URL /mcp (not /mcp/mcp); stateless_http=True is
+    # required for multi-container Lambda serving and the per-request manager below.
+    mcp.streamable_http_app(
+        streamable_http_path="/",
+        stateless_http=True,
+        transport_security=transport_security,
+    )
     _sm_template = mcp.session_manager
 
     # Per-request fresh StreamableHTTPSessionManager. The SDK's run() is once-per-instance
@@ -159,8 +154,8 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     # per invocation — warm invocation #2 re-calls run() on the singleton → RuntimeError →
     # LifespanFailure → every route 500s. Stateless requests are self-contained (fresh
     # transport, no cross-request state), so a fresh manager per request is correct under
-    # both runtimes and needs no lifespan wiring. (Requires stateless_http=True, which
-    # mcp_server sets.)
+    # both runtimes and needs no lifespan wiring. (Requires the stateless_http=True
+    # passed to streamable_http_app above.)
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
     async def _mcp_stateless_asgi(scope, receive, send):
