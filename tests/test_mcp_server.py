@@ -191,6 +191,19 @@ def test_search_pep_respects_top_k(patched):
     assert len(out["results"]) == 3
 
 
+@pytest.mark.parametrize("top_k", [0, -1, mcp_server.MAX_TOP_K + 1])
+def test_search_pep_rejects_out_of_range_top_k(patched, top_k):
+    with pytest.raises(ValueError, match="top_k"):
+        mcp_server.search_pep("anything", top_k=top_k)
+
+
+def test_search_pep_rejects_empty_or_oversized_query(patched):
+    with pytest.raises(ValueError, match="query"):
+        mcp_server.search_pep("   ")
+    with pytest.raises(ValueError, match="query"):
+        mcp_server.search_pep("x" * (mcp_server.MAX_QUERY_LENGTH + 1))
+
+
 # --- (c) empty collection returns no results ---
 
 

@@ -52,6 +52,7 @@ class PepOracleProdStack(Stack):
         *,
         cfg: DeployConfig,
         cert_arn: str | None = None,
+        web_acl_arn: str | None = None,
         hosted_zone_id: str | None = None,
         hosted_zone_name: str | None = None,
         **kwargs,
@@ -59,6 +60,7 @@ class PepOracleProdStack(Stack):
         super().__init__(scope, cid, **kwargs)
         self.cfg = cfg
         self._cert_arn = cert_arn
+        self._web_acl_arn = web_acl_arn
         self._hosted_zone_id = hosted_zone_id
         self._hosted_zone_name = hosted_zone_name
 
@@ -328,6 +330,7 @@ class PepOracleProdStack(Stack):
             domain_names=[cfg.domain_name],
             certificate=cert,
             minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+            web_acl_id=self._web_acl_arn,
         )
 
         route53.ARecord(

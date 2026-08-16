@@ -163,6 +163,9 @@ class CognitoGate:
             # aud), but assert token_use too in case the token shape ever changes.
             logger.warning("Cognito login rejected: token_use != id")
             raise IdentityError("not an id token")
+        if claims.get("email_verified") is not True:
+            logger.warning("Cognito login rejected: email is not verified")
+            raise IdentityError("email not verified")
         email = str(claims.get("email", "")).lower()
         if email not in self.allowed_emails:
             logger.warning("Cognito login rejected: email not on allow-list")

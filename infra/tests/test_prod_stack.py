@@ -28,6 +28,7 @@ def _template() -> Template:
         "Prod",
         cfg=_cfg(),
         cert_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc",
+        web_acl_arn="arn:aws:wafv2:us-east-1:111111111111:global/webacl/pep/abc",
         hosted_zone_id="Z123456ABCDEFG",
         hosted_zone_name="pep-oracle.iicapn.com",
         cross_region_references=True,
@@ -220,6 +221,7 @@ def test_cloudfront_distribution_has_domain_no_oac():
                 "DistributionConfig": Match.object_like(
                     {
                         "Aliases": ["pep-oracle.iicapn.com"],
+                        "WebACLId": "arn:aws:wafv2:us-east-1:111111111111:global/webacl/pep/abc",
                     }
                 )
             }

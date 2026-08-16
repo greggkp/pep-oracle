@@ -60,6 +60,56 @@ def test_refresh_roundtrip_and_revoke(store):
     assert store.get_refresh("t1").revoked is True
 
 
+def test_refresh_token_is_not_persisted_in_plaintext(store):
+    raw = "secret-refresh-token"
+    store.put_refresh(raw, client_id="c1", family_id="f1", ttl_seconds=3600)
+    digest = oauth_store._refresh_token_digest(raw)
+
+    if isinstance(store, oauth_store.SqliteStore):
+        conn = store._conn()
+        try:
+            keys = [row["token"] for row in conn.execute("SELECT token FROM refresh_tokens")]
+        finally:
+            store._release(conn)
+        assert raw not in keys
+        assert digest in keys
+    else:
+        assert store._table.get_item(Key={"pk": f"refresh#{raw}"}).get("Item") is None
+        assert store._table.get_item(Key={"pk": f"refresh#{digest}"}).get("Item") is not None
+
+
+def test_legacy_plaintext_refresh_token_remains_usable(store):
+    """Rolling upgrades must not invalidate tokens issued by the old schema."""
+    raw = "legacy-refresh-token"
+    now = int(oauth_store.time.time())
+    if isinstance(store, oauth_store.SqliteStore):
+        conn = store._conn()
+        try:
+            conn.execute(
+                "INSERT INTO refresh_tokens "
+                "(token, client_id, issued_at, expires_at, revoked, family_id) "
+                "VALUES (?, ?, ?, ?, 0, ?)",
+                (raw, "c1", now, now + 3600, "f1"),
+            )
+        finally:
+            store._release(conn)
+    else:
+        store._table.put_item(
+            Item={
+                "pk": f"refresh#{raw}",
+                "client_id": "c1",
+                "issued_at": now,
+                "expires_at": now + 3600,
+                "revoked": 0,
+                "family_id": "f1",
+            }
+        )
+
+    assert store.get_refresh(raw).client_id == "c1"
+    assert store.revoke_refresh(raw) is True
+    assert store.get_refresh(raw).revoked is True
+
+
 def test_revoke_family_revokes_all_members(store):
     store.put_refresh("a", client_id="c1", family_id="fam", ttl_seconds=3600)
     store.put_refresh("b", client_id="c1", family_id="fam", ttl_seconds=3600)
@@ -101,3 +151,26 @@ def test_concurrent_revoke_exactly_one_wins(store):
 
     assert sorted(results) == [False, True]  # exactly one winner
     assert store.get_refresh("race").revoked is True
+
+
+def test_dynamodb_revoke_family_paginates():
+    class FakeTable:
+        def __init__(self):
+            self.queries = []
+            self.updated = []
+
+        def query(self, **kwargs):
+            self.queries.append(kwargs)
+            if len(self.queries) == 1:
+                return {"Items": [{"pk": "refresh#a"}], "LastEvaluatedKey": {"pk": "cursor"}}
+            return {"Items": [{"pk": "refresh#b"}]}
+
+        def update_item(self, **kwargs):
+            self.updated.append(kwargs["Key"]["pk"])
+
+    store = object.__new__(oauth_store.DynamoDbStore)
+    store._table = FakeTable()
+    store.revoke_family("fam")
+
+    assert store._table.updated == ["refresh#a", "refresh#b"]
+    assert store._table.queries[1]["ExclusiveStartKey"] == {"pk": "cursor"}

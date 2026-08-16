@@ -47,3 +47,23 @@ def test_certificate_for_domain():
             }
         ),
     )
+
+
+def test_cloudfront_waf_rate_limits_sensitive_routes():
+    t = _t()
+    t.has_resource_properties(
+        "AWS::WAFv2::WebACL",
+        Match.object_like(
+            {
+                "Scope": "CLOUDFRONT",
+                "DefaultAction": {"Allow": {}},
+                "Rules": Match.array_with(
+                    [
+                        Match.object_like({"Name": "OAuthRegisterRateLimit"}),
+                        Match.object_like({"Name": "OAuthTokenRateLimit"}),
+                        Match.object_like({"Name": "McpRateLimit"}),
+                    ]
+                ),
+            }
+        ),
+    )

@@ -61,6 +61,8 @@ SEARCH_PEP_DESCRIPTION = (
 )
 
 SEARCH_TOOL_NAME = "search_us_politics_commentary"
+MAX_QUERY_LENGTH = 4_000
+MAX_TOP_K = 20
 
 # Transport params (stateless_http, path, security) are passed to
 # streamable_http_app() by server.mount_mcp_if_configured — in mcp>=2 they
@@ -118,6 +120,12 @@ def search_pep(
     after_date: str | None = None,
     before_date: str | None = None,
 ) -> dict:
+    if not query or not query.strip():
+        raise ValueError("query must not be empty")
+    if len(query) > MAX_QUERY_LENGTH:
+        raise ValueError(f"query must be at most {MAX_QUERY_LENGTH} characters")
+    if not 1 <= top_k <= MAX_TOP_K:
+        raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}")
     with timed("search.total"):
         with timed("search.embed"):
             embedding = embed_texts([query])[0]

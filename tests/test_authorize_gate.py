@@ -123,13 +123,24 @@ def _rsa_keypair():
     return priv_pem, {"keys": [jwk]}
 
 
-def _id_token(priv_pem, *, iss, aud, email, ttl=3600, kid=_KID, token_use="id"):
+def _id_token(
+    priv_pem,
+    *,
+    iss,
+    aud,
+    email,
+    ttl=3600,
+    kid=_KID,
+    token_use="id",
+    email_verified=True,
+):
     now = int(time.time())
     claims = {
         "sub": "u1",
         "iss": iss,
         "aud": aud,
         "email": email,
+        "email_verified": email_verified,
         "token_use": token_use,
         "iat": now,
         "exp": now + ttl,
@@ -164,6 +175,19 @@ def test_verify_id_token_accepts_valid(monkeypatch):
 def test_verify_id_token_rejects_disallowed_email(monkeypatch):
     gate, priv_pem = _verifying_gate(monkeypatch)
     tok = _id_token(priv_pem, iss=gate.issuer, aud=gate.client_id, email="intruder@evil.com")
+    with pytest.raises(authorize_gate.IdentityError):
+        gate._verify_id_token(tok)
+
+
+def test_verify_id_token_rejects_unverified_email(monkeypatch):
+    gate, priv_pem = _verifying_gate(monkeypatch)
+    tok = _id_token(
+        priv_pem,
+        iss=gate.issuer,
+        aud=gate.client_id,
+        email="me@example.com",
+        email_verified=False,
+    )
     with pytest.raises(authorize_gate.IdentityError):
         gate._verify_id_token(tok)
 

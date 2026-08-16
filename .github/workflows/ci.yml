@@ -12,17 +12,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Secret Scan (Gitleaks)
-        uses: gitleaks/gitleaks-action@v3.0.0
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "24"
       - name: Install root env (uv) + infra deps
@@ -36,6 +36,8 @@ jobs:
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy src
+      - name: Python dependency audit
+        run: uv run pip-audit
       - name: Pytest (root)
         run: uv run pytest -q
       - name: Pytest (infra)
@@ -48,20 +50,20 @@ jobs:
           docker build -f Dockerfile -t pep-oracle:ci .
           docker build -f Dockerfile.ingest -t pep-oracle-ingest:ci .
       - name: Run Trivy vulnerability scanner on serving image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'pep-oracle:ci'
           format: 'table'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
       - name: Run Trivy vulnerability scanner on ingest image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'pep-oracle-ingest:ci'
           format: 'table'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
