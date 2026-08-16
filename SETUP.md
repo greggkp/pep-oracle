@@ -6,7 +6,7 @@ CI on a `v*` tag, not from your machine.
 
 ## Quickstart
 
-**In a devcontainer / cloud dev env** (Codespaces, the Claude cloud env, etc.):
+**In a devcontainer / cloud development environment** (Codespaces, coding-agent environments, etc.):
 open the repo — `.devcontainer/devcontainer.json` provisions Python 3.12, Node 20,
 Docker, `gh`, and `jq`, then runs `scripts/bootstrap.sh`.
 
@@ -28,8 +28,8 @@ Docker, `gh`, and `jq`, then runs `scripts/bootstrap.sh`.
 > they may fail in network-restricted dev environments. That's fine — CI builds both
 > images on every PR. The edit → test → `cdk synth` → tag loop needs no Docker.
 
-The commit-gate hook (`.claude/hooks/pre-commit.sh`, wired by `.claude/settings.json`)
-runs `pytest` + a CLAUDE.md-review check on every `git commit` in a Claude Code session.
+Project guidance lives once in `AGENTS.md`; Codex reads it directly and `CLAUDE.md`
+imports it for Claude Code.
 
 ## Secrets (none needed for the core dev loop)
 
@@ -51,9 +51,3 @@ Dev needs read/inspect + occasional gated ops, **not** `cdk deploy` (CI deploys 
 GitHub OIDC). Use a short-lived, scoped credential — do **not** copy the long-lived
 `optiplex-cli` keys. (Minting that scoped principal and rotating the optiplex-cli
 keys is a separate gated AWS op.)
-
-## Claude Code memory
-
-Claude Code's project memory is path-keyed to `-opt-pep-oracle-app`. Clone to
-`/opt/pep-oracle/app` (or copy the memory dir) to keep memory attached; otherwise
-expect fresh context per session.

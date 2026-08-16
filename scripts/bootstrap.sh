@@ -14,7 +14,7 @@ for tool in python3 node npm git jq; do
 done
 command -v docker >/dev/null 2>&1 || echo "  NOTE: docker not found (needed only for the 'docker build' checks)"
 
-# jq is required by the commit-gate hook; try to install it if we can, else fail.
+# jq is used by project scripts; try to install it if we can, else fail.
 if ! command -v jq >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
     echo "  installing jq via apt-get"; sudo apt-get update -qq && sudo apt-get install -y -qq jq && missing=0
