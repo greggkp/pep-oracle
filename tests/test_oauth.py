@@ -132,6 +132,37 @@ def test_dcr_rejects_missing_redirect_uris(client):
     assert r.status_code == 400
 
 
+def test_dcr_rejects_excessive_redirect_uris(client):
+    uris = [f"https://example.com/callback/{i}" for i in range(oauth.MAX_REDIRECT_URIS + 1)]
+    r = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": uris})
+    assert r.status_code == 400
+
+
+def test_dcr_rejects_oversized_fields(client):
+    too_long_name = "x" * (oauth.MAX_CLIENT_NAME_LENGTH + 1)
+    r = client.post(
+        "/oauth/register",
+        json={"client_name": too_long_name, "redirect_uris": ["https://example.com/cb"]},
+    )
+    assert r.status_code == 400
+
+    too_long_uri = "https://example.com/" + "x" * oauth.MAX_REDIRECT_URI_LENGTH
+    r = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": [too_long_uri]})
+    assert r.status_code == 400
+
+
+def test_dcr_rejects_client_secret_auth_method(client):
+    r = client.post(
+        "/oauth/register",
+        json={
+            "client_name": "x",
+            "redirect_uris": ["https://example.com/cb"],
+            "token_endpoint_auth_method": "client_secret_post",
+        },
+    )
+    assert r.status_code == 400
+
+
 # --- 4. end-to-end auth code + PKCE → token ------------------------------
 
 
@@ -191,6 +222,19 @@ def test_authorize_rejects_plain_method(client):
     assert r.status_code == 400
 
 
+def test_authorize_rejects_malformed_s256_challenge(client):
+    client_id = _register(client)
+    r = _authorize(client, client_id, "too-short")
+    assert r.status_code == 400
+
+
+def test_authorize_rejects_oversized_state(client):
+    client_id = _register(client)
+    _, challenge = _pkce_pair()
+    r = _authorize(client, client_id, challenge, state="x" * (oauth.MAX_STATE_LENGTH + 1))
+    assert r.status_code == 400
+
+
 # --- 6. authorize rejects bad redirect_uri -------------------------------
 
 
@@ -223,6 +267,25 @@ def test_token_rejects_wrong_verifier(client):
             "redirect_uri": "https://claude.ai/cb",
             "client_id": client_id,
             "code_verifier": "totally-wrong-verifier-" + secrets.token_urlsafe(32),
+        },
+    )
+    assert r2.status_code == 400
+    assert r2.json()["error"] == "invalid_grant"
+
+
+def test_token_rejects_malformed_verifier(client):
+    client_id = _register(client)
+    _, challenge = _pkce_pair()
+    r = _authorize(client, client_id, challenge)
+    code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+    r2 = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/cb",
+            "client_id": client_id,
+            "code_verifier": "short",
         },
     )
     assert r2.status_code == 400

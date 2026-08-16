@@ -69,7 +69,14 @@ AUTHORIZE_GATE = os.getenv("PEP_ORACLE_AUTHORIZE_GATE", "trusted_upstream")
 # Hosted-UI base, e.g. https://pep-oracle.auth.ap-southeast-2.amazoncognito.com
 COGNITO_DOMAIN = os.getenv("PEP_ORACLE_COGNITO_DOMAIN", "")
 COGNITO_CLIENT_ID = os.getenv("PEP_ORACLE_COGNITO_CLIENT_ID", "")
+# Local/dev may provide the value directly. The production Lambda instead receives
+# only a Secrets Manager ARN and resolves the secret at token-exchange time.
 COGNITO_CLIENT_SECRET = os.getenv("PEP_ORACLE_COGNITO_CLIENT_SECRET", "")
+COGNITO_CLIENT_SECRET_ARN = os.getenv("PEP_ORACLE_COGNITO_CLIENT_SECRET_ARN", "")
+COGNITO_CLIENT_SECRET_REGION = os.getenv("PEP_ORACLE_COGNITO_CLIENT_SECRET_REGION", BEDROCK_REGION)
+COGNITO_CLIENT_SECRET_CACHE_SECONDS = int(
+    os.getenv("PEP_ORACLE_COGNITO_CLIENT_SECRET_CACHE_SECONDS", "300")
+)
 COGNITO_USER_POOL_ID = os.getenv(
     "PEP_ORACLE_COGNITO_USER_POOL_ID", ""
 )  # e.g. ap-southeast-2_abc123

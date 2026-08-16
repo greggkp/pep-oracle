@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -37,6 +38,12 @@ AUTH_CODE_TTL_SECONDS = 60
 SCOPE = "mcp"
 LOGIN_STATE_AUDIENCE = "pep-oracle-login"
 LOGIN_STATE_TTL_SECONDS = 600
+MAX_CLIENT_NAME_LENGTH = 200
+MAX_REDIRECT_URIS = 10
+MAX_REDIRECT_URI_LENGTH = 2048
+MAX_STATE_LENGTH = 2048
+PKCE_CHALLENGE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+PKCE_VERIFIER_RE = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 
 
 class InvalidToken(Exception):
@@ -264,7 +271,15 @@ def register_oauth_routes(
             return _err(
                 400, "invalid_redirect_uri", "redirect_uris must be a non-empty list of strings"
             )
+        if len(redirect_uris) > MAX_REDIRECT_URIS:
+            return _err(
+                400,
+                "invalid_client_metadata",
+                f"at most {MAX_REDIRECT_URIS} redirect_uris are allowed",
+            )
         for u in redirect_uris:
+            if len(u) > MAX_REDIRECT_URI_LENGTH:
+                return _err(400, "invalid_redirect_uri", "redirect_uri is too long")
             err = _validate_redirect_uri(u)
             if err is not None:
                 logger.warning("DCR rejected: %s", err)
@@ -275,11 +290,13 @@ def register_oauth_routes(
         auth_method = body.get("token_endpoint_auth_method", "none")
         if not isinstance(gtypes, list) or not isinstance(rtypes, list):
             return _err(400, "invalid_client_metadata", "grant_types/response_types must be lists")
-        if auth_method not in ("none", "client_secret_basic", "client_secret_post"):
+        if auth_method != "none":
             return _err(400, "invalid_client_metadata", "unsupported token_endpoint_auth_method")
         client_name = body.get("client_name") or ""
         if not isinstance(client_name, str):
             return _err(400, "invalid_client_metadata", "client_name must be a string")
+        if len(client_name) > MAX_CLIENT_NAME_LENGTH:
+            return _err(400, "invalid_client_metadata", "client_name is too long")
 
         client_id = str(uuid.uuid4())
         issued_at = store.put_client(client_id, client_name, redirect_uris)
@@ -319,6 +336,10 @@ def register_oauth_routes(
             return _err(400, "invalid_request", "code_challenge_method must be S256")
         if not code_challenge:
             return _err(400, "invalid_request", "missing code_challenge")
+        if not PKCE_CHALLENGE_RE.fullmatch(code_challenge):
+            return _err(400, "invalid_request", "invalid S256 code_challenge")
+        if state is not None and len(state) > MAX_STATE_LENGTH:
+            return _err(400, "invalid_request", "state is too long")
 
         client = store.get_client(client_id)
         if client is None:
@@ -362,6 +383,8 @@ def register_oauth_routes(
         if grant_type == "authorization_code":
             if not (code and redirect_uri and client_id and code_verifier):
                 return _err(400, "invalid_request", "missing required fields")
+            if not PKCE_VERIFIER_RE.fullmatch(code_verifier):
+                return _err(400, "invalid_grant", "invalid PKCE code_verifier")
             entry = store.pop_auth_code(code)
             if entry is None:
                 logger.warning("token: code missing/expired/used for client_id=%s", client_id)

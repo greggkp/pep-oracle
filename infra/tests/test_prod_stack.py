@@ -28,6 +28,7 @@ def _template() -> Template:
         "Prod",
         cfg=_cfg(),
         cert_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc",
+        web_acl_arn="arn:aws:wafv2:us-east-1:111111111111:global/webacl/pep/abc",
         hosted_zone_id="Z123456ABCDEFG",
         hosted_zone_name="pep-oracle.iicapn.com",
         cross_region_references=True,
@@ -114,6 +115,37 @@ def test_cognito_client_is_confidential_auth_code():
     )
 
 
+def test_cognito_client_secret_is_cmk_encrypted_and_not_in_lambda_env():
+    t = _template()
+    t.has_resource_properties(
+        "AWS::SecretsManager::Secret",
+        Match.object_like(
+            {
+                "Name": "pep-oracle/cognito-client-secret",
+                "KmsKeyId": Match.any_value(),
+                "SecretString": Match.object_like({"Fn::GetAtt": Match.any_value()}),
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like(
+            {
+                "Environment": {
+                    "Variables": Match.object_like(
+                        {
+                            "PEP_ORACLE_COGNITO_CLIENT_SECRET_ARN": Match.any_value(),
+                            "PEP_ORACLE_COGNITO_CLIENT_SECRET_REGION": "ap-southeast-2",
+                            "PEP_ORACLE_COGNITO_CLIENT_SECRET_CACHE_SECONDS": "300",
+                            "PEP_ORACLE_COGNITO_CLIENT_SECRET": Match.absent(),
+                        }
+                    )
+                }
+            }
+        ),
+    )
+
+
 def test_lambda_env_has_serving_contract():
     t = _template()
     t.has_resource_properties(
@@ -189,7 +221,7 @@ def test_http_api_proxies_to_lambda():
     t.resource_count_is("AWS::Lambda::Url", 0)
 
 
-def test_lambda_role_has_bedrock_and_ssm():
+def test_lambda_role_has_bedrock_ssm_and_secret_read():
     t = _template()
     # Bedrock InvokeModel on the embed model + SSM GetParameter on the signing param
     t.has_resource_properties(
@@ -200,6 +232,9 @@ def test_lambda_role_has_bedrock_and_ssm():
                     {
                         "Statement": Match.array_with(
                             [
+                                Match.object_like(
+                                    {"Action": Match.array_with(["secretsmanager:GetSecretValue"])}
+                                ),
                                 Match.object_like({"Action": "bedrock:InvokeModel"}),
                                 Match.object_like({"Action": "ssm:GetParameter"}),
                             ]
@@ -220,6 +255,7 @@ def test_cloudfront_distribution_has_domain_no_oac():
                 "DistributionConfig": Match.object_like(
                     {
                         "Aliases": ["pep-oracle.iicapn.com"],
+                        "WebACLId": "arn:aws:wafv2:us-east-1:111111111111:global/webacl/pep/abc",
                     }
                 )
             }
@@ -326,4 +362,40 @@ def test_warmer_alarms_present_and_wired_to_topic():
                 "AlarmActions": Match.any_value(),
             }
         ),
+    )
+
+
+def test_serving_security_and_availability_alarms_present():
+    t = _template()
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "Throttles",
+                "Namespace": "AWS/Lambda",
+                "Threshold": 0,
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "5xx",
+                "Namespace": "AWS/ApiGateway",
+                "Dimensions": Match.array_with([{"Name": "ApiId", "Value": Match.any_value()}]),
+                "Threshold": 0,
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
+
+
+def test_serving_lambda_log_retention_is_30_days():
+    _template().has_resource_properties(
+        "Custom::LogRetention",
+        Match.object_like({"RetentionInDays": 30}),
     )

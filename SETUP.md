@@ -40,7 +40,7 @@ via the platform's secret store as env vars, or `cp .env.example .env`):
 | Var | Needed for |
 |---|---|
 | `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | running `pep-oracle ingest-artifact` by hand (Modal transcribe/diarize). Modal also reads `~/.modal.toml`. Prod ingestion is Fargate (pulls these from SSM). |
-| `PEP_ORACLE_PUBLIC_URL` + OAuth/signing block (`PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH` **or** `PEP_ORACLE_AUTHORIZE_GATE=cognito`, `PEP_ORACLE_OAUTH_SIGNING_*`) | running the local MCP server (`pep-oracle-server`) with `/mcp` mounted for hand-testing. |
+| `PEP_ORACLE_PUBLIC_URL` + OAuth/signing block (`PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH` **or** `PEP_ORACLE_AUTHORIZE_GATE=cognito`, `PEP_ORACLE_OAUTH_SIGNING_*`) | running the local MCP server (`pep-oracle-server`) with `/mcp` mounted for hand-testing. Cognito hand-testing may use `PEP_ORACLE_COGNITO_CLIENT_SECRET`; production uses `PEP_ORACLE_COGNITO_CLIENT_SECRET_ARN` and grants only `secretsmanager:GetSecretValue` on that secret. |
 
 `HF_TOKEN` is **not** a dev var — diarization's Hugging Face token lives in the
 Modal Secret `huggingface-token`, read only inside `cloud/diarize_modal.py`.

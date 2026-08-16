@@ -10,6 +10,7 @@ concurrent refreshes resolve to exactly one rotation.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import sqlite3
 import threading
@@ -19,6 +20,18 @@ from typing import Protocol
 from pep_oracle import config
 
 REFRESH_TTL_SECONDS = 30 * 24 * 3600
+
+
+def _refresh_token_digest(token: str) -> str:
+    """One-way storage key for a high-entropy opaque refresh token.
+
+    Refresh tokens are generated with 256 bits of entropy, so a plain SHA-256
+    digest is resistant to offline guessing while allowing indexed lookup.  The
+    raw bearer value is returned to the client but is never persisted for new
+    records.  Store readers retain a legacy-plaintext fallback for rolling
+    upgrades so tokens issued before this change are not invalidated abruptly.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 @dataclasses.dataclass
@@ -192,26 +205,31 @@ class SqliteStore:
     # --- refresh tokens ---
     def put_refresh(self, token: str, *, client_id: str, family_id: str, ttl_seconds: int) -> None:
         now = int(time.time())
+        token_digest = _refresh_token_digest(token)
         conn = self._conn()
         try:
             conn.execute(
                 "INSERT INTO refresh_tokens (token, client_id, issued_at, expires_at, revoked, family_id) "
                 "VALUES (?, ?, ?, ?, 0, ?)",
-                (token, client_id, now, now + ttl_seconds, family_id),
+                (token_digest, client_id, now, now + ttl_seconds, family_id),
             )
         finally:
             self._release(conn)
 
     def get_refresh(self, token: str) -> RefreshRecord | None:
+        token_digest = _refresh_token_digest(token)
         conn = self._conn()
         try:
-            row = conn.execute("SELECT * FROM refresh_tokens WHERE token = ?", (token,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM refresh_tokens WHERE token IN (?, ?)",
+                (token_digest, token),  # plaintext fallback for pre-migration rows
+            ).fetchone()
         finally:
             self._release(conn)
         if row is None:
             return None
         return RefreshRecord(
-            row["token"],
+            token,
             row["client_id"],
             row["issued_at"],
             row["expires_at"],
@@ -220,10 +238,12 @@ class SqliteStore:
         )
 
     def revoke_refresh(self, token: str) -> bool:
+        token_digest = _refresh_token_digest(token)
         conn = self._conn()
         try:
             cur = conn.execute(
-                "UPDATE refresh_tokens SET revoked = 1 WHERE token = ? AND revoked = 0", (token,)
+                "UPDATE refresh_tokens SET revoked = 1 WHERE token IN (?, ?) AND revoked = 0",
+                (token_digest, token),  # plaintext fallback for pre-migration rows
             )
             return cur.rowcount == 1  # True only if THIS call flipped active->revoked
         finally:
@@ -351,8 +371,9 @@ class DynamoDbStore:
     # --- refresh tokens ---
     def put_refresh(self, token: str, *, client_id: str, family_id: str, ttl_seconds: int) -> None:
         now = int(time.time())
+        token_digest = _refresh_token_digest(token)
         item: dict = {
-            "pk": f"refresh#{token}",
+            "pk": f"refresh#{token_digest}",
             "client_id": client_id,
             "issued_at": now,
             "expires_at": now + ttl_seconds,
@@ -366,7 +387,11 @@ class DynamoDbStore:
         self._table.put_item(Item=item)
 
     def get_refresh(self, token: str) -> RefreshRecord | None:
-        item = self._table.get_item(Key={"pk": f"refresh#{token}"}).get("Item")
+        token_digest = _refresh_token_digest(token)
+        item = self._table.get_item(Key={"pk": f"refresh#{token_digest}"}).get("Item")
+        if item is None:
+            # Rolling-upgrade compatibility for tokens persisted before hashing.
+            item = self._table.get_item(Key={"pk": f"refresh#{token}"}).get("Item")
         if item is None:
             return None
         return RefreshRecord(
@@ -381,30 +406,41 @@ class DynamoDbStore:
     def revoke_refresh(self, token: str) -> bool:
         from botocore.exceptions import ClientError
 
-        try:
-            self._table.update_item(
-                Key={"pk": f"refresh#{token}"},
-                UpdateExpression="SET revoked = :one",
-                ConditionExpression="attribute_exists(pk) AND revoked = :zero",
-                ExpressionAttributeValues={":one": 1, ":zero": 0},
-            )
-            return True  # this call flipped active->revoked
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return False  # missing or already revoked
-            raise
+        # Try the digest key first, then the legacy plaintext key during the
+        # migration window. A conditional update preserves exactly-one-winner
+        # rotation semantics for either representation.
+        for key in (_refresh_token_digest(token), token):
+            try:
+                self._table.update_item(
+                    Key={"pk": f"refresh#{key}"},
+                    UpdateExpression="SET revoked = :one",
+                    ConditionExpression="attribute_exists(pk) AND revoked = :zero",
+                    ExpressionAttributeValues={":one": 1, ":zero": 0},
+                )
+                return True  # this call flipped active->revoked
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+        return False  # missing or already revoked
 
     def revoke_family(self, family_id: str) -> None:
         if not family_id:
             return
         from boto3.dynamodb.conditions import Key
 
-        resp = self._table.query(
-            IndexName=self.GSI, KeyConditionExpression=Key("family_id").eq(family_id)
-        )
-        for row in resp.get("Items", []):
-            self._table.update_item(
-                Key={"pk": row["pk"]},
-                UpdateExpression="SET revoked = :one",
-                ExpressionAttributeValues={":one": 1},
-            )
+        query_args = {
+            "IndexName": self.GSI,
+            "KeyConditionExpression": Key("family_id").eq(family_id),
+        }
+        while True:
+            resp = self._table.query(**query_args)
+            for row in resp.get("Items", []):
+                self._table.update_item(
+                    Key={"pk": row["pk"]},
+                    UpdateExpression="SET revoked = :one",
+                    ExpressionAttributeValues={":one": 1},
+                )
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            query_args["ExclusiveStartKey"] = last_key

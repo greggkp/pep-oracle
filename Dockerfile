@@ -10,6 +10,12 @@ COPY src/ ${LAMBDA_TASK_ROOT}/src/
 # --no-cache-dir keeps the image lean.
 RUN python -m pip install --no-cache-dir "${LAMBDA_TASK_ROOT}[server,aws]"
 
+# The AWS base image includes the Runtime Interface Emulator solely for local
+# `docker run` execution. Lambda itself provides the runtime API and never uses
+# this static Go binary. Exclude it from the production image so vulnerabilities
+# in the local-only emulator cannot expand the deployed image's attack surface.
+RUN rm -f /usr/local/bin/aws-lambda-rie
+
 # Defense-in-depth / misconfig-scanner hygiene, parity with the hardened Fargate ingest
 # image. Bare numeric UID on purpose: this AL2023-minimal base ships no shadow-utils, so
 # the Fargate `useradd` pattern would fail the build — and no chown is needed because deps

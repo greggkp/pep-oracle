@@ -47,3 +47,87 @@ def test_certificate_for_domain():
             }
         ),
     )
+
+
+def test_cloudfront_waf_rate_limits_sensitive_routes():
+    t = _t()
+    t.has_resource_properties(
+        "AWS::WAFv2::WebACL",
+        Match.object_like(
+            {
+                "Scope": "CLOUDFRONT",
+                "DefaultAction": {"Allow": {}},
+                "Rules": Match.array_with(
+                    [
+                        Match.object_like({"Name": "OAuthRegisterRateLimit"}),
+                        Match.object_like({"Name": "OAuthTokenRateLimit"}),
+                        Match.object_like({"Name": "McpRateLimit"}),
+                    ]
+                ),
+            }
+        ),
+    )
+
+
+def test_waf_logs_only_blocked_requests_with_sensitive_fields_redacted():
+    t = _t()
+    t.has_resource_properties(
+        "AWS::Logs::LogGroup",
+        Match.object_like(
+            {
+                "LogGroupName": "aws-waf-logs-pep-oracle-blocked",
+                "RetentionInDays": 30,
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::WAFv2::LoggingConfiguration",
+        Match.object_like(
+            {
+                "LogDestinationConfigs": Match.any_value(),
+                "LoggingFilter": {
+                    "DefaultBehavior": "DROP",
+                    "Filters": [
+                        {
+                            "Behavior": "KEEP",
+                            "Conditions": [{"ActionCondition": {"Action": "BLOCK"}}],
+                            "Requirement": "MEETS_ANY",
+                        }
+                    ],
+                },
+                "RedactedFields": Match.array_with(
+                    [
+                        {"SingleHeader": {"Name": "authorization"}},
+                        {"QueryString": {}},
+                    ]
+                ),
+            }
+        ),
+    )
+
+
+def test_waf_block_alarm_notifies_operator():
+    t = _t()
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "Namespace": "AWS/WAFV2",
+                "MetricName": "BlockedRequests",
+                "Dimensions": Match.array_with(
+                    [
+                        {"Name": "Rule", "Value": "ALL"},
+                        {"Name": "WebACL", "Value": "pep-oracle-web-acl"},
+                    ]
+                ),
+                "Threshold": 0,
+                "ComparisonOperator": "GreaterThanThreshold",
+                "TreatMissingData": "notBreaching",
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::SNS::Subscription",
+        Match.object_like({"Protocol": "email", "Endpoint": "me@example.com"}),
+    )

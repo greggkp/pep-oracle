@@ -5,8 +5,8 @@ real, billable resources (≈$2-4/mo idle) and performs a live DNS cutover of
 pep-oracle.iicapn.com. Region: ap-southeast-2 (compute) + us-east-1 (CloudFront cert).
 AWS profile: the OptiPlex default (e.g. `optiplex-cli`, account 940831808393).
 
-CDK app lives in `infra/`. It pins `aws-cdk-lib==2.180.0` (the version providing
-`FunctionUrlOrigin.with_origin_access_control`).
+CDK app lives in `infra/`. Its Python CDK dependency is pinned in
+`infra/requirements.txt`; keep the CLI version compatible with that library.
 
 ## 0. Prereqs
 - Node + the CDK CLI; Docker running (the Lambda image builds at deploy). If a global
@@ -49,6 +49,9 @@ pipeline bakes it automatically):
   -c git_sha=$(git -C .. rev-parse --short HEAD)
 ```
 Note the stack outputs (KMS DataKey id, Cognito user-pool id, CloudFront domain).
+The deploy also creates `pep-oracle/cognito-client-secret` in Secrets Manager,
+encrypted with the stack KMS key. The generated Cognito value flows directly into
+that secret through CloudFormation; the Lambda environment contains only its ARN.
 
 **Lambda concurrency:** reserved concurrency is **off by default** (`lambda_reserved_concurrency=0`)
 because reserving any concurrency requires the account's unreserved pool to stay ≥10, which a
@@ -66,6 +69,22 @@ aws ssm put-parameter --name /pep-oracle/oauth-signing-key --type SecureString \
   --value "$KEY" --key-id <DataKey-id-from-outputs> --region ap-southeast-2
 ```
 A missing param makes the OAuth path fail closed — create it before smoke-testing OAuth.
+
+## 4a. Confirm security and availability alert subscriptions
+
+The stacks create email subscriptions in two regions. Confirm both messages or the
+alarms cannot notify you:
+
+- us-east-1: WAF blocked-request alarm;
+- ap-southeast-2: serving Lambda errors/throttles, stopped warmer, EventBridge
+  delivery failures, and API Gateway HTTP API 5xx responses.
+
+WAF stores only blocked-request records for 30 days in
+`aws-waf-logs-pep-oracle-blocked`. It redacts the `Authorization` header and the
+entire query string before delivery, protecting bearer tokens and OAuth callback
+codes. Serving Lambda logs also expire after 30 days. A WAF block alarm is expected
+to be quiet for this single-user service; inspect the matched rule and source pattern
+before changing a rate limit.
 
 ## 5. Create the single Cognito user
 ```bash
@@ -111,8 +130,13 @@ Once stable, disable `pep-oracle-api.service` + the Cloudflare tunnel for `/mcp`
 ingestion until Phase 3 moves it to Fargate).
 
 ## Notes / future hardening
-- Cognito app-client secret currently lands in the Lambda env (`unsafe_unwrap`). For a
-  single-user box this is acceptable; a later hardening moves it to SSM SecureString and
-  reads it in `config.py` (a new signing-style seam).
+- Cognito client-secret rotation and rollback are documented in
+  `phase2b2-signing-and-cognito.md`. Keep both Cognito secrets active through the
+  application cache window and validation soak; no generic automatic rotation is enabled.
+- The refresh-token digest migration retains a read-only legacy plaintext lookup
+  during the first 30 days after this release. Record the production deployment date;
+  after day 30 every old token has reached its fixed maximum lifetime and the fallback
+  branches in `oauth_store.py` can be removed and redeployed. New records are always
+  SHA-256 digests, so the migration never creates additional plaintext rows.
 - KMS asymmetric JWT signing = Phase 5 (swap the `signing.py` backend; the seam exists).
 - Staging environment + GitHub OIDC promote-by-digest pipeline = Phase 4.

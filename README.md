@@ -67,13 +67,14 @@ uv run pytest -m live                             # include live tests (real API
 
 The product runs entirely on AWS. `infra/` is a CDK (Python) app with three concerns:
 
-- **Serving** — container Lambda (`pep_oracle.server.handler`) fronted by CloudFront → API Gateway HTTP API, with S3 corpus storage, a DynamoDB OAuth table, KMS, and a one-user Cognito pool.
+- **Serving** — container Lambda (`pep_oracle.server.handler`) fronted by CloudFront → API Gateway HTTP API, with S3 corpus storage, a DynamoDB OAuth table, KMS, a one-user Cognito pool, and its confidential-client secret in CMK-encrypted Secrets Manager storage (never in Lambda environment variables).
 - **Ingestion** — a daily EventBridge rule triggering a scale-to-zero Fargate task running `pep-oracle ingest-artifact`.
 - **CI/CD** — `ci.yml` gates every PR (ruff + pytest + CDK synth + Docker builds); `deploy.yml` deploys on a `v*` tag (or `workflow_dispatch`) via GitHub OIDC, then smoke-tests.
 
 Dependency security patches are automated: Dependabot opens grouped security PRs → CI gates them → patch/minor updates auto-merge → a release is cut and the production deploy pauses for one-click approval.
 
-Runbooks live under [`docs/aws/`](docs/aws/).
+Runbooks live under [`docs/aws/`](docs/aws/); the current control inventory and
+evidence-backed deferrals are in [`docs/security-hardening.md`](docs/security-hardening.md).
 
 ## Repository layout
 
