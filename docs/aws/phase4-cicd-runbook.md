@@ -1,48 +1,67 @@
-# Phase 4 — CI/CD runbook (GitHub OIDC, tag-to-deploy)
+# Release and rollback runbook
 
 Account 940831808393, region ap-southeast-2, repo greggkp/pep-oracle.
 CDK CLI local: `cd infra && PATH="$PWD/.venv/bin:$PATH" ./node_modules/.bin/cdk ...`.
 
-## One-time bootstrap (admin creds, once ever)
+## Normal release
+
+The daily release train (`release-train.yml`) checks for undeployed commits at 06:00
+UTC. When changes exist, it chooses the next patch version and dispatches
+`deploy.yml` from `main`. The production GitHub Environment may pause the run for
+approval. A successful run deploys both application stacks, smoke-tests
+`https://pep-oracle.iicapn.com`, and creates the annotated release tag.
+
+For an immediate or explicitly versioned release, open GitHub → Actions → **deploy**
+→ **Run workflow**, select `main`, and enter an unused `vMAJOR.MINOR.PATCH` version.
+Manual dispatch from `main` is supported: the deploy job declares the `production`
+Environment, whose OIDC subject is trusted by the AWS role.
+
+A direct push of a new `v*` tag remains supported, but the automated or manual
+workflow-dispatch paths are preferred because they deploy before creating the tag.
+
+`deploy.yml` builds the images, deploys `PepOracleProdStack` and
+`PepOracleIngestStack`, then runs `scripts/smoke.py`. `GET /version` must report the
+requested semantic version and deployed commit. Treat a failed smoke test as a
+failed release: CloudFormation may already have activated the new Lambda version,
+so investigate or roll back promptly.
+
+## Rollback
+
+GitHub → Actions → **deploy** → **Run workflow**. Select the last known-good `v*`
+tag in the ref dropdown and enter that same existing version. The workflow redeploys
+the tagged commit and skips tag creation because the tag already exists. The image
+assets are normally already in ECR, making this faster than a new release.
+
+Do not move or recreate release tags. Rollback means redeploying an immutable prior
+tag, then confirming the smoke job and `GET /version`.
+
+## CI gate
+
+Every PR and push to `main` runs secret scanning, Ruff lint and format checks, Mypy,
+root and infrastructure tests, CDK synth, both Docker builds, pip-audit, and blocking
+high/critical Trivy scans. GitHub CodeQL default setup covers Python and Actions. A
+red required check blocks merge and must be fixed before release.
+
+## One-time bootstrap
+
 1. Deploy the OIDC + deploy-role stack:
    ```bash
    cd infra
    PATH="$PWD/.venv/bin:$PATH" ./node_modules/.bin/cdk deploy PepOracleCicdStack --require-approval never
    ```
    Note the `DeployRoleArn` output (e.g. `arn:aws:iam::940831808393:role/pep-oracle-github-deploy`).
-2. Set GitHub repo **variables** (Settings → Secrets and variables → Actions → **Variables**, not Secrets — neither value is sensitive):
+2. Set GitHub repo **variables** (Settings → Secrets and variables → Actions →
+   **Variables**, not Secrets — neither value is sensitive):
    - `AWS_DEPLOY_ROLE_ARN` = the role ARN from step 1
    - `ALLOWED_EMAIL` = `greggkp71@gmail.com`
 
-## Normal release
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-`deploy.yml` builds the images (`from_asset`), deploys `PepOracleProdStack` + `PepOracleIngestStack`
-via the OIDC role, then runs `scripts/smoke.py` against https://pep-oracle.iicapn.com. The tag shows
-in `GET /version` as `code_semver`, and `code_git_sha` is the tagged commit. A red ✗ = the smoke
-failed; the previous version is still live (Lambda update is atomic — a failed smoke means the new
-code is live but didn't pass, so roll back).
-
-## Rollback
-GitHub → Actions → **deploy** → Run workflow → in the ref dropdown **pick the previous `v*` tag**.
-The OIDC trust allows any `v*` ref; the prior image is already in ECR, so it's a ~1–2 min Lambda
-update. (Tags are immutable — rollback = redeploy the last good tag.)
-
-**Important:** a `workflow_dispatch` run only obtains AWS credentials when run against a **`v*` tag
-ref** — the OIDC trust subject is `repo:greggkp/pep-oracle:ref:refs/tags/v*`. Dispatching against
-`main` (or any branch) fails at the assume-role step with an STS denial. Always select a tag.
-
-## CI gate (no action needed — runs automatically)
-`ci.yml` runs on every PR and every push to `main`: `ruff check` + root `pytest` (via `uv`) + infra
-`pytest` + `cdk synth '*'` (all stacks) + a docker build of both images. No AWS access (no OIDC, no creds). A
-red CI blocks the merge; fix before tagging a release.
-
 ## Notes
-- `PepOracleCertStack` is **not** in the pipeline (manual, rare, us-east-1).
+
 - If a deploy ever fails on a bootstrap-version lookup, confirm the deploy role's `ssm:GetParameter`
   on `/cdk-bootstrap/hnb659fds/version` (granted by `PepOracleCicdStack`).
-- The corpus artifact is data, not code — never deployed by this pipeline (see the Phase 3 runbook).
-- The CDK CLI is pinned to `2.1126.0` in both workflows (matches `infra/package.json`); bump both
-  together if upgrading.
+- The deploy role trusts both `v*` tag refs and the `production` Environment subject;
+  do not broaden it to arbitrary branch subjects.
+- `PepOracleCertStack` remains manual because it is rarely changed and deploys in
+  us-east-1.
+- The corpus artifact is data, not code and is published by the ingestion task.
+- Keep the CDK CLI version in workflows aligned with `infra/package.json`.

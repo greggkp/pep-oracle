@@ -1,5 +1,10 @@
 # Intent-gated temporal reranking — implementation spec
 
+> **Implemented design record.** Intent-gated temporal reranking now runs in the MCP
+> retrieval path through `temporal.py`. References below to `/ask`, Haiku preprocessing,
+> `query.py`, ChromaDB, and the removed GUI describe the pre-MCP design and are not
+> current interfaces. See [AGENTS.md](../AGENTS.md) for the live architecture.
+
 ## Context
 
 PEP mixes point-in-time reporting, historical recounting, speculation, and

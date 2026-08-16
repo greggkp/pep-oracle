@@ -3,7 +3,7 @@
 Owns: a KMS key; a private/versioned/KMS-encrypted S3 corpus bucket; the DynamoDB
 OAuth table (schema matching oauth_store.DynamoDbStore); a one-user Cognito pool +
 Hosted-UI domain + confidential app client; the container serving Lambda (FastAPI +
-Mangum) behind a Function URL (AWS_IAM) fronted by CloudFront + OAC; a Route 53
+Mangum) behind an API Gateway HTTP API and CloudFront; a Route 53
 A-alias; and least-privilege IAM. The CloudFront ACM cert lives in us-east-1
 (PepOracleCertStack) and is referenced here cross-region.
 """

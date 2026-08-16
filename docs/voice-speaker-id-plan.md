@@ -1,5 +1,10 @@
 # Voice-embedding speaker ID — implementation plan
 
+> **Implemented design record.** Voice-reference speaker mapping is part of the
+> ingestion pipeline. The rollout-only CLI commands and migration steps below have
+> been removed and are not current operational procedures. See
+> [AGENTS.md](../AGENTS.md) and the live ingestion code for current behavior.
+
 ## Why
 Diarization clustering can't separate Chas/Dave (over-splits to 16-30 clusters or
 merges them), so today's mapping labels only the top-2 clusters by speaking time —

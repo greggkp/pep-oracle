@@ -1,5 +1,9 @@
 # Phase 2c — Lambda app-compat findings (RESOLVED 2026-06-07)
 
+> **Historical investigation.** The compatibility work and DNS cutover described here
+> are complete. Some component and branch references reflect the migration-era code;
+> use the [documentation guide](../README.md) for the current architecture.
+
 > **STATUS: RESOLVED — the MCP endpoint works end-to-end on AWS.** Verified against the
 > CloudFront domain: `/health`, `/version` (corpus v0001, eps 169–263), `/oauth` discovery,
 > and `/mcp` (no-token→401; minted-JWT `initialize`/`tools/list`/`tools/call`→200 with real

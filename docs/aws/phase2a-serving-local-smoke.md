@@ -1,5 +1,10 @@
 # Phase 2a — serving the MCP tool from the corpus artifact (local smoke)
 
+> **Historical migration record.** Phase 2a is complete. The service now always
+> retrieves from the corpus artifact; ChromaDB and the feature flags below have been
+> removed. Do not use these commands for current operation. See the
+> [documentation guide](../README.md) for current setup and release guidance.
+
 Phase 2a lets the MCP tool retrieve from the Phase 1 corpus artifact instead of
 ChromaDB, gated by `PEP_ORACLE_SERVE_FROM_ARTIFACT`. The OptiPlex keeps its default
 (ChromaDB) because nothing rebuilds the artifact on ingest until Phase 3.

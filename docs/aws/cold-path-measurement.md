@@ -226,7 +226,6 @@ Once the data is in, compare the dominant phase against the candidate fixes:
   shipped as the `vNNNN.bm25.zst` sidecar (`corpus.index_decode` replaces the
   build on the happy path). `hybrid.bm25_build` now firing at all means the
   prebuilt index was missing or rejected — investigate.
-- `corpus.*` / `bm25_build` show up on otherwise-warm requests → that's the TTL
-  refresh paying inline; consider refreshing in the background.
-- Both heavy corpus phases dominate → also consider warming the corpus + BM25 in
-  the INIT phase (module import, guarded fallback) so the first request is warm.
+- `corpus.*` / `bm25_build` show up on otherwise-warm requests → investigate the
+  scheduled warmer, sidecar validation, and TTL timing. Do not move corpus loading
+  into INIT: that would charge every health/discovery cold start for the search path.

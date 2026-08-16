@@ -1,5 +1,9 @@
 # Phase 2b — OAuth state in DynamoDB
 
+> **Historical implementation record.** This phase is complete. Retain this document
+> for the OAuth-store design rationale, but use the
+> [documentation guide](../README.md), current CDK, and tests for operational truth.
+
 The OAuth provider's state (registered clients, single-use auth codes, refresh
 tokens) lives behind `oauth_store.OAuthStore`. `PEP_ORACLE_OAUTH_STORE` selects the
 backend: `sqlite` (local default, `~/.pep-oracle/oauth.db`) or `dynamodb` (the
