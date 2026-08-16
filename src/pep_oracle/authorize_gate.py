@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections.abc import Callable
 from typing import Any, Protocol
 from urllib.parse import urlencode
 
@@ -48,13 +50,61 @@ class TrustedUpstreamGate:
         return False
 
 
+class _SecretsManagerClientSecret:
+    """Resolve and briefly cache the Cognito app-client secret.
+
+    A bounded cache avoids a network call on every rare OAuth callback while still
+    allowing zero-downtime rotation: publish the new value in Secrets Manager, wait
+    one cache interval, verify login, then retire the old Cognito secret.
+    """
+
+    def __init__(
+        self,
+        *,
+        secret_id: str,
+        region: str,
+        cache_seconds: int,
+        client=None,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if cache_seconds < 0:
+            raise ValueError("Cognito client-secret cache duration cannot be negative")
+        self._secret_id = secret_id
+        self._region = region
+        self._cache_seconds = cache_seconds
+        self._client = client
+        self._now = now
+        self._cached_value: str | None = None
+        self._loaded_at = 0.0
+
+    def get(self) -> str:
+        now = self._now()
+        if self._cached_value is not None and now - self._loaded_at < self._cache_seconds:
+            return self._cached_value
+
+        if self._client is None:
+            import boto3
+
+            self._client = boto3.client("secretsmanager", region_name=self._region)
+        response = self._client.get_secret_value(SecretId=self._secret_id)
+        value = response.get("SecretString")
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError("Cognito client secret is missing or empty")
+        self._cached_value = value.strip()
+        self._loaded_at = now
+        # Do not log the secret ARN/name or value.
+        logger.info("Loaded Cognito client secret from Secrets Manager")
+        return self._cached_value
+
+
 class CognitoGate:
     def __init__(
         self,
         *,
         domain: str,
         client_id: str,
-        client_secret: str,
+        client_secret: str | None = None,
+        client_secret_provider: Callable[[], str] | None = None,
         user_pool_id: str,
         region: str,
         allowed_emails: list[str],
@@ -62,6 +112,15 @@ class CognitoGate:
         self.domain = domain.rstrip("/")
         self.client_id = client_id
         self.client_secret = client_secret
+        if client_secret_provider is None:
+            if not client_secret:
+                raise ValueError("Cognito client secret is required")
+
+            def direct_client_secret() -> str:
+                return client_secret
+
+            client_secret_provider = direct_client_secret
+        self._client_secret_provider = client_secret_provider
         self.user_pool_id = user_pool_id
         self.region = region
         self.allowed_emails = [e.strip().lower() for e in allowed_emails if e.strip()]
@@ -74,7 +133,6 @@ class CognitoGate:
             for name, val in (
                 ("PEP_ORACLE_COGNITO_DOMAIN", config.COGNITO_DOMAIN),
                 ("PEP_ORACLE_COGNITO_CLIENT_ID", config.COGNITO_CLIENT_ID),
-                ("PEP_ORACLE_COGNITO_CLIENT_SECRET", config.COGNITO_CLIENT_SECRET),
                 ("PEP_ORACLE_COGNITO_USER_POOL_ID", config.COGNITO_USER_POOL_ID),
             )
             if not val
@@ -82,12 +140,26 @@ class CognitoGate:
         emails = [e.strip().lower() for e in config.COGNITO_ALLOWED_EMAILS.split(",") if e.strip()]
         if not emails:
             missing.append("PEP_ORACLE_COGNITO_ALLOWED_EMAILS")
+        if not (config.COGNITO_CLIENT_SECRET_ARN or config.COGNITO_CLIENT_SECRET):
+            missing.append(
+                "PEP_ORACLE_COGNITO_CLIENT_SECRET_ARN or PEP_ORACLE_COGNITO_CLIENT_SECRET"
+            )
         if missing:
             raise ValueError("AUTHORIZE_GATE=cognito requires: " + ", ".join(missing))
+        secret_provider = None
+        client_secret = config.COGNITO_CLIENT_SECRET or None
+        if config.COGNITO_CLIENT_SECRET_ARN:
+            secret_provider = _SecretsManagerClientSecret(
+                secret_id=config.COGNITO_CLIENT_SECRET_ARN,
+                region=config.COGNITO_CLIENT_SECRET_REGION,
+                cache_seconds=config.COGNITO_CLIENT_SECRET_CACHE_SECONDS,
+            ).get
+            client_secret = None
         return cls(
             domain=config.COGNITO_DOMAIN,
             client_id=config.COGNITO_CLIENT_ID,
-            client_secret=config.COGNITO_CLIENT_SECRET,
+            client_secret=client_secret,
+            client_secret_provider=secret_provider,
             user_pool_id=config.COGNITO_USER_POOL_ID,
             region=config.COGNITO_REGION,
             allowed_emails=emails,
@@ -183,6 +255,11 @@ class CognitoGate:
 
     def _exchange_code(self, *, code: str, redirect_uri: str) -> str:
         try:
+            client_secret = self._client_secret_provider()
+        except Exception as e:  # noqa: BLE001 -- AWS SDK failures fail this login closed
+            logger.error("Cognito client-secret retrieval failed (%s)", type(e).__name__)
+            raise IdentityError("token exchange unavailable") from e
+        try:
             resp = requests.post(
                 f"{self.domain}/oauth2/token",
                 data={
@@ -191,7 +268,7 @@ class CognitoGate:
                     "code": code,
                     "redirect_uri": redirect_uri,
                 },
-                auth=(self.client_id, self.client_secret),
+                auth=(self.client_id, client_secret),
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=_HTTP_TIMEOUT,
             )

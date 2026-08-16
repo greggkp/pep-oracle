@@ -41,6 +41,7 @@ def test_get_gate_cognito_builds_from_config(monkeypatch):
     monkeypatch.setattr(config, "COGNITO_DOMAIN", "https://d.example")
     monkeypatch.setattr(config, "COGNITO_CLIENT_ID", "cid")
     monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET_ARN", "")
     monkeypatch.setattr(config, "COGNITO_USER_POOL_ID", "ap-southeast-2_pool")
     monkeypatch.setattr(config, "COGNITO_REGION", "ap-southeast-2")
     monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "me@example.com")
@@ -50,11 +51,35 @@ def test_get_gate_cognito_builds_from_config(monkeypatch):
     assert gate.allowed_emails == ["me@example.com"]
 
 
+def test_get_gate_cognito_prefers_lazy_secrets_manager_provider(monkeypatch):
+    monkeypatch.setattr(config, "AUTHORIZE_GATE", "cognito")
+    monkeypatch.setattr(config, "COGNITO_DOMAIN", "https://d.example")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_ID", "cid")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET", "must-not-be-used")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET_ARN", "arn:aws:secretsmanager:test")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET_REGION", "ap-southeast-2")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET_CACHE_SECONDS", 300)
+    monkeypatch.setattr(config, "COGNITO_USER_POOL_ID", "ap-southeast-2_pool")
+    monkeypatch.setattr(config, "COGNITO_REGION", "ap-southeast-2")
+    monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "me@example.com")
+
+    gate = authorize_gate.get_gate()
+
+    # Construction is lazy (no AWS call), and production never retains the direct
+    # environment value when a secret ARN is configured.
+    assert isinstance(gate, CognitoGate)
+    assert gate.client_secret is None
+    assert isinstance(
+        gate._client_secret_provider.__self__, authorize_gate._SecretsManagerClientSecret
+    )
+
+
 def test_cognito_from_config_missing_fields_raises(monkeypatch):
     monkeypatch.setattr(config, "AUTHORIZE_GATE", "cognito")
     monkeypatch.setattr(config, "COGNITO_DOMAIN", "")
     monkeypatch.setattr(config, "COGNITO_CLIENT_ID", "")
     monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET", "")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET_ARN", "")
     monkeypatch.setattr(config, "COGNITO_USER_POOL_ID", "")
     monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "")
     with pytest.raises(ValueError):
@@ -99,10 +124,72 @@ def test_cognito_from_config_whitespace_emails_raises(monkeypatch):
     monkeypatch.setattr(config, "COGNITO_DOMAIN", "https://d.example")
     monkeypatch.setattr(config, "COGNITO_CLIENT_ID", "cid")
     monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(config, "COGNITO_CLIENT_SECRET_ARN", "")
     monkeypatch.setattr(config, "COGNITO_USER_POOL_ID", "ap-southeast-2_pool")
     monkeypatch.setattr(config, "COGNITO_ALLOWED_EMAILS", "  ,  ")
     with pytest.raises(ValueError):
         authorize_gate.get_gate()
+
+
+def test_secrets_manager_client_secret_is_cached_and_refreshes():
+    class FakeSecretsManager:
+        def __init__(self):
+            self.calls = []
+            self.values = iter(["first-secret", "rotated-secret"])
+
+        def get_secret_value(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"SecretString": next(self.values)}
+
+    clock = {"now": 100.0}
+    client = FakeSecretsManager()
+    provider = authorize_gate._SecretsManagerClientSecret(
+        secret_id="arn:aws:secretsmanager:region:account:secret:test",
+        region="ap-southeast-2",
+        cache_seconds=300,
+        client=client,
+        now=lambda: clock["now"],
+    )
+
+    assert provider.get() == "first-secret"
+    clock["now"] += 299
+    assert provider.get() == "first-secret"
+    assert len(client.calls) == 1
+    clock["now"] += 1
+    assert provider.get() == "rotated-secret"
+    assert len(client.calls) == 2
+
+
+def test_secrets_manager_client_secret_rejects_empty_value():
+    class EmptySecretsManager:
+        def get_secret_value(self, **kwargs):
+            return {"SecretString": "  "}
+
+    provider = authorize_gate._SecretsManagerClientSecret(
+        secret_id="secret-id",
+        region="ap-southeast-2",
+        cache_seconds=300,
+        client=EmptySecretsManager(),
+    )
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        provider.get()
+
+
+def test_exchange_fails_closed_when_secret_provider_fails(monkeypatch):
+    def unavailable():
+        raise OSError("secrets manager unavailable")
+
+    gate = _gate(client_secret=None, client_secret_provider=unavailable)
+    called = False
+
+    def unexpected_post(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(authorize_gate.requests, "post", unexpected_post)
+    with pytest.raises(authorize_gate.IdentityError, match="exchange unavailable"):
+        gate.exchange_and_verify(code="x", redirect_uri="https://app/cb")
+    assert called is False
 
 
 # --- ID-token verification ------------------------------------------------

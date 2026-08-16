@@ -27,9 +27,11 @@ from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as route53_targets
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subs
 from constructs import Construct
@@ -128,6 +130,19 @@ class PepOracleProdStack(Stack):
             supported_identity_providers=[cognito.UserPoolClientIdentityProvider.COGNITO],
             prevent_user_existence_errors=True,
         )
+        # Keep the generated confidential-client credential out of the Lambda
+        # environment. CloudFormation passes the Cognito GetAtt directly into the
+        # CMK-encrypted secret; neither the synthesized template nor Lambda config
+        # contains the plaintext value.
+        self.cognito_client_secret = secretsmanager.Secret(
+            self,
+            "CognitoClientSecret",
+            secret_name=cfg.cognito_client_secret_name,
+            description="pep-oracle Cognito confidential app-client secret",
+            encryption_key=self.kms_key,
+            secret_string_value=self.user_pool_client.user_pool_client_secret,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
 
         # --- Serving Lambda (container) + Function URL + least-privilege IAM ---
         project_root = Path(__file__).resolve().parents[2]
@@ -153,8 +168,10 @@ class PepOracleProdStack(Stack):
                 f"https://{cfg.cognito_domain_prefix}.auth.{cfg.compute_region}.amazoncognito.com"
             ),
             "PEP_ORACLE_COGNITO_CLIENT_ID": self.user_pool_client.user_pool_client_id,
-            "PEP_ORACLE_COGNITO_CLIENT_SECRET": (
-                self.user_pool_client.user_pool_client_secret.unsafe_unwrap()
+            "PEP_ORACLE_COGNITO_CLIENT_SECRET_ARN": self.cognito_client_secret.secret_arn,
+            "PEP_ORACLE_COGNITO_CLIENT_SECRET_REGION": cfg.compute_region,
+            "PEP_ORACLE_COGNITO_CLIENT_SECRET_CACHE_SECONDS": str(
+                cfg.cognito_client_secret_cache_seconds
             ),
             "PEP_ORACLE_COGNITO_USER_POOL_ID": self.user_pool.user_pool_id,
             "PEP_ORACLE_COGNITO_REGION": cfg.compute_region,
@@ -170,6 +187,7 @@ class PepOracleProdStack(Stack):
             code=lambda_.DockerImageCode.from_image_asset(str(project_root)),
             memory_size=2048,
             timeout=Duration.seconds(30),
+            log_retention=logs.RetentionDays.ONE_MONTH,
             environment=env,
         )
         # Reserving concurrency requires the account's unreserved pool to stay >= 10;
@@ -181,6 +199,7 @@ class PepOracleProdStack(Stack):
         # Least-privilege grants
         self.corpus_bucket.grant_read(self.fn)
         self.oauth_table.grant_read_write_data(self.fn)
+        self.cognito_client_secret.grant_read(self.fn)
         self.kms_key.grant_decrypt(self.fn)  # SSM SecureString + S3/DDB CMK reads
         self.fn.add_to_role_policy(
             iam.PolicyStatement(
@@ -290,6 +309,21 @@ class PepOracleProdStack(Stack):
             ),
         )
         warm_failed_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
+
+        throttles_alarm = cloudwatch.Alarm(
+            self,
+            "ServeFnThrottlesAlarm",
+            metric=self.fn.metric_throttles(period=Duration.minutes(5), statistic="Sum"),
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "The serving Lambda was throttled. Check account concurrency and request/WAF "
+                "metrics before raising or reserving concurrency."
+            ),
+        )
+        throttles_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
         self.serve_alerts_topic = serve_alerts
 
         # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this
@@ -303,6 +337,26 @@ class PepOracleProdStack(Stack):
             "HttpApi",
             default_integration=apigw_integrations.HttpLambdaIntegration("LambdaProxy", self.fn),
         )
+        api_5xx_alarm = cloudwatch.Alarm(
+            self,
+            "HttpApi5xxAlarm",
+            metric=cloudwatch.Metric(
+                namespace="AWS/ApiGateway",
+                metric_name="5xx",
+                dimensions_map={"ApiId": self.http_api.api_id},
+                period=Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "API Gateway returned one or more server errors in five minutes. "
+                "Inspect ServeFn logs and Lambda Errors/Throttles."
+            ),
+        )
+        api_5xx_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
         api_domain = f"{self.http_api.api_id}.execute-api.{cfg.compute_region}.amazonaws.com"
 
         # --- Public endpoint: CloudFront + Route 53 alias (cert is cross-region) ---

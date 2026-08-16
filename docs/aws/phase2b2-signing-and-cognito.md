@@ -43,7 +43,14 @@ Env:
 - `PEP_ORACLE_AUTHORIZE_GATE=cognito`
 - `PEP_ORACLE_COGNITO_DOMAIN=https://pep-oracle.auth.ap-southeast-2.amazoncognito.com`
 - `PEP_ORACLE_COGNITO_CLIENT_ID=<app client id>`
-- `PEP_ORACLE_COGNITO_CLIENT_SECRET=<app client secret>`
+- Production: `PEP_ORACLE_COGNITO_CLIENT_SECRET_ARN=<Secrets Manager ARN>` and
+  `PEP_ORACLE_COGNITO_CLIENT_SECRET_REGION=ap-southeast-2`. The CDK creates this
+  CMK-encrypted secret from the generated Cognito value and grants the Lambda
+  `secretsmanager:GetSecretValue` on only that ARN.
+- Local/manual alternative only: `PEP_ORACLE_COGNITO_CLIENT_SECRET=<app client secret>`.
+  Never configure this value in the production Lambda environment.
+- `PEP_ORACLE_COGNITO_CLIENT_SECRET_CACHE_SECONDS=300` (default). The value is
+  loaded lazily during the Cognito code exchange and refreshed after this interval.
 - `PEP_ORACLE_COGNITO_USER_POOL_ID=ap-southeast-2_abc123`
 - `PEP_ORACLE_COGNITO_REGION=ap-southeast-2` (defaults to the Bedrock region)
 - `PEP_ORACLE_COGNITO_ALLOWED_EMAILS=you@example.com` (comma-separated allow-list; required)
@@ -51,7 +58,36 @@ Env:
 When `cognito` is selected, `mount_mcp_if_configured` does **not** require
 `PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH=1` — the in-app identity check is the auth.
 A missing required Cognito var makes mount refuse (fail-closed), as does an
-unrecognized `PEP_ORACLE_AUTHORIZE_GATE` value.
+unrecognized `PEP_ORACLE_AUTHORIZE_GATE` value. If Secrets Manager is unavailable
+or returns an empty value, the login callback fails closed without calling Cognito;
+the secret value and ARN are never written to logs.
+
+## Rotate the Cognito client secret without downtime
+
+Cognito permits two active secrets per app client. Keep the old secret active until
+every warm Lambda has passed the five-minute application cache window:
+
+1. Record the existing secret IDs with `aws cognito-idp
+   list-user-pool-client-secrets --user-pool-id <pool-id> --client-id <client-id>
+   --region ap-southeast-2`.
+2. Call `aws cognito-idp add-user-pool-client-secret --user-pool-id <pool-id>
+   --client-id <client-id> --region ap-southeast-2`. Capture both
+   `ClientSecretId` and the one-time `ClientSecretValue`; do not print or commit
+   the response.
+3. Write only the new value to `pep-oracle/cognito-client-secret` with
+   `aws secretsmanager put-secret-value`. This makes the prior value available as
+   `AWSPREVIOUS` for rollback while the new value becomes `AWSCURRENT`.
+4. Wait at least `PEP_ORACLE_COGNITO_CLIENT_SECRET_CACHE_SECONDS` plus a safety
+   margin, then complete a fresh browser login and the authenticated MCP smoke test.
+5. After the chosen soak period, delete the old Cognito secret by its ID with
+   `aws cognito-idp delete-user-pool-client-secret`. Cognito will not delete the
+   only remaining secret.
+
+Before step 5, rollback is safe: copy the Secrets Manager `AWSPREVIOUS` value into
+a new `AWSCURRENT` version, wait one cache interval, and repeat the login smoke.
+Do not delete the old Cognito secret until the new value has passed that validation.
+Treat rotation as an explicit operator procedure; generic Secrets Manager automatic
+rotation is not enabled because it must coordinate the Cognito add/delete APIs.
 
 ## Flow (cognito)
 

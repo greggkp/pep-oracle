@@ -29,6 +29,8 @@ class DeployConfig:
     embed_dims: str = "1024"
     oauth_table_name: str = "pep-oracle-oauth"
     signing_ssm_param: str = "/pep-oracle/oauth-signing-key"
+    cognito_client_secret_name: str = "pep-oracle/cognito-client-secret"
+    cognito_client_secret_cache_seconds: int = 300
     # KMS CMK id for the corpus bucket / data-at-rest. The ingest stack imports the
     # key (and bucket) by id/name so its grants are identity-only — deploying ingest
     # never forces a PepOracleProdStack update (which would redeploy the serving
@@ -60,5 +62,8 @@ class DeployConfig:
             git_sha=ctx("git_sha", "unknown"),
             semver=ctx("semver", "unknown"),
             lambda_reserved_concurrency=int(ctx("lambda_reserved_concurrency", 0)),
+            cognito_client_secret_cache_seconds=int(
+                ctx("cognito_client_secret_cache_seconds", 300)
+            ),
             data_key_id=ctx("data_key_id", cls.data_key_id),
         )
