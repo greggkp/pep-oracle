@@ -59,7 +59,6 @@ a gap. Do not suppress a future finding merely to keep CI green.
 
 ### Dependabot alert 34
 
-The open default-branch alert is `GHSA-6hr6-w5qg-qmwg` / `CVE-2026-71554` for
-`h2 <= 4.4.0`. This branch explicitly requires `h2>=4.4.1` and locks version 4.4.1,
-the advisory's first patched release. The alert should close when this branch reaches
-the default branch; verify that outcome after merge rather than dismissing it.
+The default branch requires `h2>=4.4.1` and locks version 4.4.1, the first patched
+release for `GHSA-6hr6-w5qg-qmwg` / `CVE-2026-71554` (`h2 <= 4.4.0`). Verify that
+Dependabot alert 34 is closed; do not dismiss it as a substitute for the patched lock.

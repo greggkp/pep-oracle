@@ -88,7 +88,7 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     if not public_url:
         logger.warning(
             "PEP_ORACLE_PUBLIC_URL not set — MCP endpoint disabled. Set to the "
-            "public tunnel hostname claude.ai will fetch (e.g. https://pep-oracle.iicapn.com)."
+            "public OAuth issuer URL clients will use (e.g. https://pep-oracle.iicapn.com)."
         )
         return False
 
@@ -234,8 +234,8 @@ class _McpSlashNormalizer:
     CloudFront→API Gateway the Lambda sees the APIGW execute-api Host, so Starlette would
     build that 307's Location against the internal host — a cross-host redirect that leaks
     the origin and makes clients drop the Authorization header. Rewriting in-process
-    avoids the redirect. (uvicorn/OptiPlex doesn't use this wrapper; its same-host 307 is
-    harmless.)"""
+    avoids the redirect. Local uvicorn does not use this wrapper; its same-host 307 is
+    harmless."""
 
     def __init__(self, app):
         self.app = app

@@ -69,12 +69,14 @@ The product runs entirely on AWS. `infra/` is a CDK (Python) app with three conc
 
 - **Serving** — container Lambda (`pep_oracle.server.handler`) fronted by CloudFront → API Gateway HTTP API, with S3 corpus storage, a DynamoDB OAuth table, KMS, a one-user Cognito pool, and its confidential-client secret in CMK-encrypted Secrets Manager storage (never in Lambda environment variables).
 - **Ingestion** — a daily EventBridge rule triggering a scale-to-zero Fargate task running `pep-oracle ingest-artifact`.
-- **CI/CD** — `ci.yml` gates every PR (ruff + pytest + CDK synth + Docker builds); `deploy.yml` deploys on a `v*` tag (or `workflow_dispatch`) via GitHub OIDC, then smoke-tests.
+- **CI/CD** — `ci.yml` gates every PR with quality, test, supply-chain, and image
+  checks. The daily release train or a manual dispatch deploys through GitHub OIDC,
+  smoke-tests production, and creates the release tag.
 
 Dependency security patches are automated: Dependabot opens grouped security PRs → CI gates them → patch/minor updates auto-merge → a release is cut and the production deploy pauses for one-click approval.
 
-Runbooks live under [`docs/aws/`](docs/aws/); the current control inventory and
-evidence-backed deferrals are in [`docs/security-hardening.md`](docs/security-hardening.md).
+Start with the [`docs/` guide](docs/README.md) to distinguish current operational
+guidance from retained migration and design records.
 
 ## Repository layout
 
@@ -83,6 +85,6 @@ evidence-backed deferrals are in [`docs/security-hardening.md`](docs/security-ha
 | `src/pep_oracle/` | Application code (ingestion, retrieval, MCP server, OAuth, corpus) |
 | `cloud/` | Modal apps for GPU transcription + diarization |
 | `infra/` | CDK app (serving, ingestion, CI/CD stacks) |
-| `docs/aws/` | Deployment runbooks and design notes |
+| `docs/` | Current guidance plus historical implementation records |
 | `tests/` | Unit tests (mocked APIs) + `@pytest.mark.live` integration tests |
-| `scripts/` | Bootstrap, smoke test, benchmarks |
+| `scripts/` | Development bootstrap and deployment smoke test |

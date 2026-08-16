@@ -46,14 +46,14 @@ SEMVER = os.getenv("PEP_ORACLE_SEMVER", "")  # release tag (set by CI); override
 
 # --- OAuth store backend (Phase 2b) ---
 # "sqlite" (local default, file/:memory:) or "dynamodb" (cloud). The serving
-# Lambda sets "dynamodb"; the OptiPlex keeps "sqlite".
+# The production Lambda sets "dynamodb"; local development defaults to "sqlite".
 OAUTH_STORE = os.getenv("PEP_ORACLE_OAUTH_STORE", "sqlite")
 OAUTH_DDB_TABLE = os.getenv("PEP_ORACLE_OAUTH_DDB_TABLE", "pep-oracle-oauth")
 OAUTH_DDB_REGION = os.getenv("PEP_ORACLE_OAUTH_DDB_REGION", BEDROCK_REGION)
 
 # --- OAuth signing-key backend (Phase 2b2) ---
 # "local" (default): env PEP_ORACLE_OAUTH_SIGNING_KEY -> $DATA_DIR/oauth_signing_key
-# -> a freshly generated 0600 key (unchanged OptiPlex/dev behavior). "ssm": an
+# -> a freshly generated 0600 key (local development). "ssm": an
 # HS256 SecureString from SSM Parameter Store (the Lambda path).
 OAUTH_SIGNING_BACKEND = os.getenv("PEP_ORACLE_OAUTH_SIGNING_BACKEND", "local")
 OAUTH_SIGNING_SSM_PARAM = os.getenv(
@@ -63,8 +63,8 @@ OAUTH_SIGNING_SSM_REGION = os.getenv("PEP_ORACLE_OAUTH_SIGNING_SSM_REGION", BEDR
 
 # --- /oauth/authorize identity gate (Phase 2b2) ---
 # "trusted_upstream" (default): auto-approve, relying on an upstream authenticator
-# (Cloudflare Access) -- the OptiPlex model. "cognito": in-app identity check against
-# a one-user Cognito user pool (the AWS model; no external-edge dependency).
+# supplied upstream authenticator. "cognito": in-app identity check against a one-user
+# Cognito user pool (the production AWS model; no external-edge dependency).
 AUTHORIZE_GATE = os.getenv("PEP_ORACLE_AUTHORIZE_GATE", "trusted_upstream")
 # Hosted-UI base, e.g. https://pep-oracle.auth.ap-southeast-2.amazoncognito.com
 COGNITO_DOMAIN = os.getenv("PEP_ORACLE_COGNITO_DOMAIN", "")

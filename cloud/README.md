@@ -1,26 +1,51 @@
-# Cloud functions
+# Modal GPU functions
 
-## diarize_modal.py
+The AWS Fargate ingestion task calls two scale-to-zero Modal functions on A100 GPUs:
 
-Speaker diarization on a Modal L4 GPU. Replaces local pyannote for the ingestion pipeline.
+- `transcribe_modal.py` runs faster-whisper and caches models in the
+  `pep-oracle-whisper-cache` volume.
+- `diarize_modal.py` runs pyannote and caches models in the
+  `pep-oracle-pyannote-cache` volume.
 
-### One-time setup
+## One-time setup
 
-1. Install Modal: `uv pip install modal`
-2. Authenticate: `modal token new` (opens browser)
-3. Create HuggingFace secret:
+1. Install and authenticate Modal:
+
+   ```bash
+   uv pip install modal
+   modal token new
    ```
+
+2. Accept the Hugging Face terms for
+   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1),
+   then create the secret used by the diarization function:
+
+   ```bash
    modal secret create huggingface-token HF_TOKEN=<your-hf-token>
    ```
-   Token must have access to `pyannote/speaker-diarization-3.1` (accept the license at https://huggingface.co/pyannote/speaker-diarization-3.1).
-4. Deploy: `modal deploy cloud/diarize_modal.py`
-5. Copy `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` from `~/.modal/token` into `/opt/pep-oracle/app/.env`.
-6. Restart the pep-oracle server.
 
-### Redeploy
+3. Deploy both functions:
 
-When `diarize_modal.py` changes: `modal deploy cloud/diarize_modal.py`. The client code looks up the deployed function by name at call time; no client change needed.
+   ```bash
+   modal deploy cloud/transcribe_modal.py
+   modal deploy cloud/diarize_modal.py
+   ```
 
-### Cost
+4. Store the Modal service credentials in the SSM SecureString parameters consumed
+   by the Fargate task:
 
-~$0.05 per 2-hour episode on L4 ($0.80/hr, ~5 min per episode).
+   ```bash
+   aws ssm put-parameter --name /pep-oracle/modal-token-id --type SecureString \
+     --value "$MODAL_TOKEN_ID" --overwrite --region ap-southeast-2
+   aws ssm put-parameter --name /pep-oracle/modal-token-secret --type SecureString \
+     --value "$MODAL_TOKEN_SECRET" --overwrite --region ap-southeast-2
+   ```
+
+## Redeploying
+
+Run `modal deploy` for each changed function. The ingestion client resolves the
+deployed function by app and function name at runtime; application code does not
+contain a deployment URL. No serving-Lambda restart is required.
+
+Modal pricing and GPU availability can change. Check Modal's current pricing before
+estimating an ingestion run rather than relying on a fixed per-episode estimate.

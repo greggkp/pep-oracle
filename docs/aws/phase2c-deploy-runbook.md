@@ -1,5 +1,9 @@
 # Phase 2c — Deploy & cutover runbook (pep-oracle prod serving stack)
 
+> **Historical cutover runbook.** The AWS cutover is complete and the OptiPlex
+> fallback no longer exists. Do not execute this procedure for deployment or rollback.
+> Use the current [release and rollback runbook](phase4-cicd-runbook.md).
+
 Authored by the Phase 2c plan; **execute only after explicit go-ahead**. Provisions
 real, billable resources (≈$2-4/mo idle) and performs a live DNS cutover of
 pep-oracle.iicapn.com. Region: ap-southeast-2 (compute) + us-east-1 (CloudFront cert).

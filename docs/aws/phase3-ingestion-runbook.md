@@ -1,5 +1,10 @@
 # Phase 3 — AWS ingestion deploy + decommission runbook
 
+> **Historical migration and decommission record.** Phase 3 is complete and the
+> OptiPlex rollback target is retired. Do not execute this document as a current
+> deploy, rollback, or maintenance procedure. Use the
+> [release runbook](phase4-cicd-runbook.md) and current CDK configuration.
+
 Execute after merge, with go-ahead. Region ap-southeast-2, account 940831808393, profile optiplex-cli.
 CDK CLI is local: `cd infra && PATH="$PWD/.venv/bin:$PATH" ./node_modules/.bin/cdk ...`.
 

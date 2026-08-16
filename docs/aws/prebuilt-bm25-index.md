@@ -2,8 +2,8 @@
 
 The cold MCP search path used to spend ~2.67 s on the serving Lambda rebuilding
 the BM25 lexical index over every chunk (`hybrid.bm25_build`) — the single
-biggest cold phase, and at this traffic **every** real search is cold (see
-[cold-path-measurement.md](cold-path-measurement.md)). The corpus artifact now
+biggest cold phase, and before the scheduled warmer nearly every real search was cold
+(see [cold-path-measurement.md](cold-path-measurement.md)). The corpus artifact now
 ships the index prebuilt so the serving path decodes it (~1 s) instead of
 rebuilding it: a ~1.7 s cold-path win that also applies on every TTL refresh.
 

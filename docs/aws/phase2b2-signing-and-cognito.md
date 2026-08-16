@@ -1,5 +1,10 @@
 # Phase 2b2 — Signing backend + Cognito authorize gate (operator runbook)
 
+> **Historical migration runbook.** The AWS signing and Cognito cutover is complete,
+> and the OptiPlex deployment is retired. Do not execute this initial-setup procedure
+> as current operations. Use the [release runbook](phase4-cicd-runbook.md) and live CDK
+> configuration instead.
+
 Two app seams for the AWS serving Lambda. Both default to the OptiPlex behavior;
 opt in with env vars. The real AWS resources below are provisioned by the Phase 2c
 CDK — these manual steps let you smoke-test the app against real AWS first.
