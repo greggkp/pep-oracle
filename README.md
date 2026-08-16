@@ -31,7 +31,7 @@ There are two pipelines:
 - **Bedrock-only embeddings** (`embeddings.py`) — `amazon.titan-embed-text-v2:0`, 1024-dim. Query and corpus vectors are validated to come from the same model.
 - **OAuth-gated MCP** (`mcp_server.py` + `oauth.py`) — the single tool is exposed over the MCP Streamable HTTP transport behind an in-app OAuth 2.1 + DCR provider (JWT bearer verification).
 
-See [`CLAUDE.md`](CLAUDE.md) for the full architecture reference and rationale.
+See [`AGENTS.md`](AGENTS.md) for the full architecture reference, rationale, and repository working agreements.
 
 ## Quickstart
 

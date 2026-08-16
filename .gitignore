@@ -3,13 +3,8 @@ __pycache__/
 *.egg-info/
 dist/
 .venv/
-.claude/*
-!.claude/settings.json
-!.claude/hooks/
-!.claude/skills/
-.claude/settings.local.json
-.claude/.md-reviewed
-.claude/scheduled_tasks.lock
+.claude/
+CLAUDE.local.md
 .pytest_cache/
 resume.sh
 .worktrees/
