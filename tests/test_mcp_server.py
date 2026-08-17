@@ -322,14 +322,19 @@ def test_search_pep_forwards_date_filters(patched, monkeypatch):
     assert captured["before_date"] == "2026-06-01"
 
 
-# --- tool name + front-loaded description (deferred-truncation survival) ---
+# --- exported tool contract + front-loaded description ---
+
+
+async def _exported_search_tool():
+    tools = await mcp_server.mcp.list_tools()
+    return next(tool for tool in tools if tool.name == mcp_server.SEARCH_TOOL_NAME)
 
 
 async def test_tool_exported_under_descriptive_name():
-    tools = await mcp_server.mcp.list_tools()
-    names = [t.name for t in tools]
-    assert mcp_server.SEARCH_TOOL_NAME in names
+    tool = await _exported_search_tool()
+    assert tool.name == mcp_server.SEARCH_TOOL_NAME
     assert mcp_server.SEARCH_TOOL_NAME == "search_us_politics_commentary"
+    assert tool.title == mcp_server.SEARCH_TOOL_TITLE
 
 
 def test_description_front_loads_trigger():
@@ -337,10 +342,77 @@ def test_description_front_loads_trigger():
     # First sentence must be the "when to call" trigger, not "what it is",
     # because deferred MCP clients truncate the tail before they see it.
     first_sentence = desc.split(".")[0].lower()
-    assert "call this" in first_sentence
+    assert "use this when" in first_sentence
     assert "us politics" in first_sentence
-    # The "it's a podcast" framing must come AFTER the trigger.
-    assert desc.index("Call this") < desc.index("podcast")
+    assert "news article" in first_sentence
+    assert "Do not use this for non-US politics" in desc
+    assert "alongside current sources" in desc
+    # The source framing must come after the user-goal trigger.
+    assert desc.index("Use this when") < desc.index("podcast")
+
+
+async def test_tool_declares_read_only_closed_world_annotations():
+    tool = await _exported_search_tool()
+    assert tool.annotations is not None
+    assert tool.annotations.title == mcp_server.SEARCH_TOOL_TITLE
+    assert tool.annotations.read_only_hint is True
+    assert tool.annotations.open_world_hint is False
+
+
+async def test_tool_input_schema_is_documented_and_constrained():
+    tool = await _exported_search_tool()
+    props = tool.input_schema["properties"]
+
+    assert set(props) == {
+        "query",
+        "top_k",
+        "episode_number",
+        "intent",
+        "after_date",
+        "before_date",
+    }
+    assert tool.input_schema["required"] == ["query"]
+    assert props["query"]["minLength"] == 1
+    assert props["query"]["maxLength"] == mcp_server.MAX_QUERY_LENGTH
+    assert props["query"]["description"]
+    assert props["query"]["examples"]
+    assert props["top_k"]["minimum"] == 1
+    assert props["top_k"]["maximum"] == mcp_server.MAX_TOP_K
+    assert props["episode_number"]["anyOf"][0]["minimum"] == 1
+    assert props["intent"]["anyOf"][0]["enum"] == [
+        "current",
+        "historical",
+        "evolution",
+        "prediction",
+        "timeless",
+    ]
+    assert props["after_date"]["anyOf"][0]["pattern"] == mcp_server.DATE_PATTERN
+    assert props["before_date"]["anyOf"][0]["pattern"] == mcp_server.DATE_PATTERN
+    assert all(prop["description"] for prop in props.values())
+
+
+async def test_tool_exports_structured_citation_output_schema():
+    tool = await _exported_search_tool()
+    schema = tool.output_schema
+    assert schema is not None
+    assert schema["required"] == ["corpus", "results"]
+
+    corpus = schema["$defs"]["CorpusCoverage"]
+    assert corpus["required"] == ["newest_episode", "newest_episode_date", "oldest_episode"]
+    assert corpus["properties"]["newest_episode"]["description"]
+
+    citation = schema["$defs"]["TranscriptCitation"]
+    assert citation["required"] == [
+        "episode_number",
+        "episode_title",
+        "episode_date",
+        "timestamp",
+        "start_seconds",
+        "end_seconds",
+        "speakers",
+        "excerpt",
+    ]
+    assert all(prop["description"] for prop in citation["properties"].values())
 
 
 # --- (e) /mcp mount + JWT bearer auth ---
