@@ -208,6 +208,39 @@ INIT stacks on top → ~7–9 s wall clock. Breakdown (avg over the 5, corpus
      Lambda (e.g. throttling against the account's concurrency limit of 10),
      which neither alarm above would see.
 
+   Two further alarms cover the serving path rather than the warmer:
+   - Lambda `Throttles` > 0 / 5 min.
+   - Lambda `Duration` Maximum > timeout − 2s / 5 min (`ServeFnTimeoutAlarm`) —
+     an invocation ran to the timeout *without responding*. It is blocked, not
+     slow: a real cold search is ~2.5 s. Each hang also holds one of the ten
+     account concurrency slots for the full timeout.
+
+   **`Errors` is not a warmer-exclusive signal.** A timeout counts too, and the
+   alarm description used to claim otherwise — which cost the 2026-08-23
+   investigation its first pass. If `Errors` fires, check `ServeFnTimeoutAlarm`
+   first to tell "raised" from "never responded", then:
+
+   ```bash
+   # raised → a traceback and a warm.search phase line
+   # never responded → a START with no matching "mangum.http" status line
+   aws logs filter-log-events --region ap-southeast-2 \
+     --log-group-name /aws/lambda/<ServeFn> \
+     --start-time <ms> --end-time <ms> --filter-pattern '"Status: timeout"'
+   ```
+
+   The Lambda logs will not tell you *what was requested* — Mangum logs a
+   request only once the app produces a response. The method and path live in
+   the `HttpApiAccessLogs` group (API Gateway stage access logs) and in
+   CloudFront's standard logs under `cdn/` in `AccessLogsBucket`. Both exist for
+   exactly this case.
+
+   Known instance: on 2026-08-23, nine invocations ran to the 30 s timeout
+   between 09:11 and 09:17 UTC. All were `GET /mcp` — Streamable HTTP's optional
+   server→client SSE stream, which the SDK holds open indefinitely. Fixed by
+   declining GET with 405 in `server._mcp_stateless_asgi`; a stateless server has
+   no server-initiated messages to push. The warmer was healthy throughout
+   (`warm.search` 2.1–2.6 s, all successful).
+
 ## Decision
 
 Once the data is in, compare the dominant phase against the candidate fixes:

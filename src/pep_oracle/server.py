@@ -161,6 +161,36 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     async def _mcp_stateless_asgi(scope, receive, send):
         if scope["type"] != "http":
             return
+        # Streamable HTTP lets a client open GET /mcp as a standing server→client SSE
+        # stream. The SDK keeps that stream open until the client disconnects — correct
+        # under uvicorn, fatal under Mangum, which buffers the whole ASGI response: the
+        # invocation never returns, Lambda kills it at the function timeout, and each
+        # hang burns one of the account's ten concurrency slots (and trips
+        # ServeFnErrorsAlarm). A stateless server has no server-initiated messages to
+        # push, so decline the stream with 405 — which the spec explicitly allows —
+        # instead of accepting one we can never serve.
+        if scope["method"] == "GET":
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 405,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"allow", b"POST"),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": (
+                        b'{"jsonrpc":"2.0","id":null,"error":{"code":-32000,'
+                        b'"message":"Method Not Allowed: this server does not offer a '
+                        b'GET SSE stream"}}'
+                    ),
+                }
+            )
+            return
         sm = StreamableHTTPSessionManager(
             app=_sm_template.app,
             event_store=_sm_template.event_store,

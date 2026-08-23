@@ -394,6 +394,91 @@ def test_serving_security_and_availability_alarms_present():
     )
 
 
+def test_serve_fn_timeout_alarm_present():
+    """An invocation that runs to the timeout never responds — it is blocked, not slow.
+    Distinct enough from a raised exception to warrant its own alarm: on 2026-08-23 nine
+    hung /mcp GET stream attempts surfaced only as an ambiguous Lambda Errors alarm."""
+    t = _template()
+    t.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "Duration",
+                "Namespace": "AWS/Lambda",
+                "Statistic": "Maximum",
+                "Threshold": 28000,
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": Match.any_value(),
+            }
+        ),
+    )
+
+
+def test_http_api_access_logging_records_method_and_path():
+    """Mangum logs a request only once the app responds, so a hung invocation leaves no
+    method/path in the Lambda logs at all. The access log is the only record — and
+    httpMethod is what distinguishes a GET stream attempt from an ordinary POST."""
+    t = _template()
+    t.has_resource_properties(
+        "AWS::ApiGatewayV2::Stage",
+        Match.object_like(
+            {
+                "AccessLogSettings": Match.object_like(
+                    {
+                        "DestinationArn": Match.any_value(),
+                        "Format": Match.string_like_regexp(r".*httpMethod.*"),
+                    }
+                )
+            }
+        ),
+    )
+    t.has_resource_properties(
+        "AWS::ApiGatewayV2::Stage",
+        Match.object_like(
+            {
+                "AccessLogSettings": Match.object_like(
+                    {"Format": Match.string_like_regexp(r".*\$context\.path.*")}
+                )
+            }
+        ),
+    )
+
+
+def test_cloudfront_access_logging_enabled():
+    _template().has_resource_properties(
+        "AWS::CloudFront::Distribution",
+        Match.object_like(
+            {
+                "DistributionConfig": Match.object_like(
+                    {"Logging": Match.object_like({"Bucket": Match.any_value(), "Prefix": "cdn/"})}
+                )
+            }
+        ),
+    )
+
+
+def test_access_logs_bucket_allows_acl_writes_and_is_not_cmk_encrypted():
+    """CloudFront's legacy log delivery writes with an ACL and cannot target an SSE-KMS
+    customer key — so this bucket must keep ACLs enabled and use SSE-S3, unlike the
+    CMK-encrypted corpus bucket. Getting either wrong fails delivery silently."""
+    t = _template()
+    t.has_resource_properties(
+        "AWS::S3::Bucket",
+        Match.object_like(
+            {
+                "OwnershipControls": Match.object_like(
+                    {"Rules": [{"ObjectOwnership": "BucketOwnerPreferred"}]}
+                ),
+                "BucketEncryption": {
+                    "ServerSideEncryptionConfiguration": [
+                        {"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}
+                    ]
+                },
+            }
+        ),
+    )
+
+
 def test_serving_lambda_log_retention_is_30_days():
     _template().has_resource_properties(
         "Custom::LogRetention",

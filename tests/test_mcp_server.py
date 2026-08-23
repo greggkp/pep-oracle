@@ -552,6 +552,37 @@ def test_mount_disables_dns_rebinding_and_is_stateless(monkeypatch, tmp_path):
     assert sm.stateless is True
 
 
+def test_mcp_get_stream_declined_with_405(monkeypatch, tmp_path):
+    """GET /mcp (Streamable HTTP's optional server→client SSE stream) must be declined
+    immediately, not accepted.
+
+    The SDK holds an accepted GET stream open until the client disconnects. Under Mangum
+    that response never completes, so the Lambda invocation runs to its timeout — nine of
+    them on 2026-08-23 tripped ServeFnErrorsAlarm and burned a concurrency slot each. A
+    stateless server has no server-initiated messages to push, and the spec permits 405.
+
+    This test hanging (rather than failing) is itself the regression signal.
+    """
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app(monkeypatch, tmp_path=tmp_path)
+    assert mounted is True
+    tok = _mint()
+    with TestClient(app) as client:
+        resp = client.get(
+            "/mcp/",
+            headers={"Authorization": f"Bearer {tok}", "Accept": "text/event-stream"},
+        )
+        assert resp.status_code == 405
+        assert resp.headers["allow"] == "POST"
+        assert resp.json()["error"]["code"] == -32000
+
+    # The bearer gate still runs first: an unauthenticated GET is a 401, not a 405,
+    # so the short-circuit can't be used to probe for a mounted /mcp without a token.
+    with TestClient(app) as client:
+        assert client.get("/mcp/").status_code == 401
+
+
 def test_mcp_401_when_no_authorization_header(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
