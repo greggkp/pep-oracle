@@ -10,6 +10,7 @@ A-alias; and least-privilege IAM. The CloudFront ACM cert lives in us-east-1
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aws_cdk import Duration, RemovalPolicy, Stack
@@ -44,6 +45,13 @@ WARM_INTERVAL_MINUTES = Duration.minutes(4)
 # Floor for the "warming stopped" alarm: the warmer alone yields 15/hour at a 4-minute
 # cadence, so 10 leaves room for a missed tick or a clock-boundary split.
 WARM_MIN_INVOCATIONS_PER_HOUR = 10
+# CloudFront access logs are a short-window debugging trail (which method hit which path),
+# not an audit record — expire them rather than paying to keep them indefinitely.
+CDN_LOG_RETENTION_DAYS = 30
+LAMBDA_TIMEOUT = Duration.seconds(30)
+# An invocation landing within this margin of the function timeout did not return a
+# response — it was killed. See ServeFnTimeoutAlarm.
+LAMBDA_TIMEOUT_MARGIN = Duration.seconds(2)
 
 
 class PepOracleProdStack(Stack):
@@ -84,6 +92,21 @@ class PepOracleProdStack(Stack):
             encryption=s3.BucketEncryption.KMS,
             encryption_key=self.kms_key,
             enforce_ssl=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
+        # CloudFront standard (legacy) access logs. Deliberately NOT the CMK-encrypted
+        # corpus bucket: CloudFront's log delivery writes with an ACL and cannot use an
+        # SSE-KMS customer key, so this bucket keeps ACLs enabled + SSE-S3. Logs expire
+        # on their own — they are a debugging trail, not durable data.
+        self.access_logs_bucket = s3.Bucket(
+            self,
+            "AccessLogsBucket",
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            object_ownership=s3.ObjectOwnership.BUCKET_OWNER_PREFERRED,
+            enforce_ssl=True,
+            lifecycle_rules=[s3.LifecycleRule(expiration=Duration.days(CDN_LOG_RETENTION_DAYS))],
             removal_policy=RemovalPolicy.RETAIN,
         )
 
@@ -186,7 +209,7 @@ class PepOracleProdStack(Stack):
         fn_kwargs = dict(
             code=lambda_.DockerImageCode.from_image_asset(str(project_root)),
             memory_size=2048,
-            timeout=Duration.seconds(30),
+            timeout=LAMBDA_TIMEOUT,
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment=env,
         )
@@ -245,10 +268,14 @@ class PepOracleProdStack(Stack):
         serve_alerts = sns.Topic(self, "ServeAlerts", display_name="pep-oracle serving alerts")
         serve_alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
 
-        # 1) The warmer's search raised (broken corpus/index/Bedrock path). server.handler
-        #    lets warm-search exceptions propagate precisely so they land here — Mangum
-        #    swallows HTTP-request errors into 500s, so this metric is a clean warmer
-        #    signal rather than ordinary request noise.
+        # 1) The serving Lambda failed an invocation. Two distinct causes, and the
+        #    description must name both — on 2026-08-23 this alarm's warmer-only wording
+        #    sent the investigation down the wrong path for its first pass:
+        #      a) the warmer's search raised (broken corpus/index/Bedrock). server.handler
+        #         lets those propagate precisely so they land here — Mangum swallows
+        #         ordinary HTTP-request errors into 500s, which never reach this metric.
+        #      b) an invocation ran to the timeout without responding. See
+        #         ServeFnTimeoutAlarm, which separates this case out.
         errors_alarm = cloudwatch.Alarm(
             self,
             "ServeFnErrorsAlarm",
@@ -258,9 +285,12 @@ class PepOracleProdStack(Stack):
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
             alarm_description=(
-                "pep-oracle serving Lambda raised — most likely the scheduled warmer's "
-                "search failed (corpus, prebuilt index, or Bedrock). Users would fall "
-                "back to cold searches. Check the ServeFn logs for warm.search."
+                "pep-oracle serving Lambda invocation failed. Either the scheduled "
+                "warmer's search raised (corpus, prebuilt index, or Bedrock — grep the "
+                "ServeFn logs for warm.search), or an invocation hit the "
+                f"{LAMBDA_TIMEOUT.to_seconds()}s timeout without responding (grep for "
+                "'Status: timeout', then read the HttpApiAccessLogs group for the method "
+                "and path). Check ServeFnTimeoutAlarm to tell the two apart."
             ),
         )
         errors_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
@@ -310,6 +340,7 @@ class PepOracleProdStack(Stack):
         )
         warm_failed_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
 
+        # 4) The Lambda was throttled against the account concurrency limit.
         throttles_alarm = cloudwatch.Alarm(
             self,
             "ServeFnThrottlesAlarm",
@@ -324,6 +355,30 @@ class PepOracleProdStack(Stack):
             ),
         )
         throttles_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
+
+        # 5) An invocation ran to the timeout. Distinct from a raised exception and worth
+        #    its own signal: a request that never responds is usually the app blocking on
+        #    something it can never finish, and each one holds a concurrency slot for the
+        #    full timeout (the account cap is 10). Maximum, not Average — a single hang
+        #    hiding behind fast health checks is exactly the case to catch.
+        timeout_alarm = cloudwatch.Alarm(
+            self,
+            "ServeFnTimeoutAlarm",
+            metric=self.fn.metric_duration(period=Duration.minutes(5), statistic="Maximum"),
+            threshold=LAMBDA_TIMEOUT.to_milliseconds() - LAMBDA_TIMEOUT_MARGIN.to_milliseconds(),
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                f"A serving-Lambda invocation ran to (or near) the "
+                f"{LAMBDA_TIMEOUT.to_seconds()}s timeout without responding — it is "
+                "blocked, not slow; a real search is ~2.5s cold. Each one holds one of "
+                "the account's ten concurrency slots for the full timeout. The Lambda "
+                "logs will show the request START with no matching 'mangum.http' status "
+                "line; the HttpApiAccessLogs group has the method and path."
+            ),
+        )
+        timeout_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
         self.serve_alerts_topic = serve_alerts
 
         # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this
@@ -336,6 +391,40 @@ class PepOracleProdStack(Stack):
             self,
             "HttpApi",
             default_integration=apigw_integrations.HttpLambdaIntegration("LambdaProxy", self.fn),
+        )
+
+        # Access logs. Mangum only logs a request once the app produces a response, so an
+        # invocation that never responds (see ServeFnTimeoutAlarm) leaves no method/path
+        # anywhere in the Lambda logs. These lines are the only record of what was asked
+        # for. httpMethod is the load-bearing field: it is what distinguishes a GET SSE
+        # stream attempt from an ordinary POST.
+        api_access_logs = logs.LogGroup(
+            self,
+            "HttpApiAccessLogs",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        # No L2 property for this on HttpStage; set it on the underlying CfnStage. HTTP
+        # APIs need no account-level CloudWatch role (unlike REST APIs) — API Gateway
+        # writes via its service-linked role.
+        cfn_stage = self.http_api.default_stage.node.default_child
+        cfn_stage.access_log_settings = apigwv2.CfnStage.AccessLogSettingsProperty(
+            destination_arn=api_access_logs.log_group_arn,
+            format=json.dumps(
+                {
+                    "requestId": "$context.requestId",
+                    "httpMethod": "$context.httpMethod",
+                    "path": "$context.path",
+                    "status": "$context.status",
+                    "responseLatency": "$context.responseLatency",
+                    "integrationStatus": "$context.integration.status",
+                    "integrationLatency": "$context.integration.latency",
+                    "integrationErrorMessage": "$context.integrationErrorMessage",
+                    "errorMessage": "$context.error.message",
+                    "userAgent": "$context.identity.userAgent",
+                    "sourceIp": "$context.identity.sourceIp",
+                }
+            ),
         )
         api_5xx_alarm = cloudwatch.Alarm(
             self,
@@ -385,6 +474,13 @@ class PepOracleProdStack(Stack):
             certificate=cert,
             minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
             web_acl_id=self._web_acl_arn,
+            # Edge-side record of every request, including ones API Gateway rejects
+            # before the origin and viewer-side detail (cs-method, time-taken) that the
+            # origin never sees.
+            enable_logging=True,
+            log_bucket=self.access_logs_bucket,
+            log_file_prefix="cdn/",
+            log_includes_cookies=False,
         )
 
         route53.ARecord(
