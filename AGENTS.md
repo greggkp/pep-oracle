@@ -26,6 +26,20 @@ uv run pytest
 uv run pytest tests/test_feed.py
 uv run pytest tests/test_feed.py::test_parse_duration_hhmmss
 
+# Full CI gate locally — every step of .github/workflows/ci.yml in order, including the
+# two it runs as actions (gitleaks, trivy), which need their CLIs on PATH. Runs all steps
+# and prints a pass/fail summary rather than stopping at the first failure.
+bash scripts/install-scanners.sh                  # one-time: pinned gitleaks + trivy
+bash scripts/ci-local.sh
+bash scripts/ci-local.sh --fail-fast              # stop at the first failure, like CI
+bash scripts/ci-local.sh --no-docker              # skip the image builds + both Trivy scans
+
+# The same gate runs on `git push` via .githooks/pre-push (bootstrap.sh sets
+# core.hooksPath). It drops the docker/Trivy steps when no docker daemon is
+# reachable rather than blocking the push, since CI still runs them.
+git push --no-verify                              # bypass the gate for one push
+PREPUSH_ARGS='--no-docker' git push               # pass flags through to ci-local.sh
+
 # Incremental artifact ingest: publish a new corpus version with new feed episodes
 uv run pep-oracle ingest-artifact                 # newest-forward (numbered eps > corpus max)
 uv run pep-oracle ingest-artifact --backfill      # supervised catch-up of old gaps + EXTRAs
