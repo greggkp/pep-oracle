@@ -399,14 +399,15 @@ class PepOracleProdStack(Stack):
         # for. httpMethod is the load-bearing field: it is what distinguishes a GET SSE
         # stream attempt from an ordinary POST.
         #
-        # mcpMethod/mcpProtocolVersion carry that same idea one level deeper. Every /mcp
-        # call is a POST, so httpMethod cannot separate a `subscriptions/listen` (whose
-        # response IS a notification stream, and which hung to the 30s timeout 45 times in
-        # the six days to 2026-08-28) from an ordinary tools/call. The bodies are never
-        # logged anywhere, so without these headers the only way to identify a hung
-        # request's JSON-RPC method is to infer it. Both are sent by clients on the
-        # 2026-07-28 revision and log as "-" when absent, which is itself the signal that
-        # a client is on an older revision.
+        # The JSON-RPC method is NOT logged here, and cannot be. HTTP APIs resolve no
+        # arbitrary request header in an access log — $context.identity.userAgent is the
+        # only header-derived variable in the supported list — so a format referencing
+        # $context.request.header.mcp-method is rejected by API Gateway at deploy
+        # ("The following context variables are not supported"), failing the stage
+        # update and rolling the whole stack back. That is what happened on 2026-08-28.
+        # The app logs it instead, at ASGI entry in server._mcp_stateless_asgi, which is
+        # strictly better placed: it is written before the request can hang, so it
+        # survives the timing-out invocation that motivated wanting it.
         api_access_logs = logs.LogGroup(
             self,
             "HttpApiAccessLogs",
@@ -432,8 +433,6 @@ class PepOracleProdStack(Stack):
                     "errorMessage": "$context.error.message",
                     "userAgent": "$context.identity.userAgent",
                     "sourceIp": "$context.identity.sourceIp",
-                    "mcpMethod": "$context.request.header.mcp-method",
-                    "mcpProtocolVersion": "$context.request.header.mcp-protocol-version",
                 }
             ),
         )
