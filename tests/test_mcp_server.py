@@ -583,6 +583,79 @@ def test_mcp_get_stream_declined_with_405(monkeypatch, tmp_path):
         assert client.get("/mcp/").status_code == 401
 
 
+def test_mcp_subscriptions_listen_declined(monkeypatch, tmp_path):
+    """POST subscriptions/listen must be declined, not served.
+
+    The 2026-07-28 revision moved the server→client notification stream off GET and onto
+    this POST, whose response *is* the stream — the SDK holds it open and pings every 15s
+    until the client disconnects. json_response=True does not cover it: the SDK exempts
+    this one method from the JSON fast path by design. Under Mangum the invocation then
+    runs to the 30s Lambda timeout and 503s, which is what produced 45 timeouts in the six
+    days to 2026-08-28. This server advertises no listChanged and no resource subscribe,
+    so the stream has nothing to carry.
+
+    Like the GET test above, this hanging rather than failing is itself the regression
+    signal.
+    """
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app(monkeypatch, tmp_path=tmp_path)
+    assert mounted is True
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp/",
+            headers={
+                "Authorization": f"Bearer {_mint()}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": "2026-07-28",
+                "MCP-Method": "subscriptions/listen",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "subscriptions/listen",
+                "params": {"notifications": {"toolsListChanged": True}},
+            },
+        )
+    assert "text/event-stream" not in resp.headers.get("content-type", "")
+    assert resp.json()["error"]["code"] == -32601
+
+    # The bearer gate still runs first, so the short-circuit can't be probed without a
+    # token; and the decline must not leak into ordinary methods on the same revision.
+    with TestClient(app) as client:
+        assert (
+            client.post("/mcp/", headers={"MCP-Method": "subscriptions/listen"}).status_code == 401
+        )
+        ok = client.post(
+            "/mcp/",
+            headers={
+                "Authorization": f"Bearer {_mint()}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": "2026-07-28",
+                "MCP-Method": "tools/list",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                        "io.modelcontextprotocol/clientInfo": {
+                            "name": "t",
+                            "version": "1",
+                        },
+                    }
+                },
+            },
+        )
+        assert ok.status_code == 200
+        assert "tools" in ok.json()["result"]
+
+
 def test_mcp_post_answers_with_json_not_an_sse_stream(monkeypatch, tmp_path):
     """POST /mcp must be answered with plain JSON, never a text/event-stream response.
 

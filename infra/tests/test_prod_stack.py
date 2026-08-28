@@ -444,6 +444,29 @@ def test_http_api_access_logging_records_method_and_path():
     )
 
 
+def test_http_api_access_logging_records_mcp_method_header():
+    """Every /mcp call is a POST, so httpMethod cannot tell a `subscriptions/listen`
+    (whose response IS a notification stream — 45 timeouts in the six days to 2026-08-28)
+    from an ordinary tools/call. Request bodies are logged nowhere, so these two headers
+    are the only place a hung request's JSON-RPC method is recoverable after the fact."""
+    t = _template()
+    for header in ("mcp-method", "mcp-protocol-version"):
+        t.has_resource_properties(
+            "AWS::ApiGatewayV2::Stage",
+            Match.object_like(
+                {
+                    "AccessLogSettings": Match.object_like(
+                        {
+                            "Format": Match.string_like_regexp(
+                                rf".*\$context\.request\.header\.{header}.*"
+                            )
+                        }
+                    )
+                }
+            ),
+        )
+
+
 def test_cloudfront_access_logging_enabled():
     _template().has_resource_properties(
         "AWS::CloudFront::Distribution",
