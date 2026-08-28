@@ -123,7 +123,7 @@ node_modules/.bin/cdk deploy PepOracleProdStack PepOracleIngestStack \
 uv run python scripts/smoke.py            # from the repo root
 ```
 
-> **Known blocker, unresolved as of hibernation.** The last serving deploy before
+> **Known blocker — fixed in #66, which must be merged before restoring.** The last serving deploy before
 > hibernation (2026-08-28T17:49 UTC) **failed and rolled back**: API Gateway
 > rejected the HTTP API stage's access-log format with *"The following context
 > variables are not supported: [$context.request.header.mcp-method,
@@ -132,8 +132,9 @@ uv run python scripts/smoke.py            # from the repo root
 > assumes. So the `mcpMethod`/`mcpProtocolVersion` fields that AGENTS.md
 > describes were never actually deployed, and a restore will hit the same error —
 > as a *create* this time, which fails the whole stack rather than rolling back one
-> resource. Fix the log format before restoring, or the restore deploy will not
-> complete.
+> resource. #66 removes the impossible fields and logs the JSON-RPC method from the
+> app at ASGI entry instead. Confirm it is on `main` before restoring, or the
+> restore deploy will not complete.
 
 Or, equivalently, commit the flag flip and run the `deploy` workflow via
 `workflow_dispatch` with a `version` input — it does the same deploy plus the
