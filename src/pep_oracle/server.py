@@ -141,9 +141,22 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     # than to the constructor). streamable_http_path="/" remaps the SDK's default /mcp so
     # the mount at /mcp yields final URL /mcp (not /mcp/mcp); stateless_http=True is
     # required for multi-container Lambda serving and the per-request manager below.
+    #
+    # json_response=True is load-bearing under Mangum, which buffers the whole ASGI
+    # response before the Lambda invocation can return. With the SDK default (False) a
+    # POST carrying a JSON-RPC *request* is answered with a text/event-stream SSE
+    # response instead of plain JSON — the same construct that made GET /mcp fatal
+    # (declined with 405 in _mcp_stateless_asgi below). Most such streams close on their
+    # own, but not all: POST /mcp hung to the 30s timeout 46 times in the fortnight to
+    # 2026-08-28 (9 during the alarm window on 08-27), each one burning one of the
+    # account's ten concurrency slots and returning 503 to the client, with no exception
+    # and no timing phase logged because the tool never ran. A stateless server has no
+    # server-initiated messages to push, so it has nothing to gain from a response
+    # stream; plain JSON removes the hazard from the POST path entirely.
     mcp.streamable_http_app(
         streamable_http_path="/",
         stateless_http=True,
+        json_response=True,
         transport_security=transport_security,
     )
     _sm_template = mcp.session_manager

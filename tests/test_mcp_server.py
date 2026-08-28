@@ -583,6 +583,45 @@ def test_mcp_get_stream_declined_with_405(monkeypatch, tmp_path):
         assert client.get("/mcp/").status_code == 401
 
 
+def test_mcp_post_answers_with_json_not_an_sse_stream(monkeypatch, tmp_path):
+    """POST /mcp must be answered with plain JSON, never a text/event-stream response.
+
+    Mangum buffers the whole ASGI response before the invocation can return, so an SSE
+    response stream is the same hazard on POST that it is on GET (declined with 405
+    above). With the SDK default json_response=False, POST /mcp hung to the 30s Lambda
+    timeout 46 times in the fortnight to 2026-08-28 — 503 to the client, one of ten
+    concurrency slots held for the full timeout, and no exception or timing phase logged
+    because the tool never ran. A stateless server pushes no server-initiated messages,
+    so it needs no response stream.
+    """
+    from fastapi.testclient import TestClient
+
+    from pep_oracle.mcp_server import mcp as global_mcp
+
+    app, mounted = _build_app(monkeypatch, tmp_path=tmp_path)
+    assert mounted is True
+
+    # The template the per-request session manager is cloned from (server.py copies
+    # json_response off it), so this is what every request actually gets.
+    assert global_mcp.session_manager.json_response is True
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp",
+            headers={
+                "Authorization": f"Bearer {_mint()}",
+                # The Accept the SDK uses to decide JSON vs SSE: offering both is what a
+                # real client sends, so this is the case that must still come back JSON.
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        )
+    assert resp.status_code != 401
+    assert "text/event-stream" not in resp.headers.get("content-type", "")
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
 def test_mcp_401_when_no_authorization_header(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
