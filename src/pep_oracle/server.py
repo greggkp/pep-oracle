@@ -204,6 +204,43 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
                 }
             )
             return
+        # The 2026-07-28 protocol revision moved the server→client notification
+        # stream off GET and onto `POST subscriptions/listen`, whose *response is*
+        # that stream: the SDK holds it open, pinging every 15s, until the client
+        # disconnects. Under Mangum that is the identical hazard the GET decline
+        # above closes, and json_response=True does NOT cover it — the SDK
+        # explicitly exempts this one method from the JSON fast path, because a
+        # listen response is a notification stream by definition. Mangum's
+        # receive() also blocks forever once the single queued http.request is
+        # consumed, so the handler's disconnect watcher can never fire either.
+        # Result: the invocation runs to the 30s timeout, returns 503, and holds
+        # one of the account's ten concurrency slots — 45 times in the six days to
+        # 2026-08-28, starting the day a client first negotiated this revision.
+        #
+        # This server advertises no listChanged and no resource subscribe
+        # capability, so a listen stream has nothing to carry; decline it up front.
+        # Matched on the MCP-Method header, which this revision requires and the
+        # SDK rejects when it disagrees with the body, so no body read is needed
+        # (reading it here would consume the receive() the SDK needs downstream).
+        if any(k == b"mcp-method" and v == b"subscriptions/listen" for k, v in scope["headers"]):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": (
+                        b'{"jsonrpc":"2.0","id":null,"error":{"code":-32601,'
+                        b'"message":"Method not found: this server sends no '
+                        b'subscription notifications"}}'
+                    ),
+                }
+            )
+            return
         sm = StreamableHTTPSessionManager(
             app=_sm_template.app,
             event_store=_sm_template.event_store,

@@ -398,6 +398,15 @@ class PepOracleProdStack(Stack):
         # anywhere in the Lambda logs. These lines are the only record of what was asked
         # for. httpMethod is the load-bearing field: it is what distinguishes a GET SSE
         # stream attempt from an ordinary POST.
+        #
+        # mcpMethod/mcpProtocolVersion carry that same idea one level deeper. Every /mcp
+        # call is a POST, so httpMethod cannot separate a `subscriptions/listen` (whose
+        # response IS a notification stream, and which hung to the 30s timeout 45 times in
+        # the six days to 2026-08-28) from an ordinary tools/call. The bodies are never
+        # logged anywhere, so without these headers the only way to identify a hung
+        # request's JSON-RPC method is to infer it. Both are sent by clients on the
+        # 2026-07-28 revision and log as "-" when absent, which is itself the signal that
+        # a client is on an older revision.
         api_access_logs = logs.LogGroup(
             self,
             "HttpApiAccessLogs",
@@ -423,6 +432,8 @@ class PepOracleProdStack(Stack):
                     "errorMessage": "$context.error.message",
                     "userAgent": "$context.identity.userAgent",
                     "sourceIp": "$context.identity.sourceIp",
+                    "mcpMethod": "$context.request.header.mcp-method",
+                    "mcpProtocolVersion": "$context.request.header.mcp-protocol-version",
                 }
             ),
         )
