@@ -167,6 +167,32 @@ class PepOracleProdStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
+        # Own topic rather than the ingest stack's: the two stacks are deliberately
+        # decoupled (see the external-resource imports in ingest_stack) so deploying
+        # one never redeploys the other. Created ahead of the hibernation gate below so
+        # the confirmed email subscription survives a hibernate/restore cycle — an SNS
+        # topic is free, and re-confirming a subscription by hand is not.
+        serve_alerts = sns.Topic(self, "ServeAlerts", display_name="pep-oracle serving alerts")
+        serve_alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
+        self.serve_alerts_topic = serve_alerts
+
+        # --- Hibernation gate ---
+        # Everything above this line is data or a free placeholder and stays deployed;
+        # everything below is the public service. Hibernating stops here rather than
+        # destroying the stack, because the data resources above are RETAIN with fixed
+        # physical names (corpus bucket, OAuth table, Cognito domain prefix, secret
+        # name) — `cdk destroy` would orphan them and the next `cdk deploy` would fail
+        # re-creating them. Leaving them in the template keeps restore a one-command
+        # redeploy. The serving tier is free at this traffic level (Lambda, HTTP API,
+        # CloudFront, DynamoDB and Cognito all sit inside the perpetual free tier), so
+        # taking it down is about closing the public surface, not about the bill; the
+        # bill is the WAF in PepOracleCertStack, which hibernates with it.
+        if cfg.hibernate:
+            self.fn = None
+            self.http_api = None
+            self.distribution = None
+            return
+
         # --- Serving Lambda (container) + Function URL + least-privilege IAM ---
         project_root = Path(__file__).resolve().parents[2]
 
@@ -262,11 +288,6 @@ class PepOracleProdStack(Stack):
         )
 
         # --- Monitoring / alerting ---
-        # Own topic rather than the ingest stack's: the two stacks are deliberately
-        # decoupled (see the external-resource imports in ingest_stack) so deploying
-        # one never redeploys the other.
-        serve_alerts = sns.Topic(self, "ServeAlerts", display_name="pep-oracle serving alerts")
-        serve_alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
 
         # 1) The serving Lambda failed an invocation. Two distinct causes, and the
         #    description must name both — on 2026-08-23 this alarm's warmer-only wording
@@ -379,7 +400,6 @@ class PepOracleProdStack(Stack):
             ),
         )
         timeout_alarm.add_alarm_action(cw_actions.SnsAction(serve_alerts))
-        self.serve_alerts_topic = serve_alerts
 
         # HTTP API ($default proxy -> Lambda) instead of a Lambda Function URL: this
         # account blocks public (auth=NONE) function URLs, and AWS_IAM/OAC would sign the

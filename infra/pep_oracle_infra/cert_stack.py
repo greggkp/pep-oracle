@@ -33,6 +33,33 @@ class PepOracleCertStack(Stack):
             validation=acm.CertificateValidation.from_dns(self.hosted_zone),
         )
 
+        # Retain only blocked-request records. Query strings can contain short-lived
+        # OAuth authorization codes and Authorization carries bearer tokens, so both
+        # are redacted before delivery. CloudFront-scoped WAF logs and metrics live in
+        # us-east-1 with this stack.
+        #
+        # The log group and the alerts topic are created even while hibernating: both
+        # are free, the group has a fixed physical name and RETAIN (so dropping it from
+        # the template would orphan it and then collide on restore), and keeping the
+        # topic means its email subscription stays confirmed. Only the WebACL itself —
+        # the ~$7.85/month line item — is conditional.
+        waf_log_group = logs.LogGroup(
+            self,
+            "WafBlockedRequestsLog",
+            log_group_name="aws-waf-logs-pep-oracle-blocked",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        waf_alerts = sns.Topic(self, "WafAlerts", display_name="pep-oracle WAF alerts")
+        waf_alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
+        self.waf_alerts_topic = waf_alerts
+
+        if cfg.hibernate:
+            # No distribution to protect, and a WebACL bills whether or not it is
+            # associated. app.py passes web_acl_arn=None on to the prod stack.
+            self.web_acl = None
+            return
+
         # CloudFront-scoped WAF resources must live in us-east-1, alongside this
         # certificate. Rate rules protect the public, state-changing OAuth routes
         # and the Bedrock-backed MCP search path from cost/availability abuse.
@@ -84,17 +111,6 @@ class PepOracleCertStack(Stack):
             ],
         )
 
-        # Retain only blocked-request records. Query strings can contain short-lived
-        # OAuth authorization codes and Authorization carries bearer tokens, so both
-        # are redacted before delivery. CloudFront-scoped WAF logs and metrics live in
-        # us-east-1 with this stack.
-        waf_log_group = logs.LogGroup(
-            self,
-            "WafBlockedRequestsLog",
-            log_group_name="aws-waf-logs-pep-oracle-blocked",
-            retention=logs.RetentionDays.ONE_MONTH,
-            removal_policy=RemovalPolicy.RETAIN,
-        )
         waf_logging = wafv2.CfnLoggingConfiguration(
             self,
             "WafLogging",
@@ -122,8 +138,6 @@ class PepOracleCertStack(Stack):
         )
         waf_logging.add_dependency(self.web_acl)
 
-        waf_alerts = sns.Topic(self, "WafAlerts", display_name="pep-oracle WAF alerts")
-        waf_alerts.add_subscription(subs.EmailSubscription(cfg.alert_email or cfg.allowed_email))
         blocked_alarm = cloudwatch.Alarm(
             self,
             "WafBlockedRequestsAlarm",
