@@ -70,7 +70,18 @@ jobs:
           SEMVER: ${{ steps.ver.outputs.semver }}
         run: |
           cd infra
+          # --exclusively is load-bearing, not tidiness. app.py declares
+          # prod.add_dependency(cert_stack), so without it CDK pulls
+          # PepOracleCertStack into the deploy set and deploys it FIRST. That is
+          # backwards for any change that removes the WebACL: it cannot be deleted
+          # while the CloudFront distribution in the prod stack still references it,
+          # and CloudFormation does not fail loudly — it retries through the cleanup
+          # phase and then ORPHANS the WebACL, leaving it billing ~$7.85/month and
+          # invisible to every future `cdk deploy`. That happened on 2026-08-29.
+          # AGENTS.md already calls the cert stack a manual deploy; this makes the
+          # pipeline actually honour that.
           cdk deploy PepOracleProdStack PepOracleIngestStack \
+            --exclusively \
             --require-approval never \
             -c "allowed_email=$ALLOWED_EMAIL" \
             -c "alert_email=$ALERT_EMAIL" \
