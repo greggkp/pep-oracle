@@ -47,6 +47,30 @@ per-episode cost.
 
 ## Hibernate
 
+**Ordering is not advisory.** Prod must be deployed before cert, and every deploy
+must pass `--exclusively`. `app.py` declares `prod.add_dependency(cert_stack)`, so
+without it CDK deploys the cert stack *first* — exactly backwards. When the cert
+stack then tries to delete the WebACL while the prod stack's CloudFront
+distribution still references it, CloudFormation does not fail the deploy. It
+retries through the cleanup phase, gives up, and **orphans the WebACL**: removed
+from the stack, still present in AWS, still billing, and no longer visible to any
+`cdk deploy`. Recovering means deleting it by hand:
+
+```bash
+aws wafv2 delete-web-acl --scope CLOUDFRONT --region us-east-1 \
+  --name <name> --id <id> \
+  --lock-token $(aws wafv2 list-web-acls --scope CLOUDFRONT --region us-east-1 \
+    --query 'WebACLs[0].LockToken' --output text)
+```
+
+That is not hypothetical — it is what happened on 2026-08-29 (see *Status*).
+
+**Cancelling a deploy does not cancel it.** Cancelling the GitHub Actions run kills
+the CDK CLI, but CloudFormation carries on server-side with whatever changeset was
+already submitted. After an aborted deploy, check stack status in **both** regions
+(`ap-southeast-2` *and* `us-east-1`) before concluding nothing happened — the cert
+stack is the one CDK touches first, and it is the one in the other region.
+
 **Credentials.** These deploys need admin (or at least the CDK bootstrap roles).
 The everyday `gregg-cli` key is `ReadOnlyAccess` via the `personal-cli-readonly`
 group and fails at asset publish with `not authorized to perform: s3:PutObject`
@@ -168,25 +192,36 @@ uv run pep-oracle ingest-artifact           # newest-forward
 
 ## Status
 
-Not yet applied. The switch, its tests and this runbook are in place and
-`hibernate` is `true` in `infra/cdk.json`, but **no AWS resource has been changed
-yet**: the service is up, current (v1.4.8, deployed 2026-08-29 00:51 UTC, stack
-`UPDATE_COMPLETE`), and still billing at the rate below.
+**Hibernated 2026-08-29.** Prod and ingest were deployed hibernated via the
+`deploy` workflow (run 33276339470, v1.4.9 input). Verified after the run:
 
-What is needed to apply it, and by whom:
+- serving Lambda: gone; HTTP APIs: 0; CloudFront distributions: none
+- Route 53 A-alias removed — `pep-oracle.iicapn.com` resolves to nothing
+- both ingest schedules `DISABLED`; the 4-minute warmer rule gone
+- corpus `v0010.parquet` + manifest intact in S3; OAuth table `ACTIVE`
 
-- **Prod and ingest** can be hibernated by CI. Merging the flag to `main` and
-  running the `deploy` workflow assumes the OIDC role and deploys both stacks, no
-  local credentials involved. That run will go **red at the smoke test** — there
-  is no endpoint once hibernated, which is the point — so it deploys but does not
-  tag. Expect the red run rather than reading it as a failure.
-- **The cert stack cannot.** `deploy.yml` never deploys it (manual by design), so
-  removing the WebACL — 73% of the bill — needs admin credentials locally. The
-  everyday `gregg-cli` key is `ReadOnlyAccess` and cannot do it.
+The workflow run itself finished **red at the smoke test**, which is correct — no
+endpoint remains to smoke — so no `v1.4.9` tag was pushed. The last released tag is
+still `v1.4.8`.
 
-`release-train.yml` is already disabled at the repo level (`gh workflow disable`),
-independently of the commented-out cron here, so the 06:00 UTC train cannot
-re-deploy over a hibernated stack. **Re-enable it on restore**:
+### Outstanding
+
+- **The WebACL was orphaned, not deleted.** An earlier deploy attempt was cancelled
+  mid-flight; CloudFormation continued, deployed the cert stack first (see
+  *Ordering is not advisory*), failed four times to delete the WebACL while the
+  distribution still referenced it, and orphaned it. It is
+  `WebAcl-UTlp7Kr0ULPj` / `e383c547-45ab-4cc0-8183-3d4bb2d5cf3a`, outside
+  CloudFormation, and still billing ~$7.85/month. The distribution is now gone, so
+  the manual delete above will succeed. **Until it runs, hibernation has not
+  actually saved the money it exists to save.**
+- **ECR is unpruned** — see step 4 above.
+
+Note the cert stack is otherwise already in its hibernated shape (cert, zone, WAF
+log group, alerts topic), so no further cert deploy is needed for hibernation —
+only the manual WebACL delete. A restore still deploys the cert stack first, which
+will create a *new* WebACL; deleting the orphan first avoids paying for two.
+
+`release-train.yml` is disabled at the repo level. **Re-enable it on restore**:
 `gh workflow enable release-train.yml`.
 
 ## Cost record
