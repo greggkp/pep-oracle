@@ -123,18 +123,16 @@ node_modules/.bin/cdk deploy PepOracleProdStack PepOracleIngestStack \
 uv run python scripts/smoke.py            # from the repo root
 ```
 
-> **Known blocker — fixed in #66, which must be merged before restoring.** The last serving deploy before
-> hibernation (2026-08-28T17:49 UTC) **failed and rolled back**: API Gateway
-> rejected the HTTP API stage's access-log format with *"The following context
-> variables are not supported: [$context.request.header.mcp-method,
-> $context.request.header.mcp-protocol-version]"*. HTTP APIs do not resolve
-> arbitrary request headers in access logs the way the format in `prod_stack.py`
-> assumes. So the `mcpMethod`/`mcpProtocolVersion` fields that AGENTS.md
-> describes were never actually deployed, and a restore will hit the same error —
-> as a *create* this time, which fails the whole stack rather than rolling back one
-> resource. #66 removes the impossible fields and logs the JSON-RPC method from the
-> app at ASGI entry instead. Confirm it is on `main` before restoring, or the
-> restore deploy will not complete.
+> **A restore blocker used to live here; it is fixed.** The deploy of 2026-08-28
+> 17:49 UTC failed and rolled back — API Gateway rejected the HTTP API stage's
+> access-log format with *"The following context variables are not supported:
+> [$context.request.header.mcp-method, $context.request.header.mcp-protocol-version]"*,
+> because HTTP APIs resolve no arbitrary request header in an access log. A restore
+> would have hit the same error as a *create*, failing the whole stack rather than
+> one resource. #66 removed those fields and moved the JSON-RPC method to an app-side
+> log line at ASGI entry; it shipped in **v1.4.8** (`04c26ee`), whose deploy cleared
+> that step and smoke-tested clean. Nothing to do here — recorded because the
+> symptom (a restore failing at the HTTP API stage) would otherwise be baffling.
 
 Or, equivalently, commit the flag flip and run the `deploy` workflow via
 `workflow_dispatch` with a `version` input — it does the same deploy plus the
@@ -170,21 +168,26 @@ uv run pep-oracle ingest-artifact           # newest-forward
 
 ## Status
 
-Not yet applied. The code switch, its tests and this runbook are in place, and
-`hibernate` is set to `true` in `infra/cdk.json`, but **no AWS resource has been
-changed** — the deploy needs credentials this repo's everyday key does not have
-(see *Credentials* above). Until someone runs the deploy with admin credentials
-the service is still up and still billing at the rate below.
+Not yet applied. The switch, its tests and this runbook are in place and
+`hibernate` is `true` in `infra/cdk.json`, but **no AWS resource has been changed
+yet**: the service is up, current (v1.4.8, deployed 2026-08-29 00:51 UTC, stack
+`UPDATE_COMPLETE`), and still billing at the rate below.
 
-Two things are time-sensitive while that is pending:
+What is needed to apply it, and by whom:
 
-- `release-train.yml`'s cron is commented out in the working tree only. Until
-  that is committed and pushed to `main`, the 06:00 UTC train still fires from
-  `main` and dispatches a deploy that would re-create everything. `gh workflow
-  disable release-train.yml` stops it immediately without waiting for a commit.
-- The serving stack currently sits in `UPDATE_ROLLBACK_COMPLETE` from the failed
-  2026-08-28 deploy described under *Restore*. That is a deployable state, but it
-  means the running Lambda is one commit behind `main`.
+- **Prod and ingest** can be hibernated by CI. Merging the flag to `main` and
+  running the `deploy` workflow assumes the OIDC role and deploys both stacks, no
+  local credentials involved. That run will go **red at the smoke test** — there
+  is no endpoint once hibernated, which is the point — so it deploys but does not
+  tag. Expect the red run rather than reading it as a failure.
+- **The cert stack cannot.** `deploy.yml` never deploys it (manual by design), so
+  removing the WebACL — 73% of the bill — needs admin credentials locally. The
+  everyday `gregg-cli` key is `ReadOnlyAccess` and cannot do it.
+
+`release-train.yml` is already disabled at the repo level (`gh workflow disable`),
+independently of the commented-out cron here, so the 06:00 UTC train cannot
+re-deploy over a hibernated stack. **Re-enable it on restore**:
+`gh workflow enable release-train.yml`.
 
 ## Cost record
 
