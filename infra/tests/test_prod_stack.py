@@ -444,27 +444,22 @@ def test_http_api_access_logging_records_method_and_path():
     )
 
 
-def test_http_api_access_logging_records_mcp_method_header():
-    """Every /mcp call is a POST, so httpMethod cannot tell a `subscriptions/listen`
-    (whose response IS a notification stream — 45 timeouts in the six days to 2026-08-28)
-    from an ordinary tools/call. Request bodies are logged nowhere, so these two headers
-    are the only place a hung request's JSON-RPC method is recoverable after the fact."""
+def test_http_api_access_log_format_references_no_request_header():
+    """The access log must not reference $context.request.header.<name>.
+
+    HTTP APIs resolve no arbitrary request header in access logs — the supported list
+    has exactly one header-derived variable, $context.identity.userAgent. API Gateway
+    rejects any other at deploy time ("The following context variables are not
+    supported"), which fails the stage update and rolls the stack back; that cost a
+    deploy on 2026-08-28. Synth cannot catch it — the template is well-formed and only
+    the service refuses it — so this assertion is the guard. The JSON-RPC method is
+    logged by the app at ASGI entry instead (server._mcp_stateless_asgi), where it also
+    survives a request that hangs.
+    """
     t = _template()
-    for header in ("mcp-method", "mcp-protocol-version"):
-        t.has_resource_properties(
-            "AWS::ApiGatewayV2::Stage",
-            Match.object_like(
-                {
-                    "AccessLogSettings": Match.object_like(
-                        {
-                            "Format": Match.string_like_regexp(
-                                rf".*\$context\.request\.header\.{header}.*"
-                            )
-                        }
-                    )
-                }
-            ),
-        )
+    for body in t.find_resources("AWS::ApiGatewayV2::Stage").values():
+        fmt = body["Properties"]["AccessLogSettings"]["Format"]
+        assert "$context.request.header." not in fmt
 
 
 def test_cloudfront_access_logging_enabled():

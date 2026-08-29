@@ -174,6 +174,28 @@ def mount_mcp_if_configured(app: FastAPI) -> bool:
     async def _mcp_stateless_asgi(scope, receive, send):
         if scope["type"] != "http":
             return
+        # Log the JSON-RPC method on the way IN, before anything can block.
+        #
+        # This used to be an API Gateway access-log field. It cannot be: HTTP APIs
+        # resolve no arbitrary request header in access logs (the only header-derived
+        # variable is $context.identity.userAgent), so the stage update was rejected
+        # outright — "The following context variables are not supported" — and rolled
+        # the whole deploy back on 2026-08-28.
+        #
+        # Logging it here is what the access-log field was reaching for anyway. Every
+        # /mcp call is a POST, so httpMethod alone cannot separate a subscriptions/listen
+        # from a tools/call, and request bodies are logged nowhere. Mangum logs a request
+        # only once the app responds, which is precisely what a hung invocation never
+        # does — so this line is emitted at entry rather than on the way out, and
+        # survives the request that times out. "-" means a client on a pre-2026-07-28
+        # revision, which is itself informative.
+        _headers = dict(scope["headers"])
+        logger.info(
+            "mcp request http=%s mcp_method=%s protocol=%s",
+            scope["method"],
+            _headers.get(b"mcp-method", b"-").decode("latin-1"),
+            _headers.get(b"mcp-protocol-version", b"-").decode("latin-1"),
+        )
         # Streamable HTTP lets a client open GET /mcp as a standing server→client SSE
         # stream. The SDK keeps that stream open until the client disconnects — correct
         # under uvicorn, fatal under Mangum, which buffers the whole ASGI response: the

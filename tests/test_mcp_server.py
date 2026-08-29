@@ -583,6 +583,45 @@ def test_mcp_get_stream_declined_with_405(monkeypatch, tmp_path):
         assert client.get("/mcp/").status_code == 401
 
 
+def test_mcp_request_logs_the_jsonrpc_method_at_entry(monkeypatch, tmp_path, caplog):
+    """The JSON-RPC method must be logged on the way in, not on the way out.
+
+    This is the observability the API Gateway access log cannot provide: HTTP APIs
+    resolve no arbitrary request header there, so `$context.request.header.mcp-method`
+    is rejected at deploy (it rolled a deploy back on 2026-08-28). Entry is also the
+    better place — every /mcp call is a POST, bodies are logged nowhere, and Mangum
+    logs a request only once the app responds, which a hung invocation never does. A
+    line written before dispatch survives the request that times out.
+    """
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    app, mounted = _build_app(monkeypatch, tmp_path=tmp_path)
+    assert mounted is True
+    with caplog.at_level(logging.INFO, logger="pep_oracle.server"), TestClient(app) as client:
+        client.post(
+            "/mcp/",
+            headers={
+                "Authorization": f"Bearer {_mint()}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": "2026-07-28",
+                "MCP-Method": "subscriptions/listen",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "subscriptions/listen"},
+        )
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("mcp request")]
+    assert lines == ["mcp request http=POST mcp_method=subscriptions/listen protocol=2026-07-28"]
+
+    # A client on an older revision sends neither header; "-" is itself the signal.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="pep_oracle.server"), TestClient(app) as client:
+        client.get("/mcp/", headers={"Authorization": f"Bearer {_mint()}"})
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("mcp request")]
+    assert lines == ["mcp request http=GET mcp_method=- protocol=-"]
+
+
 def test_mcp_subscriptions_listen_declined(monkeypatch, tmp_path):
     """POST subscriptions/listen must be declined, not served.
 
