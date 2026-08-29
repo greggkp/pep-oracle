@@ -225,10 +225,15 @@ class PepOracleIngestStack(Stack):
             )
         )
 
+        # Hibernating disables the schedule rather than removing the rule: the task
+        # definition, cluster and VPC are all free at rest, so the only thing costing
+        # money here is the task actually running — and each run also spends real money
+        # off-AWS on Modal GPU time for transcription and diarization.
         rule = events.Rule(
             self,
             "DailyIngest",
             schedule=events.Schedule.rate(Duration.days(1)),
+            enabled=not cfg.hibernate,
         )
         # DLQ catches EventBridge failing to *launch* the task (e.g. RunTask throttled
         # or the task fails to start). Runtime crashes are caught separately below.
@@ -318,11 +323,15 @@ class PepOracleIngestStack(Stack):
                 conditions={"StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}},
             )
         )
+        # Disabled while hibernating: with ingestion stopped, lag is expected, and the
+        # alarm below treats missing data as MISSING, so it parks in INSUFFICIENT_DATA
+        # instead of paging.
         events.Rule(
             self,
             "CorpusStaleCheckSchedule",
             schedule=events.Schedule.rate(Duration.days(1)),
             targets=[targets.LambdaFunction(stale_check)],
+            enabled=not cfg.hibernate,
         )
         lag_alarm = cloudwatch.Alarm(
             self,

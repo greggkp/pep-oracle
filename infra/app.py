@@ -30,7 +30,7 @@ prod = PepOracleProdStack(
     "PepOracleProdStack",
     cfg=cfg,
     cert_arn=cert_stack.certificate.certificate_arn,
-    web_acl_arn=cert_stack.web_acl.attr_arn,
+    web_acl_arn=(cert_stack.web_acl.attr_arn if cert_stack.web_acl is not None else None),
     hosted_zone_id=cert_stack.hosted_zone.hosted_zone_id,
     hosted_zone_name=cert_stack.hosted_zone.zone_name,
     cross_region_references=True,
