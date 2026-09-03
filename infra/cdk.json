@@ -6,6 +6,7 @@
     "compute_region": "ap-southeast-2",
     "cert_region": "us-east-1",
     "corpus_bucket_name": "pep-oracle-corpus-prod",
+    "data_key_id": "6b35e366-9e4b-4c6b-9b7e-8ee76e7d4ed4",
     "cognito_domain_prefix": "pep-oracle-prod",
     "allowed_email": "REPLACE_ME@example.com",
     "hibernate": true

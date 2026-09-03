@@ -190,6 +190,85 @@ on) and run a supervised catch-up:
 uv run pep-oracle ingest-artifact           # newest-forward
 ```
 
+## Full teardown to zero
+
+Hibernation leaves ~$1.95/month (KMS $1.00, Route 53 $0.50, Secrets Manager $0.40,
+S3 $0.03). Going to zero is a different decision from hibernating, and the cost is
+not money — it is that restore stops being a redeploy:
+
+| | Hibernated | Torn down |
+|---|---|---|
+| Corpus | in S3, ready | re-upload from an export |
+| DNS | zone + delegation intact | new zone, re-delegate at Cloudflare, wait on propagation |
+| TLS | cert intact | ACM re-validation |
+| Restore effort | ~30 min, one redeploy | 1–2 hours, several manual steps |
+
+### Export first — this is not optional
+
+The corpus is the only irreplaceable thing here; rebuilding it means re-transcribing
+200+ episodes through Modal. Export it, verify it, and hold **two** copies before
+deleting anything.
+
+```bash
+aws s3 sync s3://pep-oracle-corpus-prod ./corpus-export
+cd corpus-export && sha256sum corpus/v0010.parquet   # must equal the sha256 in current.json
+```
+
+The bucket is SSE-KMS, so a read-only key is not enough — the caller needs
+`kms:Decrypt` on the data key. Grant it narrowly (one action, one key resource),
+and remove the grant once the export verifies.
+
+Also worth exporting `s3://pep-oracle-backup-940831808393` if it still exists: the
+2026-06-09 decommission archive holds `.pep-oracle/cache`, the transcript and
+diarization caches, which let a re-ingest skip Modal GPU work entirely. It also
+contains `oauth_signing_key` and `oauth.db`, so treat it as secret-bearing.
+
+### Everything with a fixed name must go
+
+This is the part that is easy to get wrong. Leaving a resource behind because it is
+free does not make a restore easier — it breaks it. The corpus bucket, the OAuth
+table, the Cognito hosted-UI domain prefix, the client-secret name and the WAF log
+group all have fixed physical names, so a restore that finds them still present
+fails trying to re-create them. Delete them even though several cost nothing.
+
+The converse also holds: `CDKToolkit` (both regions) and `PepOracleCicdStack` cost
+effectively nothing, collide with nothing, and save re-bootstrapping two regions and
+re-establishing the GitHub OIDC trust. Keep them unless abandoning the project.
+
+### Order
+
+1. Export and verify (above)
+2. Empty and delete the buckets — the corpus bucket is versioned, so delete object
+   *versions* and delete markers, not just keys
+3. Delete `PepOracleProdStack` and `PepOracleIngestStack`, then `PepOracleCertStack`
+   — the last one removes the hosted zone, the ACM cert and its validation CNAME
+   together, so no manual record deletion is needed
+4. Delete the retained fixed-name orphans: Secrets Manager secret
+   (`--force-delete-without-recovery`, or the name stays blocked 7–30 days), the
+   DynamoDB table, the Cognito pool and its domain, the `/pep-oracle/*` SSM
+   SecureStrings, the log groups
+5. **`kms schedule-key-deletion` last.** Seven days is the minimum window and it is
+   cancellable within it. Everything encrypted with that key — corpus, table,
+   signing key — becomes unrecoverable when it elapses, which is only acceptable
+   because step 1 verified the export
+
+### Restoring from zero
+
+Beyond the hibernation restore, expect to:
+
+- `cdk bootstrap` both regions, if `CDKToolkit` was deleted too
+- Deploy `PepOracleCertStack`, then update the NS records at Cloudflare to the new
+  zone's nameservers and wait for propagation before ACM validation completes
+- **Put the new KMS key id into `cdk.json` as `data_key_id` before deploying
+  `PepOracleIngestStack`.** It identifies one key in one account; the old value will
+  point at a deleted key, the ARN is still well-formed so nothing fails at synth,
+  and ingestion breaks later with an opaque KMS error
+- Re-create the `/pep-oracle/modal-token-*` SecureStrings from the Modal dashboard,
+  and the OAuth signing key (a new one is fine — it only invalidates tokens that are
+  long dead)
+- Upload the corpus export back to the new bucket, then re-create the Cognito user
+  and re-register the MCP client
+
 ## Status
 
 **Hibernated 2026-08-29.** Prod and ingest were deployed hibernated via the

@@ -35,6 +35,13 @@ class DeployConfig:
     # key (and bucket) by id/name so its grants are identity-only — deploying ingest
     # never forces a PepOracleProdStack update (which would redeploy the serving
     # Lambda). Just the UUID, not the account: the ARN is built from the stack env.
+    #
+    # Set in cdk.json next to the other deployment-specific values, not left to this
+    # default. It identifies ONE key in ONE account, so a restore that re-creates the
+    # data layer gets a NEW key id and must update cdk.json before deploying the
+    # ingest stack — otherwise its grants silently point at a key that no longer
+    # exists and ingestion fails at runtime with an opaque KMS error. There is no
+    # synth-time check for this: the ARN is well-formed either way.
     data_key_id: str = "6b35e366-9e4b-4c6b-9b7e-8ee76e7d4ed4"
     # Hibernation: `-c hibernate=true` (or "hibernate": true in cdk.json) deploys the
     # data + DNS layer only — no serving compute, no WAF, no ingest schedules. It exists
