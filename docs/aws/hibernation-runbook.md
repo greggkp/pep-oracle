@@ -194,14 +194,27 @@ uv run pep-oracle ingest-artifact           # newest-forward
 
 ## Off-AWS: Modal
 
-Ingestion spends real money on Modal (A100 GPU time for Whisper transcription and
-pyannote diarization), billed per second of execution and separately from AWS.
+Ingestion spends real money on Modal — A100 GPU time for Whisper transcription and
+pyannote diarization — billed per second of execution, separately from AWS.
 
-**Compute stops on its own.** The daily Fargate ingest task is the only automated
-caller of `pep-oracle-transcribe` and `pep-oracle-diarize`, so disabling its
-EventBridge schedule already takes GPU spend to zero — a deployed-but-idle Modal
-app runs nothing. Stopping the apps is worth doing anyway, because it also closes
-the one path the schedule does not cover: someone running `pep-oracle
+**Check before assuming.** `modal billing report` is authoritative and takes one
+command. Daily reports cannot span more than 31 days, so use two windows for a
+longer view:
+
+```bash
+modal billing report --start "30 days ago" --json
+```
+
+**At this scale Modal bills compute only.** Across the 60 days to 2026-09-03 the
+report returned ten line items, every one of them per-run GPU against
+`pep-oracle-transcribe` or `pep-oracle-diarize`, and **no storage line at all**:
+$1.06 + $1.18 = $2.23, roughly $1.10/month, charged only on the five days an
+episode was actually ingested. Do not assume volumes are costing anything — measure.
+
+**The lever is the ingest schedule, and nothing else.** The daily Fargate task is
+the only automated caller, so disabling its EventBridge rule takes Modal spend to
+zero on its own; a deployed-but-idle app runs nothing. Stopping the apps adds one
+thing the schedule cannot: it closes the path of someone running `pep-oracle
 ingest-artifact` by hand.
 
 ```bash
@@ -209,13 +222,13 @@ modal app stop -y pep-oracle-transcribe
 modal app stop -y pep-oracle-diarize
 ```
 
-**Storage does not stop on its own.** Two volumes cache model weights across runs:
-`pep-oracle-whisper-cache` and `pep-oracle-pyannote-cache`. They keep billing while
-hibernated and are safe to delete, because both are declared
-`modal.Volume.from_name(..., create_if_missing=True)`
-(`cloud/transcribe_modal.py`, `cloud/diarize_modal.py`) — the next run recreates
-the volume and re-downloads the weights with no code change and no manual restore
-step. The only cost is a slower first episode.
+**Deleting the model-cache volumes is optional and, on the evidence above, saves
+nothing.** It is recorded here because it was done on 2026-09-03 and because the
+reasoning is worth having if storage ever does start billing: both volumes are
+declared `modal.Volume.from_name(..., create_if_missing=True)`
+(`cloud/transcribe_modal.py`, `cloud/diarize_modal.py`), so deleting them is
+self-healing — the next run recreates the volume and re-downloads the weights with
+no code change and no manual restore step. The only cost is a slower first episode.
 
 ```bash
 modal volume delete -y pep-oracle-whisper-cache
@@ -236,11 +249,11 @@ The volumes recreate themselves on the first run — nothing to restore by hand.
 Expect the first episode after a restore to be slow while `large-v3-turbo` and the
 pyannote weights download again.
 
-One incidental benefit of having deleted the whisper cache: it had accumulated
+One incidental effect of having deleted the whisper cache: it had accumulated
 `models--Systran--faster-whisper-large-v3` alongside the
 `models--mobiuslabsgmbh--faster-whisper-large-v3-turbo` that the code actually
-loads, so roughly half of it was paying to store a model no longer in use. The
-rebuilt cache holds only the turbo model.
+loads, so it was storing a model no longer in use. The rebuilt cache holds only the
+turbo model.
 
 ## Status
 
@@ -257,7 +270,9 @@ AWS — prod and ingest deployed hibernated via the `deploy` workflow (run
 - corpus `v0010.parquet` + manifest intact in S3; OAuth table `ACTIVE`
 
 Modal — both apps `stopped` with 0 tasks; both volumes deleted; the
-`huggingface-token` secret kept.
+`huggingface-token` secret kept. Note the volume deletion saved nothing
+measurable: the billing report shows compute-only charges, and Modal spend had
+already gone to zero on 2026-08-27 when the ingest schedule was disabled.
 
 The workflow run finished **red at the smoke test**, which is correct — no endpoint
 remains to smoke — so no `v1.4.9` tag was pushed. The last released tag is
@@ -299,6 +314,11 @@ July was a full month; August is 1–28 with the WAF added part-way.
 | S3 | 0.02 | 0.02 | 507 MB corpus |
 | Bedrock | — | 0.01 | query embeddings |
 | **Total** | **2.17** | **5.60** | ~$10.70/month at steady state |
+
+Modal is billed separately and was **~$1.10/month** — $2.23 over the 60 days to
+2026-09-03, entirely per-run GPU time on the five days an episode was ingested,
+with no storage component (`modal billing report`). It goes to zero with the
+ingest schedule.
 
 Everything else read $0.00. Hibernated steady state is **~$1.95/month**: KMS
 $1.00, Route 53 $0.50, Secrets Manager $0.40, S3 $0.03.
