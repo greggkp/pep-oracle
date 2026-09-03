@@ -184,42 +184,101 @@ Route 53 alias is updated by the deploy, but any client pinning the old
 distribution domain directly must be re-pointed at `pep-oracle.iicapn.com`.
 
 After restore, check the corpus is behind the feed (the podcast will have moved
-on) and run a supervised catch-up:
+on) and run a supervised catch-up. **Redeploy the Modal apps first** (see *Off-AWS:
+Modal*) — ingestion calls them, and while hibernated they are stopped, so a
+catch-up run fails without them:
 
 ```bash
 uv run pep-oracle ingest-artifact           # newest-forward
 ```
 
+## Off-AWS: Modal
+
+Ingestion spends real money on Modal (A100 GPU time for Whisper transcription and
+pyannote diarization), billed per second of execution and separately from AWS.
+
+**Compute stops on its own.** The daily Fargate ingest task is the only automated
+caller of `pep-oracle-transcribe` and `pep-oracle-diarize`, so disabling its
+EventBridge schedule already takes GPU spend to zero — a deployed-but-idle Modal
+app runs nothing. Stopping the apps is worth doing anyway, because it also closes
+the one path the schedule does not cover: someone running `pep-oracle
+ingest-artifact` by hand.
+
+```bash
+modal app stop -y pep-oracle-transcribe
+modal app stop -y pep-oracle-diarize
+```
+
+**Storage does not stop on its own.** Two volumes cache model weights across runs:
+`pep-oracle-whisper-cache` and `pep-oracle-pyannote-cache`. They keep billing while
+hibernated and are safe to delete, because both are declared
+`modal.Volume.from_name(..., create_if_missing=True)`
+(`cloud/transcribe_modal.py`, `cloud/diarize_modal.py`) — the next run recreates
+the volume and re-downloads the weights with no code change and no manual restore
+step. The only cost is a slower first episode.
+
+```bash
+modal volume delete -y pep-oracle-whisper-cache
+modal volume delete -y pep-oracle-pyannote-cache
+```
+
+**Keep the `huggingface-token` Modal secret.** It is free, pyannote needs it to
+re-download weights, and recreating it means going back to Hugging Face.
+
+### Restoring Modal
+
+```bash
+modal deploy cloud/transcribe_modal.py
+modal deploy cloud/diarize_modal.py
+```
+
+The volumes recreate themselves on the first run — nothing to restore by hand.
+Expect the first episode after a restore to be slow while `large-v3-turbo` and the
+pyannote weights download again.
+
+One incidental benefit of having deleted the whisper cache: it had accumulated
+`models--Systran--faster-whisper-large-v3` alongside the
+`models--mobiuslabsgmbh--faster-whisper-large-v3-turbo` that the code actually
+loads, so roughly half of it was paying to store a model no longer in use. The
+rebuilt cache holds only the turbo model.
+
 ## Status
 
-**Hibernated 2026-08-29.** Prod and ingest were deployed hibernated via the
-`deploy` workflow (run 33276339470, v1.4.9 input). Verified after the run:
+**Shut down.** AWS hibernated 2026-08-29; Modal stopped 2026-09-03. Verified at
+each step.
 
-- serving Lambda: gone; HTTP APIs: 0; CloudFront distributions: none
+AWS — prod and ingest deployed hibernated via the `deploy` workflow (run
+33276339470, v1.4.9 input):
+
+- serving Lambda gone; HTTP APIs 0; CloudFront distributions 0
 - Route 53 A-alias removed — `pep-oracle.iicapn.com` resolves to nothing
 - both ingest schedules `DISABLED`; the 4-minute warmer rule gone
+- WebACL deleted; ECR emptied (68 images)
 - corpus `v0010.parquet` + manifest intact in S3; OAuth table `ACTIVE`
 
-The workflow run itself finished **red at the smoke test**, which is correct — no
-endpoint remains to smoke — so no `v1.4.9` tag was pushed. The last released tag is
-still `v1.4.8`.
+Modal — both apps `stopped` with 0 tasks; both volumes deleted; the
+`huggingface-token` secret kept.
 
-### Outstanding
+The workflow run finished **red at the smoke test**, which is correct — no endpoint
+remains to smoke — so no `v1.4.9` tag was pushed. The last released tag is
+`v1.4.8`, and `v1.4.9` is still an unused version number.
 
-- **The WebACL was orphaned, not deleted.** An earlier deploy attempt was cancelled
-  mid-flight; CloudFormation continued, deployed the cert stack first (see
-  *Ordering is not advisory*), failed four times to delete the WebACL while the
-  distribution still referenced it, and orphaned it. It is
-  `WebAcl-UTlp7Kr0ULPj` / `e383c547-45ab-4cc0-8183-3d4bb2d5cf3a`, outside
-  CloudFormation, and still billing ~$7.85/month. The distribution is now gone, so
-  the manual delete above will succeed. **Until it runs, hibernation has not
-  actually saved the money it exists to save.**
-- **ECR is unpruned** — see step 4 above.
+Residual AWS spend is **~$1.95/month**: KMS $1.00, Route 53 $0.50, Secrets Manager
+$0.40, S3 $0.03.
 
-Note the cert stack is otherwise already in its hibernated shape (cert, zone, WAF
-log group, alerts topic), so no further cert deploy is needed for hibernation —
-only the manual WebACL delete. A restore still deploys the cert stack first, which
-will create a *new* WebACL; deleting the orphan first avoids paying for two.
+### How the WebACL actually went
+
+Not through this switch. An earlier deploy attempt was cancelled mid-flight;
+CloudFormation carried on server-side, deployed the cert stack first (see *Ordering
+is not advisory*), failed four times to delete the WebACL while the distribution
+still referenced it, and **orphaned** it — removed from the stack, still live in
+AWS, still billing, invisible to `cdk deploy`. Clearing it needed a hand-run
+`aws wafv2 delete-web-acl` as root via CloudShell, after the distribution was gone.
+`--exclusively` in `deploy.yml` now prevents the inversion that caused it.
+
+The cert stack is otherwise in its hibernated shape (cert, zone, WAF log group,
+alerts topic), so hibernation needs no further cert deploy. A restore deploys the
+cert stack first and creates a *new* WebACL.
 
 `release-train.yml` is disabled at the repo level. **Re-enable it on restore**:
 `gh workflow enable release-train.yml`.
