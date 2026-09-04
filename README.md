@@ -2,7 +2,10 @@
 
 An **MCP server** that answers US-politics questions over the *PEP with Chas and Dr Dave* podcast using retrieval-augmented generation (RAG). Episodes are transcribed, diarized, chunked, embedded, and published as a versioned corpus artifact; a frontier model calls a single MCP tool to retrieve grounded, citable excerpts.
 
-Runs entirely on AWS: a serving Lambda (the MCP tool) plus a scheduled Fargate ingestion job. There is no user-facing CLI query path or web GUI — the product *is* the MCP tool.
+Designed to run on AWS as a serving Lambda plus a scheduled Fargate ingestion
+job. The AWS deployment was fully decommissioned on 2026-09-04, so there is no
+live endpoint or cloud corpus. There is no user-facing CLI query path or web GUI
+— when deployed, the product *is* the MCP tool.
 
 ## How it works
 
@@ -65,17 +68,25 @@ uv run pytest -m live                             # include live tests (real API
 
 ## Deployment
 
-The product runs entirely on AWS. `infra/` is a CDK (Python) app with three concerns:
+The AWS deployment and data layer were fully decommissioned on 2026-09-04.
+`deploy.yml` and `release-train.yml` are disabled in GitHub, have no automatic
+triggers, and the CI workflow runs only in response to pull requests, pushes to
+`main`, or a manual dispatch. Restoring service now requires fresh CDK
+provisioning, DNS delegation, credentials, and corpus restoration or rebuild;
+flipping `hibernate` alone is not sufficient. See the
+[`hibernation runbook`](docs/aws/hibernation-runbook.md) for the teardown record.
+
+`infra/` remains as the historical CDK (Python) design with three concerns:
 
 - **Serving** — container Lambda (`pep_oracle.server.handler`) fronted by CloudFront → API Gateway HTTP API, with S3 corpus storage, a DynamoDB OAuth table, KMS, a one-user Cognito pool, and its confidential-client secret in CMK-encrypted Secrets Manager storage (never in Lambda environment variables).
 - **Ingestion** — a daily EventBridge rule triggering a scale-to-zero Fargate task running `pep-oracle ingest-artifact`.
-- **CI/CD** — `ci.yml` gates every PR with quality, test, supply-chain, and image
-  checks. A manual release-train dispatch deploys through GitHub OIDC,
-  smoke-tests production, and creates the release tag.
+- **CI/CD** — `ci.yml` gates changes with quality, test, supply-chain, and image
+  checks. The disabled deployment workflows preserve the former GitHub OIDC
+  release process as a restoration reference.
 
-Automated dependency pull requests and auto-merge are disabled while the repository
-is hibernated. Dependency updates are operator-initiated; GitHub vulnerability alerts
-remain enabled for visibility.
+Dependabot version updates, automated security-fix pull requests, and auto-merge
+are disabled. Dependency work is operator-initiated; GitHub vulnerability alerts
+remain available for visibility.
 
 Start with the [`docs/` guide](docs/README.md) to distinguish current operational
 guidance from retained migration and design records.

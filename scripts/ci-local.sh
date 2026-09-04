@@ -11,8 +11,9 @@
 # infra/node_modules). Exits non-zero if any step failed.
 #
 # NOTE Trivy takes its verdict from a live vulnerability database, so a local
-# pass can legitimately disagree with a CI run from a different day. That drift
-# is the whole reason ci.yml also runs nightly against main.
+# pass can legitimately disagree with a CI run from a different day. With the
+# repository decommissioned there is no scheduled CI; run this gate or dispatch
+# ci.yml manually when a current vulnerability verdict is needed.
 set -uo pipefail   # deliberately not -e: run_step handles each step's exit code
 
 cd "$(dirname "$0")/.."   # repo root

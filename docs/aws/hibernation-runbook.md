@@ -1,7 +1,14 @@
 # Hibernation runbook
 
-How to take pep-oracle offline so it costs almost nothing, and how to bring it
-back. Current state and the numbers behind it are recorded at the bottom.
+Historical instructions for the 2026-08-29 hibernation design. Current state and
+the original cost record are recorded at the bottom.
+
+> **Superseded by full decommissioning on 2026-09-04.** Do not use the restore
+> steps below as a current runbook. The retained corpus, DNS, certificate, OAuth,
+> Cognito, secret, and KMS assumptions no longer hold. Restoring service requires
+> fresh provisioning, DNS delegation, credentials, and a corpus restore or
+> rebuild. The material below is retained to explain the design and teardown
+> history.
 
 ## Why there is a switch instead of a teardown
 
@@ -192,37 +199,39 @@ uv run pep-oracle ingest-artifact           # newest-forward
 
 ## Status
 
-**Hibernated 2026-08-29.** Prod and ingest were deployed hibernated via the
-`deploy` workflow (run 33276339470, v1.4.9 input). Verified after the run:
+**Fully decommissioned 2026-09-04.** The 2026-08-29 hibernation was converted to
+a teardown after the corpus was taken out of AWS. Verification after teardown
+found no pep-oracle serving, ingestion, DNS, certificate, WAF, data, identity,
+secret, parameter, or logging resources:
 
-- serving Lambda: gone; HTTP APIs: 0; CloudFront distributions: none
-- Route 53 A-alias removed — `pep-oracle.iicapn.com` resolves to nothing
-- both ingest schedules `DISABLED`; the 4-minute warmer rule gone
-- corpus `v0010.parquet` + manifest intact in S3; OAuth table `ACTIVE`
+- `PepOracleProdStack`, `PepOracleIngestStack`, and `PepOracleCertStack`: deleted
+- serving Lambda, HTTP API, CloudFront, WAF, EventBridge schedules, Fargate
+  resources, alarms/topics, and application log groups: deleted
+- Route 53 hosted zone and ACM certificate: deleted
+- corpus and access-log S3 buckets: deleted
+- DynamoDB OAuth table and Cognito pool/domain/client: deleted
+- application Secrets Manager secret and SSM parameters: deleted
+- both regional CDK asset buckets: empty; CDK ECR repositories: empty
+- application KMS key: scheduled for deletion on 2026-09-11 and currently
+  `PendingDeletion` (AWS does not bill a customer key while pending deletion)
 
-The workflow run itself finished **red at the smoke test**, which is correct — no
-endpoint remains to smoke — so no `v1.4.9` tag was pushed. The last released tag is
-still `v1.4.8`.
+The regional `CDKToolkit` bootstrap stacks and `PepOracleCicdStack` remain. Their
+retained S3/ECR/IAM/OIDC scaffolding has no idle per-resource charge; the asset
+storage is empty. They may be removed later for account hygiene, but doing so is
+not required to hold the pep-oracle running cost at zero.
 
 ### Outstanding
 
-- **The WebACL was orphaned, not deleted.** An earlier deploy attempt was cancelled
-  mid-flight; CloudFormation continued, deployed the cert stack first (see
-  *Ordering is not advisory*), failed four times to delete the WebACL while the
-  distribution still referenced it, and orphaned it. It is
-  `WebAcl-UTlp7Kr0ULPj` / `e383c547-45ab-4cc0-8183-3d4bb2d5cf3a`, outside
-  CloudFormation, and still billing ~$7.85/month. The distribution is now gone, so
-  the manual delete above will succeed. **Until it runs, hibernation has not
-  actually saved the money it exists to save.**
-- **ECR is unpruned** — see step 4 above.
+- Remove the temporary inline IAM policies from `gregg-cli` when an administrator
+  is available: `pep-oracle-corpus-export`, `pep-oracle-teardown-delete`, and
+  `pep-oracle-teardown-route53`. The current user cannot call
+  `iam:DeleteUserPolicy`. These policies do not create spend, but they should not
+  remain as standing permissions.
+- Confirm the KMS key reaches deletion on or after 2026-09-11.
 
-Note the cert stack is otherwise already in its hibernated shape (cert, zone, WAF
-log group, alerts topic), so no further cert deploy is needed for hibernation —
-only the manual WebACL delete. A restore still deploys the cert stack first, which
-will create a *new* WebACL; deleting the orphan first avoids paying for two.
-
-`release-train.yml` is disabled at the repo level. **Re-enable it on restore**:
-`gh workflow enable release-train.yml`.
+`deploy.yml` and `release-train.yml` are disabled at the repository level. Do not
+re-enable either until a new deployment and its data have been deliberately
+rebuilt and validated.
 
 ## Cost record
 

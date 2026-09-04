@@ -3,22 +3,7 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Nightly run against main. The Trivy gate gets its verdict from a live
-  # vulnerability database, so main can go from green to red with no commit
-  # behind it: a newly published fixable HIGH in a base image is enough. Without
-  # this, the first sign is an unrelated PR failing at the last step of a
-  # ~3-minute job, and the CVE has been sitting on main since whenever it landed
-  # (2026-08-23: six days, 36 HIGH in the ingest image's util-linux stack).
-  #
-  # 05:00 UTC is deliberately one hour ahead of release-train.yml's 06:00 — a
-  # broken main surfaces before the day's release is cut, not after. The two are
-  # independent, so this does NOT block the train; retime both together.
-  #
-  # Note GitHub emails only whoever last edited this cron on a scheduled-run
-  # failure, and disables schedules in repos dormant for 60 days.
-  schedule:
-    - cron: "0 5 * * *"
-  workflow_dispatch: {}    # manual kick, e.g. to confirm a base-image fix landed
+  workflow_dispatch: {}    # manual kick, e.g. before restoring the deployment
 
 # Least privilege: CI only reads the repo (checkout) and needs no write scopes.
 permissions:

@@ -1,28 +1,19 @@
 name: release-train
-# Daily release train. Once a day, if main has new commits since the latest v*
-# tag, cut the next patch release by dispatching deploy.yml (which deploys,
-# smoke-tests, and self-tags the verified commit). If nothing has changed since
-# the last release, this is a no-op.
-#
-# UNATTENDED: this only runs without a human if the `production` GitHub
-# Environment has NO required reviewer. With a reviewer set, the dispatched
-# deploy.yml pauses for approval (the train still fires, it just waits).
+# Historical release train. If main has new commits since the latest v* tag, it
+# computes the next patch version and dispatches deploy.yml, which used to deploy,
+# smoke-test, and self-tag the verified commit.
 #
 # Replaces the old per-merge release-on-dep-merge.yml: changes accumulate on main
 # and ship in one batched release when an operator dispatches the train.
 #
-# HIBERNATED (2026-08-29): the daily schedule is commented out because the stacks
-# are deployed with hibernate=true — there is no endpoint, so deploy.yml's smoke
-# test would fail every morning, and each run would push a fresh serving image to
-# ECR (the one line item here that grows without bound). Restore by uncommenting
-# the cron together with flipping "hibernate" to false in infra/cdk.json. See
-# docs/aws/hibernation-runbook.md.
+# DECOMMISSIONED (2026-09-04): there is no AWS application or data layer to
+# release to. The workflow is disabled in GitHub and has no schedule. Rebuild the
+# infrastructure and data, validate deploy.yml, and deliberately restore the
+# trigger only if the product is brought back.
 on:
-  # schedule:
-  #   - cron: "0 6 * * *"   # 06:00 UTC daily (16:00 AEST). Change this to retime.
   workflow_dispatch: {}    # allow a manual kick of the train
 
-# Serialize so a manual kick can't race the scheduled run on version computation.
+# Serialize manual kicks while this historical workflow remains in the tree.
 concurrency: release-train
 
 permissions:

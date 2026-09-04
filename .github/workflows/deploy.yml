@@ -1,7 +1,8 @@
 name: deploy
 on:
-  push:
-    tags: ["v*"]
+  # Manual-only while the AWS deployment is decommissioned. The workflow is
+  # also disabled in GitHub and must not be re-enabled until the infrastructure,
+  # data, DNS, credentials, and smoke-test target have been rebuilt.
   workflow_dispatch:
     inputs:
       version:
@@ -18,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     # Scopes the OIDC token's `sub` to repo:…:environment:production, which the
     # deploy role trusts — so a workflow_dispatch release from main can assume it
-    # without trusting arbitrary main-branch runs. (Tag pushes are trusted too.)
+    # without trusting arbitrary main-branch runs.
     environment: production
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -41,8 +42,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          # On a v* tag push the version is the tag; on manual dispatch it is the
-          # `version` input (GITHUB_REF_NAME would be the branch, e.g. "main").
+          # On manual dispatch the version is the `version` input
+          # (GITHUB_REF_NAME would be the branch, e.g. "main").
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VER="$INPUT_VERSION"
           else
@@ -94,10 +95,7 @@ jobs:
           EXPECT_SHA: ${{ steps.ver.outputs.sha }}
           EXPECT_SEMVER: ${{ steps.ver.outputs.semver }}
       - name: Tag release
-        # Only on manual dispatch: stamp the verified, deployed commit with the
-        # release tag (a tag pushed here by GITHUB_TOKEN does NOT re-trigger this
-        # workflow, so there's no double deploy). Tag pushes already carry their tag.
-        if: github.event_name == 'workflow_dispatch'
+        # Stamp the verified, deployed commit with the release tag.
         env:
           VER: ${{ steps.ver.outputs.semver }}
         run: |
