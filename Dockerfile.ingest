@@ -7,7 +7,9 @@ WORKDIR /app
 # any fixable HIGH/CRITICAL, and python:3.12-slim ships whatever Debian packages were
 # current when the base image was last rebuilt. Without the upgrade, every CVE fixed
 # upstream since that rebuild turns the next unrelated PR red (2026-08-23: 36 HIGH
-# across the util-linux stack). The serving image is unaffected — it is Amazon Linux.
+# across the util-linux stack). The serving image needs the same treatment for the
+# same reason and does it with `dnf upgrade` — being Amazon Linux rather than Debian
+# delays this problem, it does not avoid it (2026-09-03, CVE-2026-14456).
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*

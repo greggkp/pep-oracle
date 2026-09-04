@@ -34,6 +34,12 @@ bash scripts/ci-local.sh
 bash scripts/ci-local.sh --fail-fast              # stop at the first failure, like CI
 bash scripts/ci-local.sh --no-docker              # skip the image builds + both Trivy scans
 
+# Trivy failures on a base-image CVE can be a stale local layer cache rather than a
+# real finding: a cached `apt-get upgrade`/`dnf upgrade` layer is not re-run, so the
+# image keeps the old package while CI (fresh runner, no cache) picks up the fix.
+# Confirm before chasing one — a --no-cache build is the source of truth.
+docker build --no-cache -f Dockerfile.ingest .
+
 # The same gate runs on `git push` via .githooks/pre-push (bootstrap.sh sets
 # core.hooksPath). It drops the docker/Trivy steps when no docker daemon is
 # reachable rather than blocking the push, since CI still runs them.

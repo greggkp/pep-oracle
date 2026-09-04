@@ -2,6 +2,22 @@
 # Base: AWS Lambda Python runtime interface (includes the RIC). Region-agnostic.
 FROM public.ecr.aws/lambda/python:3.12
 
+# `dnf upgrade` is load-bearing, not hygiene — the same reason Dockerfile.ingest runs
+# `apt-get upgrade`. The AL2023 base ships whatever RPMs were current when AWS last
+# rebuilt it, so every CVE fixed upstream since then turns the next unrelated PR red
+# against the CI Trivy gate, which fails on any fixable HIGH/CRITICAL. This image was
+# long assumed exempt for being Amazon Linux rather than Debian; it is not. On
+# 2026-09-03 it went red on CVE-2026-14456 (openssl-fips-provider-latest, a DoS via
+# unbounded memory, fixed in 1:3.5.7-2.amzn2023.0.2) with no commit behind the change.
+#
+# `--releasever=latest` is the load-bearing part, and its absence fails silently.
+# AL2023 pins its repos to a versioned snapshot for deterministic builds, so a plain
+# `dnf upgrade` resolves against that frozen snapshot, finds nothing newer, exits 0 and
+# changes nothing — the build goes green and Trivy still fails on the same CVE. Verified
+# on this base: plain upgrade leaves openssl-fips-provider-latest at .0.1; with the flag
+# it moves to the fixed .0.2.
+RUN dnf upgrade -y --releasever=latest && dnf clean all && rm -rf /var/cache/dnf
+
 # Build deps for any wheels without manylinux (kept minimal; pyarrow/boto3 ship wheels).
 COPY pyproject.toml ${LAMBDA_TASK_ROOT}/
 COPY src/ ${LAMBDA_TASK_ROOT}/src/
