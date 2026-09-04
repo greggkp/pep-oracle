@@ -197,6 +197,44 @@ on) and run a supervised catch-up:
 uv run pep-oracle ingest-artifact           # newest-forward
 ```
 
+## Deleting PepOracleCertStack leaves a record behind
+
+`cdk destroy`/`delete-stack` on `PepOracleCertStack` fails on its first attempt:
+
+```
+ZoneA5DE4B68  DELETE_FAILED
+  HostedZoneNotEmptyException - The specified hosted zone contains non-required
+  resource record sets and so cannot be deleted.
+```
+
+The certificate is validated with `CertificateValidation.from_dns(zone)`, and in
+that mode **ACM** writes the `_<hash>.<domain>` validation CNAME itself.
+CloudFormation never owns that record, so deleting the stack removes the
+certificate and leaves the CNAME in place. Route 53 will not delete a zone holding
+any non-required record — NS and SOA go with the zone, that CNAME does not — so
+the zone deletion fails and takes the stack to `DELETE_FAILED`.
+
+Nothing is broken at that point and no cleanup is needed beyond the record. Delete
+it, then re-run the stack deletion; CloudFormation deletes the now-empty zone
+itself, using the `cdk-hnb659fds-cfn-exec-role` stored on the stack:
+
+```bash
+ZID=$(aws route53 list-hosted-zones --query "HostedZones[?Name=='<domain>.'].Id" \
+  --output text | cut -d/ -f3)
+aws route53 list-resource-record-sets --hosted-zone-id "$ZID" \
+  --query "ResourceRecordSets[?Type=='CNAME']"          # the _<hash> validation record
+# delete that record set, then:
+aws cloudformation delete-stack --region us-east-1 --stack-name PepOracleCertStack
+```
+
+Worth knowing when scoping a teardown IAM policy: because the stacks carry a
+`cfn-exec-role`, deleting them needs only `cloudformation:DeleteStack` — the role
+performs the resource deletions. The exception is exactly this record, which is not
+a stack resource, so removing it needs `route53:ChangeResourceRecordSets` granted
+separately (or a few clicks in the console). A teardown policy written from the
+stack contents alone will be missing it. This cost one failed stack deletion on
+2026-09-03.
+
 ## Status
 
 **Fully decommissioned 2026-09-04.** The 2026-08-29 hibernation was converted to
