@@ -8,9 +8,8 @@ name: release-train
 # Environment has NO required reviewer. With a reviewer set, the dispatched
 # deploy.yml pauses for approval (the train still fires, it just waits).
 #
-# Replaces the old per-merge release-on-dep-merge.yml: changes (Dependabot
-# auto-merges + anything else) accumulate on main through the day and ship in
-# one batched release.
+# Replaces the old per-merge release-on-dep-merge.yml: changes accumulate on main
+# and ship in one batched release when an operator dispatches the train.
 #
 # HIBERNATED (2026-08-29): the daily schedule is commented out because the stacks
 # are deployed with hibernate=true — there is no endpoint, so deploy.yml's smoke

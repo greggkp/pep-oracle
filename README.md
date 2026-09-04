@@ -70,10 +70,12 @@ The product runs entirely on AWS. `infra/` is a CDK (Python) app with three conc
 - **Serving** — container Lambda (`pep_oracle.server.handler`) fronted by CloudFront → API Gateway HTTP API, with S3 corpus storage, a DynamoDB OAuth table, KMS, a one-user Cognito pool, and its confidential-client secret in CMK-encrypted Secrets Manager storage (never in Lambda environment variables).
 - **Ingestion** — a daily EventBridge rule triggering a scale-to-zero Fargate task running `pep-oracle ingest-artifact`.
 - **CI/CD** — `ci.yml` gates every PR with quality, test, supply-chain, and image
-  checks. The daily release train or a manual dispatch deploys through GitHub OIDC,
+  checks. A manual release-train dispatch deploys through GitHub OIDC,
   smoke-tests production, and creates the release tag.
 
-Dependency security patches are automated: Dependabot opens grouped security PRs → CI gates them → patch/minor updates auto-merge → a release is cut and the production deploy pauses for one-click approval.
+Automated dependency pull requests and auto-merge are disabled while the repository
+is hibernated. Dependency updates are operator-initiated; GitHub vulnerability alerts
+remain enabled for visibility.
 
 Start with the [`docs/` guide](docs/README.md) to distinguish current operational
 guidance from retained migration and design records.
