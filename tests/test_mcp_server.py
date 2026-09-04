@@ -439,7 +439,7 @@ def _build_app(
     """
     from fastapi import FastAPI
 
-    from pep_oracle import mcp_server
+    from pep_oracle import config, mcp_server
     from pep_oracle.server import mount_mcp_if_configured
 
     # Reset the SDK session manager (held by the lowlevel server in mcp>=2) so each
@@ -460,6 +460,10 @@ def _build_app(
         monkeypatch.setenv("PEP_ORACLE_OAUTH_TRUSTS_UPSTREAM_AUTH", trust_flag)
     if tmp_path is not None:
         monkeypatch.setenv("PEP_ORACLE_DATA_DIR", str(tmp_path))
+        # config.DATA_DIR is bound at import, so the env var alone does not move the
+        # sqlite OAuth store: without this the suite writes a real ~/.pep-oracle/oauth.db
+        # on the developer's machine.
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
 
     app = FastAPI()
     mounted = mount_mcp_if_configured(app)

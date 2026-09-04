@@ -215,19 +215,23 @@ secret, parameter, or logging resources:
 - application KMS key: scheduled for deletion on 2026-09-11 and currently
   `PendingDeletion` (AWS does not bill a customer key while pending deletion)
 
-The regional `CDKToolkit` bootstrap stacks and `PepOracleCicdStack` remain. Their
-retained S3/ECR/IAM/OIDC scaffolding has no idle per-resource charge; the asset
-storage is empty. They may be removed later for account hygiene, but doing so is
-not required to hold the pep-oracle running cost at zero.
+The regional `CDKToolkit` bootstrap stacks and `PepOracleCicdStack` were removed
+on 2026-09-04 after their empty asset stores and exclusive GitHub-OIDC usage were
+verified. This also removed the deploy role, OIDC provider, and custom-resource
+Lambda. The repository's deployment variables and `production` environment were
+removed with them.
+
+Modal is also fully retired: both apps and model-cache volumes were deleted, as
+were the `huggingface-token` secret and all three API tokens. The local Modal
+credential and OAuth database were removed too. Recreating diarization now
+requires a new Modal credential and secret before deploying
+`cloud/diarize_modal.py`.
 
 ### Outstanding
 
-- Remove the temporary inline IAM policies from `gregg-cli` when an administrator
-  is available: `pep-oracle-corpus-export`, `pep-oracle-teardown-delete`, and
-  `pep-oracle-teardown-route53`. The current user cannot call
-  `iam:DeleteUserPolicy`. These policies do not create spend, but they should not
-  remain as standing permissions.
-- Confirm the KMS key reaches deletion on or after 2026-09-11.
+- Confirm the KMS key reaches deletion after its scheduled time,
+  2026-09-11 20:06 AEST. The temporary teardown policies on `gregg-cli` have
+  already been removed.
 
 `deploy.yml` and `release-train.yml` are disabled at the repository level. Do not
 re-enable either until a new deployment and its data have been deliberately
@@ -253,11 +257,9 @@ July was a full month; August is 1–28 with the WAF added part-way.
 Everything else read $0.00. Hibernated steady state is **~$1.95/month**: KMS
 $1.00, Route 53 $0.50, Secrets Manager $0.40, S3 $0.03.
 
-The remaining $1.50 of that is deliberate. Deleting the CMK would brick the
-corpus and the OAuth table unless the parquet is copied out to SSE-S3 first, and
-key deletion has a 7–30 day pending window; deleting the hosted zone costs an NS
-re-delegation and ACM re-validation on the way back. Both are poor trades against
-the restore properties above. A true $0 teardown means deleting the corpus, and
-rebuilding it means re-transcribing 200+ episodes through Modal — that is the one
-genuinely expensive step in this system, and it is what hibernation exists to
-avoid.
+At the hibernation stage, the remaining $1.50 was deliberate. Deleting the CMK
+would brick the corpus and the OAuth table unless the parquet is copied out to
+SSE-S3 first, and key deletion has a 7–30 day pending window; deleting the hosted
+zone costs an NS re-delegation and ACM re-validation on the way back. Both were
+poor trades against the restore properties above. The later full teardown
+accepted those restore costs after the corpus was exported.

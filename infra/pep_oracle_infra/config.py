@@ -31,20 +31,16 @@ class DeployConfig:
     signing_ssm_param: str = "/pep-oracle/oauth-signing-key"
     cognito_client_secret_name: str = "pep-oracle/cognito-client-secret"
     cognito_client_secret_cache_seconds: int = 300
-    # KMS CMK id for the corpus bucket / data-at-rest. The ingest stack imports the
-    # key (and bucket) by id/name so its grants are identity-only — deploying ingest
-    # never forces a PepOracleProdStack update (which would redeploy the serving
-    # Lambda). Just the UUID, not the account: the ARN is built from the stack env.
-    data_key_id: str = "6b35e366-9e4b-4c6b-9b7e-8ee76e7d4ed4"
-    # Hibernation: `-c hibernate=true` (or "hibernate": true in cdk.json) deploys the
-    # data + DNS layer only — no serving compute, no WAF, no ingest schedules. It exists
-    # because this deployment's bill is almost entirely fixed per-resource charges rather
-    # than usage, so "stop using it" saves nothing: the WAF WebACL alone is ~$7.85/month
-    # whether or not a request ever reaches it. Deleting the stacks instead would be a
-    # one-way door — the retained data resources have fixed physical names (corpus
-    # bucket, OAuth table, Cognito domain prefix, client-secret name), so a later
-    # `cdk deploy` would fail trying to re-create them. Restore is `hibernate=false` and
-    # a redeploy. See docs/aws/hibernation-runbook.md.
+    # KMS CMK id for the corpus bucket / data-at-rest. A fresh deployment creates a
+    # new key in PepOracleProdStack; record that key's UUID here (or pass
+    # `-c data_key_id=...`) before enabling ingestion. There is deliberately no
+    # historical default: a syntactically valid ARN for a deleted key lets the ingest
+    # stack deploy and then fail only when its task first uses KMS.
+    data_key_id: str = ""
+    # Historical hibernation switch. `true` keeps the serving and ingest schedules
+    # disabled and permits the reference app to synthesize before a replacement data
+    # key has been recorded. Full decommissioning superseded flag-only restoration;
+    # see docs/aws/hibernation-runbook.md.
     hibernate: bool = False
     # 0 = no reserved concurrency (default). A reservation needs the account's
     # unreserved pool to stay >= 10, so it's unusable on the default-10 account
