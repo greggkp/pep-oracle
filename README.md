@@ -45,7 +45,7 @@ uv pip install -e ".[server]"
 # run the unit tests (external APIs are mocked)
 uv run pytest
 
-# local MCP server (dev; prod runs the same app as a Lambda)
+# local MCP server (the historical production design used the same app in Lambda)
 uv run pep-oracle-server
 ```
 

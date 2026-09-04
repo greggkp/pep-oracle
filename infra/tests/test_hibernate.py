@@ -30,6 +30,7 @@ def _cfg(*, hibernate: bool) -> DeployConfig:
         corpus_bucket_name="pep-oracle-corpus-test",
         cognito_domain_prefix="pep-oracle-test",
         allowed_email="me@example.com",
+        data_key_id="abc-123",
         hibernate=hibernate,
     )
 
@@ -236,6 +237,22 @@ def test_hibernated_ingest_keeps_the_task_definition():
     t = _ingest(hibernate=True)
     t.resource_count_is("AWS::ECS::TaskDefinition", 1)
     t.resource_count_is("AWS::ECS::Cluster", 1)
+
+
+def test_hibernated_ingest_allows_missing_replacement_data_key():
+    app = cdk.App()
+    cfg = _cfg(hibernate=True)
+    cfg = DeployConfig(**{**cfg.__dict__, "data_key_id": ""})
+    t = Template.from_stack(PepOracleIngestStack(app, "Ingest", cfg=cfg, env=ENV))
+    assert "kms:" not in str(t.to_json())
+
+
+def test_active_ingest_requires_replacement_data_key():
+    app = cdk.App()
+    cfg = _cfg(hibernate=False)
+    cfg = DeployConfig(**{**cfg.__dict__, "data_key_id": ""})
+    with pytest.raises(ValueError, match="data_key_id is required"):
+        PepOracleIngestStack(app, "Ingest", cfg=cfg, env=ENV)
 
 
 def test_active_ingest_schedules_are_enabled():

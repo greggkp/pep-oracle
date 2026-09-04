@@ -155,11 +155,22 @@ class PepOracleIngestStack(Stack):
         # export — so deploying this stack never pulls PepOracleProdStack into the
         # deploy set (which would rebuild + redeploy the live serving Lambda).
         corpus_bucket = s3.Bucket.from_bucket_name(self, "CorpusBucket", cfg.corpus_bucket_name)
-        data_key = kms.Key.from_key_arn(
-            self,
-            "DataKey",
-            f"arn:aws:kms:{self.region}:{self.account}:key/{cfg.data_key_id}",
-        )
+        if cfg.data_key_id:
+            data_key = kms.Key.from_key_arn(
+                self,
+                "DataKey",
+                f"arn:aws:kms:{self.region}:{self.account}:key/{cfg.data_key_id}",
+            )
+        elif cfg.hibernate:
+            # The fully decommissioned reference config intentionally has no key id.
+            # Hibernated schedules cannot run, so omitting the grants is safe and lets
+            # operators provision the new data layer before recording its new key.
+            data_key = None
+        else:
+            raise ValueError(
+                "data_key_id is required when ingestion is enabled; deploy the data "
+                "layer first, then set the new KMS key UUID"
+            )
 
         # Minimal VPC: 1 AZ, a public subnet, no NAT (scale-to-zero, public egress).
         vpc = ec2.Vpc(
@@ -215,7 +226,8 @@ class PepOracleIngestStack(Stack):
         # Least-privilege task role.
         role = task_def.task_role
         corpus_bucket.grant_read_write(role)
-        data_key.grant_encrypt_decrypt(role)
+        if data_key is not None:
+            data_key.grant_encrypt_decrypt(role)
         role.add_to_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
@@ -315,7 +327,8 @@ class PepOracleIngestStack(Stack):
             },
         )
         corpus_bucket.grant_read(stale_check)
-        data_key.grant_decrypt(stale_check)
+        if data_key is not None:
+            data_key.grant_decrypt(stale_check)
         stale_check.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["cloudwatch:PutMetricData"],

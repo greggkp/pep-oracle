@@ -8,6 +8,7 @@
     "corpus_bucket_name": "pep-oracle-corpus-prod",
     "cognito_domain_prefix": "pep-oracle-prod",
     "allowed_email": "REPLACE_ME@example.com",
+    "data_key_id": "",
     "hibernate": true
   }
 }

@@ -1,6 +1,9 @@
 # Modal GPU functions
 
-The AWS Fargate ingestion task calls two scale-to-zero Modal functions on A100 GPUs:
+The former AWS Fargate ingestion task called two scale-to-zero Modal functions
+on A100 GPUs. The apps, volumes, secret, and API tokens were deleted during the
+2026-09-04 full decommission. The setup below is a restoration procedure, not a
+description of live resources.
 
 - `transcribe_modal.py` runs faster-whisper and caches models in the
   `pep-oracle-whisper-cache` volume.
